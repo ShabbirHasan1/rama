@@ -246,6 +246,15 @@ pub struct TcpStreamConnectorWithFallback<C> {
     fallback: C,
 }
 
+impl<C> TcpStreamConnectorWithFallback<C> {
+    pub fn new(connector: C, fallback: C) -> Self {
+        Self {
+            connector,
+            fallback,
+        }
+    }
+}
+
 impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConnectorWithFallback<C>
 where
     <C as TcpStreamConnector>::Error:
