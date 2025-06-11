@@ -11,8 +11,9 @@ mod pool;
 #[doc(inline)]
 pub use pool::{
     IpCidrConExt, IpCidrConExtUsernameLabelParser, IpCidrConnector, PoolMode,
-    TcpStreamConnectorPool, extract_value_from_ipcidr_connector_extension, ipv4_from_extension,
-    ipv4_with_range, ipv6_from_extension, ipv6_with_range, rand_ipv4, rand_ipv6,
+    TcpStreamConnectorPool, TcpStreamConnectorWithFallback,
+    extract_value_from_ipcidr_connector_extension, ipv4_from_extension, ipv4_with_range,
+    ipv6_from_extension, ipv6_with_range, rand_ipv4, rand_ipv6,
 };
 
 #[cfg(feature = "http")]

@@ -1,6 +1,8 @@
 mod tcp_stream_connector_pool;
 #[doc(inline)]
-pub use tcp_stream_connector_pool::{PoolMode, TcpStreamConnectorPool};
+pub use tcp_stream_connector_pool::{
+    PoolMode, TcpStreamConnectorPool, TcpStreamConnectorWithFallback,
+};
 
 mod ipcidr_connector;
 #[doc(inline)]

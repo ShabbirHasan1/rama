@@ -240,6 +240,76 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TcpStreamConnectorWithFallback<C> {
+    connector: C,
+    fallback: C,
+}
+
+impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConnectorWithFallback<C>
+where
+    <C as TcpStreamConnector>::Error:
+        From<OpaqueError> + std::fmt::Debug + std::fmt::Display + Send,
+{
+    type Error = <C as TcpStreamConnector>::Error;
+
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        tracing::debug!(
+            target: "tcp_connector_with_fallback",
+            connector = ?self.connector,
+            destination = %addr,
+            "Selected connector for TCP connection"
+        );
+        match self.connector.connect(addr).await {
+            Ok(stream) => {
+                tracing::debug!(
+                    target: "tcp_connector_with_fallback",
+                    destination = %addr,
+                    connector = ?self.connector,
+                    "primary connection successful"
+                );
+                Ok(stream)
+            }
+            Err(primary_err) => {
+                tracing::warn!(
+                    target: "tcp_connector_with_fallback",
+                    error = %primary_err,
+                    connector = ?self.connector,
+                    destination = %addr,
+                    "primary connection failed"
+                );
+                tracing::info!(
+                    target: "tcp_connector_with_fallback",
+                    fallback_connector = ?self.fallback,
+                    destination = %addr,
+                    "attempting fallback connection"
+                );
+                match self.fallback.connect(addr).await {
+                    Ok(stream) => {
+                        tracing::info!(
+                            target: "tcp_connector_with_fallback",
+                            fallback_connector = ?self.fallback,
+                            destination = %addr,
+                            "fallback connection successful"
+                        );
+                        Ok(stream)
+                    }
+                    Err(fallback_err) => {
+                        tracing::error!(
+                            target: "tcp_connector_with_fallback",
+                            primary_error = %primary_err,
+                            fallback_error = ?fallback_err,
+                            destination = %addr,
+                            "all connection attempts failed"
+                        );
+                        Err(fallback_err)
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
