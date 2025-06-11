@@ -17,7 +17,7 @@ pub use method::MethodMatcher;
 
 mod domain;
 #[doc(inline)]
-pub use domain::DomainMatcher;
+pub use domain::{DomainMatcher, DomainsMatcher};
 
 pub mod uri;
 pub use uri::UriMatcher;
