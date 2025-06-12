@@ -875,6 +875,14 @@ pub struct SocketOptions {
 
 impl SocketOptions {
     pub fn try_build_socket(&self) -> io::Result<Socket> {
+        #[cfg(target_os = "linux")]
+        let socket = Socket::new(
+            self.domain.into(),
+            self.r#type.as_socket_type().nonblocking(),
+            self.protocol.map(Into::into),
+        )?;
+
+        #[cfg(not(target_os = "linux"))]
         let socket = Socket::new(
             self.domain.into(),
             self.r#type.into(),
