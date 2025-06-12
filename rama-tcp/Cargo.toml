@@ -22,12 +22,14 @@ default = []
 http = ["dep:rama-http-types", "rama-net/http"]
 
 [dependencies]
+rand = { workspace = true }
 rama-core = { workspace = true }
 rama-dns = { workspace = true }
 rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 
