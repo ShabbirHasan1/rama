@@ -4,7 +4,7 @@ use {
         utils::{IpCidrConExt, ipv4_from_extension, ipv6_from_extension},
     },
     crate::{TcpStream, client::TcpStreamConnector},
-    rama_core::error::OpaqueError,
+    rama_core::{error::OpaqueError, telemetry::tracing},
     rama_net::{
         address::SocketAddress,
         stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net},

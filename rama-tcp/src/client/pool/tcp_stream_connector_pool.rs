@@ -1,6 +1,6 @@
 use {
     crate::{TcpStream, client::TcpStreamConnector},
-    rama_core::error::OpaqueError,
+    rama_core::{error::OpaqueError, telemetry::tracing},
     rand::{
         rng,
         seq::{IndexedRandom as _, SliceRandom as _},

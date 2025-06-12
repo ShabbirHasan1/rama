@@ -1,6 +1,7 @@
 use {
     rama_core::{
         context::Extensions,
+        telemetry::tracing,
         username::{UsernameLabelParser, UsernameLabelState},
     },
     rama_net::stream::dep::ipnet::{Ipv4Net, Ipv6Net},
