@@ -11,6 +11,7 @@ use rama_core::context::Extensions;
 use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
+use rama_net::user::authority::{AuthorizeResult, Authorizer, StaticAuthorizer, Unauthorized};
 use rama_net::user::{Basic, Bearer, UserId};
 use tokio::sync::RwLock;
 
@@ -353,6 +354,19 @@ impl UserCredInfo<Basic> {
             ipv6,
         }
     }
+
+    pub fn into_authorizer(self) -> StaticAuthorizer<Basic> {
+        StaticAuthorizer::new(self.credential)
+    }
+}
+
+impl<C: PartialEq + Send + Sync + 'static> Authorizer<C> for UserCredInfo<C> {
+    type Error = Unauthorized;
+
+    async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        let result = credentials.eq(&self.credential);
+        result.authorize(credentials).await
+    }
 }
 
 impl<C, L, T> AuthoritySync<C, L> for UserCredInfo<T>
@@ -371,6 +385,41 @@ pub struct UserCredStore<A>(pub Arc<RwLock<Vec<UserCredInfo<A>>>>);
 impl<A> UserCredStore<A> {
     pub fn new(users: Vec<UserCredInfo<A>>) -> Self {
         Self(Arc::new(RwLock::new(users)))
+    }
+}
+
+impl<A: Authorizer<C>, C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C>
+    for UserCredStore<A>
+{
+    type Error = A::Error;
+
+    async fn authorize(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
+        let mut error = None;
+        {
+            let guard = self.0.read().await;
+            for authorizer in guard.iter() {
+                let AuthorizeResult {
+                    credentials: c,
+                    result,
+                } = authorizer.credential.authorize(credentials).await;
+                match result {
+                    Ok(maybe_ext) => {
+                        return AuthorizeResult {
+                            credentials: c,
+                            result: Ok(maybe_ext),
+                        };
+                    }
+                    Err(err) => {
+                        error = Some(err);
+                        credentials = c;
+                    }
+                }
+            }
+        }
+        AuthorizeResult {
+            credentials,
+            result: Err(error.unwrap()),
+        }
     }
 }
 
