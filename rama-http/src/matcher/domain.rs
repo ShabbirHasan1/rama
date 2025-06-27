@@ -80,12 +80,15 @@ pub struct DomainsMatcher<A> {
     sub: bool,
 }
 
-impl DomainsMatcher<Arc<Vec<Domain>>> {
+impl<A> DomainsMatcher<A>
+where
+    A: Clone + Send + Sync + 'static,
+{
     /// create a new domain matcher to match on an exact URI host match.
     ///
     /// If the host is an Ip it will not match.
     #[must_use]
-    pub fn exact(domain: Arc<Vec<Domain>>) -> Self {
+    pub fn exact(domain: A) -> Self {
         Self { domain, sub: false }
     }
     /// create a new domain matcher to match on a subdomain of the URI host match.
@@ -93,25 +96,7 @@ impl DomainsMatcher<Arc<Vec<Domain>>> {
     /// Note that a domain is also a subdomain of itself, so this will also
     /// include all matches that [`Self::exact`] would capture.
     #[must_use]
-    pub fn sub(domain: Arc<Vec<Domain>>) -> Self {
-        Self { domain, sub: true }
-    }
-}
-
-impl DomainsMatcher<Arc<RwLock<Vec<Domain>>>> {
-    /// create a new domain matcher to match on an exact URI host match.
-    ///
-    /// If the host is an Ip it will not match.
-    #[must_use]
-    pub fn exact(domain: Arc<RwLock<Vec<Domain>>>) -> Self {
-        Self { domain, sub: false }
-    }
-    /// create a new domain matcher to match on a subdomain of the URI host match.
-    ///
-    /// Note that a domain is also a subdomain of itself, so this will also
-    /// include all matches that [`Self::exact`] would capture.
-    #[must_use]
-    pub fn sub(domain: Arc<RwLock<Vec<Domain>>>) -> Self {
+    pub fn sub(domain: A) -> Self {
         Self { domain, sub: true }
     }
 }
