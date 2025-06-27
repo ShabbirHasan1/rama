@@ -388,20 +388,19 @@ impl<A> UserCredStore<A> {
     }
 }
 
-impl<A: Authorizer<C>, C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C>
-    for UserCredStore<A>
-{
-    type Error = A::Error;
+impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredStore<C> {
+    type Error = Unauthorized;
 
     async fn authorize(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
         let mut error = None;
         {
             let guard = self.0.read().await;
             for authorizer in guard.iter() {
+                let result = credentials.eq(&authorizer.credential);
                 let AuthorizeResult {
                     credentials: c,
                     result,
-                } = authorizer.credential.authorize(credentials).await;
+                } = result.authorize(credentials).await;
                 match result {
                     Ok(maybe_ext) => {
                         return AuthorizeResult {
