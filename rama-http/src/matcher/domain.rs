@@ -4,6 +4,7 @@ use rama_core::{Context, context::Extensions};
 use rama_net::address::{Domain, Host};
 use rama_net::http::RequestContext;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 /// Matcher based on the (sub)domain of the request's URI.
@@ -74,12 +75,12 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMa
 
 #[derive(Debug, Clone)]
 /// Matcher based on the (sub)domain of the request's URI.
-pub struct DomainsMatcher {
-    domain: Arc<Vec<Domain>>,
+pub struct DomainsMatcher<A> {
+    domain: A,
     sub: bool,
 }
 
-impl DomainsMatcher {
+impl DomainsMatcher<Arc<Vec<Domain>>> {
     /// create a new domain matcher to match on an exact URI host match.
     ///
     /// If the host is an Ip it will not match.
@@ -97,7 +98,27 @@ impl DomainsMatcher {
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainsMatcher {
+impl DomainsMatcher<Arc<RwLock<Vec<Domain>>>> {
+    /// create a new domain matcher to match on an exact URI host match.
+    ///
+    /// If the host is an Ip it will not match.
+    #[must_use]
+    pub fn exact(domain: Arc<RwLock<Vec<Domain>>>) -> Self {
+        Self { domain, sub: false }
+    }
+    /// create a new domain matcher to match on a subdomain of the URI host match.
+    ///
+    /// Note that a domain is also a subdomain of itself, so this will also
+    /// include all matches that [`Self::exact`] would capture.
+    #[must_use]
+    pub fn sub(domain: Arc<RwLock<Vec<Domain>>>) -> Self {
+        Self { domain, sub: true }
+    }
+}
+
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
+    for DomainsMatcher<Arc<Vec<Domain>>>
+{
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
@@ -132,6 +153,60 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainsM
             }
             (Host::Name(domain), false) => {
                 if self.domain.iter().any(|d| d == &domain) {
+                    tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
+                    false
+                } else {
+                    tracing::trace!("DomainsMatcher: ({}) is not whitelisted", domain);
+                    true
+                }
+            }
+            (Host::Address(_), _) => {
+                tracing::trace!("DomainsMatcher: ignore request host address");
+                true
+            }
+        }
+    }
+}
+
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
+    for DomainsMatcher<Arc<RwLock<Vec<Domain>>>>
+{
+    fn matches(
+        &self,
+        ext: Option<&mut Extensions>,
+        ctx: &Context<State>,
+        req: &Request<Body>,
+    ) -> bool {
+        let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
+            req_ctx.authority.host().clone()
+        } else {
+            let req_ctx: RequestContext = match (ctx, req).try_into() {
+                Ok(req_ctx) => req_ctx,
+                Err(err) => {
+                    tracing::error!(error = %err, "DomainMatcher: failed to lazy-make the request ctx");
+                    return false;
+                }
+            };
+            let host = req_ctx.authority.host().clone();
+            if let Some(ext) = ext {
+                ext.insert(req_ctx);
+            }
+            host
+        };
+        match (host, self.sub) {
+            (Host::Name(domain), true) => {
+                let guard = self.domain.blocking_read();
+                if guard.iter().any(|d| d.is_parent_of(&domain)) {
+                    tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
+                    false
+                } else {
+                    tracing::trace!("DomainsMatcher: ({}) is not whitelisted", domain);
+                    true
+                }
+            }
+            (Host::Name(domain), false) => {
+                let guard = self.domain.blocking_read();
+                if guard.iter().any(|d| d == &domain) {
                     tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
                     false
                 } else {
