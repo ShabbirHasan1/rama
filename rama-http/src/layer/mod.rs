@@ -22,6 +22,7 @@ pub mod catch_panic;
 pub mod classify;
 pub mod collect_body;
 pub mod cors;
+pub mod custom_proxy_auth;
 pub mod dns;
 pub mod error_handling;
 pub mod follow_redirect;

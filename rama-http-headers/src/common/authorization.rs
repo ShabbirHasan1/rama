@@ -1,6 +1,8 @@
 //! Authorization header and types.
 
+use std::net::IpAddr;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
@@ -10,6 +12,7 @@ use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::user::{Basic, Bearer, UserId};
+use tokio::sync::RwLock;
 
 use crate::{Error, Header};
 
@@ -317,6 +320,57 @@ where
 {
     fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
         self.iter().any(|t| t.authorized(ext, credentials))
+    }
+}
+
+impl<C, L, T> AuthoritySync<C, L> for Arc<T>
+where
+    C: Credentials + Send + 'static,
+    T: AuthoritySync<C, L>,
+{
+    fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
+        (**self).authorized(ext, credentials)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserCredInfo<A> {
+    pub credential: A,
+    pub ipv4: IpAddr,
+    pub ipv6: IpAddr,
+}
+
+impl UserCredInfo<Basic> {
+    pub fn new_static(
+        username: &'static str,
+        password: &'static str,
+        ipv4: IpAddr,
+        ipv6: IpAddr,
+    ) -> Self {
+        Self {
+            credential: Basic::new_static(username, password),
+            ipv4,
+            ipv6,
+        }
+    }
+}
+
+impl<C, L, T> AuthoritySync<C, L> for UserCredInfo<T>
+where
+    C: Credentials + Send + 'static,
+    T: AuthoritySync<C, L>,
+{
+    fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
+        self.credential.authorized(ext, credentials)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UserCredStore<A>(pub Arc<RwLock<Vec<UserCredInfo<A>>>>);
+
+impl<A> UserCredStore<A> {
+    pub fn new(users: Vec<UserCredInfo<A>>) -> Self {
+        Self(Arc::new(RwLock::new(users)))
     }
 }
 
