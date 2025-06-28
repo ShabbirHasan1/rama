@@ -82,7 +82,7 @@ pub struct DomainsMatcher<A> {
 
 impl<A> DomainsMatcher<A>
 where
-    A: Clone + Send + Sync + 'static,
+    A: Send + Sync + 'static,
 {
     /// create a new domain matcher to match on an exact URI host match.
     ///
