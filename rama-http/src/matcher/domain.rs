@@ -1,10 +1,10 @@
 use crate::Request;
+use arc_swap::ArcSwapAny;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, context::Extensions};
 use rama_net::address::{Domain, Host};
 use rama_net::http::RequestContext;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 /// Matcher based on the (sub)domain of the request's URI.
@@ -154,7 +154,7 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
 }
 
 impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
-    for DomainsMatcher<Arc<RwLock<Vec<Domain>>>>
+    for DomainsMatcher<ArcSwapAny<Arc<Vec<Domain>>>>
 {
     fn matches(
         &self,
@@ -180,7 +180,7 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         };
         match (host, self.sub) {
             (Host::Name(domain), true) => {
-                let guard = self.domain.blocking_read();
+                let guard = self.domain.load();
                 if guard.iter().any(|d| d.is_parent_of(&domain)) {
                     tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
                     false
@@ -190,7 +190,7 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
                 }
             }
             (Host::Name(domain), false) => {
-                let guard = self.domain.blocking_read();
+                let guard = self.domain.load();
                 if guard.iter().any(|d| d == &domain) {
                     tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
                     false

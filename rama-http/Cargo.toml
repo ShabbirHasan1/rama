@@ -24,6 +24,7 @@ compression = ["dep:async-compression"]
 tls = ["rama-net/tls"]
 
 [dependencies]
+arc-swap = { workspace = true }
 async-compression = { workspace = true, features = [
     "tokio",
     "brotli",
