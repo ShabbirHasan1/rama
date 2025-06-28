@@ -1,5 +1,5 @@
 use crate::Request;
-use arc_swap::ArcSwapAny;
+use arc_swap::Guard;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, context::Extensions};
 use rama_net::address::{Domain, Host};
@@ -154,7 +154,7 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
 }
 
 impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
-    for DomainsMatcher<ArcSwapAny<Arc<Vec<Domain>>>>
+    for DomainsMatcher<Guard<Arc<Vec<Domain>>>>
 {
     fn matches(
         &self,
@@ -180,8 +180,7 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         };
         match (host, self.sub) {
             (Host::Name(domain), true) => {
-                let guard = self.domain.load();
-                if guard.iter().any(|d| d.is_parent_of(&domain)) {
+                if self.domain.iter().any(|d| d.is_parent_of(&domain)) {
                     tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
                     false
                 } else {
@@ -190,8 +189,7 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
                 }
             }
             (Host::Name(domain), false) => {
-                let guard = self.domain.load();
-                if guard.iter().any(|d| d == &domain) {
+                if self.domain.iter().any(|d| d == &domain) {
                     tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
                     false
                 } else {
