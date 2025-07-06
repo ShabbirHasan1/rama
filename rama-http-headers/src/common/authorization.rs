@@ -192,7 +192,7 @@ impl Credentials for Basic {
     fn encode(&self) -> HeaderValue {
         let mut encoded = format!("{} ", Self::SCHEME);
         ENGINE.encode_string(self.to_string(), &mut encoded);
-        HeaderValue::from_str(&encoded).unwrap()
+        HeaderValue::try_from(encoded).unwrap()
     }
 }
 
@@ -237,7 +237,7 @@ impl Credentials for Bearer {
     }
 
     fn encode(&self) -> HeaderValue {
-        HeaderValue::from_str(&format!("{} {}", Self::SCHEME, self.token())).unwrap()
+        HeaderValue::try_from(format!("{} {}", Self::SCHEME, self.token())).unwrap()
     }
 }
 
