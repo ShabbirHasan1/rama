@@ -146,7 +146,7 @@ where
             .try_build_socket()
             .context("create tcp ipv4 socket attached to device")?;
             socket
-                .listen(1024)
+                .listen(4096)
                 .context("mark the socket as ready to accept incoming connection requests")?;
             bind_socket_internal(self.state, socket)
         })
@@ -170,7 +170,7 @@ where
                     .try_build_socket()
                     .context("build socket from options")?;
                 socket
-                    .listen(1024)
+                    .listen(4096)
                     .context("mark the socket as ready to accept incoming connection requests")?;
                 self.bind_socket(socket).await
             }
