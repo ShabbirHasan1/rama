@@ -388,6 +388,16 @@ impl<A> UserCredStore<A> {
     }
 }
 
+impl UserCredStore<Basic> {
+    pub async fn get_user_cred_info(&self, username: &str) -> Option<UserCredInfo<Basic>> {
+        let guard = self.0.read().await;
+        guard
+            .iter()
+            .find(|info| info.credential.username().eq(username))
+            .cloned()
+    }
+}
+
 impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredStore<C> {
     type Error = Unauthorized;
 
