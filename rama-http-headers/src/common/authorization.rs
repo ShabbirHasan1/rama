@@ -337,21 +337,21 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserCredInfo<A> {
     pub credential: A,
-    pub ipv4: IpAddr,
-    pub ipv6: IpAddr,
+    pub primary_ip: IpAddr,
+    pub secondary_ip: IpAddr,
 }
 
 impl UserCredInfo<Basic> {
     pub fn new_static(
         username: &'static str,
         password: &'static str,
-        ipv4: IpAddr,
-        ipv6: IpAddr,
+        primary_ip: IpAddr,
+        secondary_ip: IpAddr,
     ) -> Self {
         Self {
             credential: Basic::new_static(username, password),
-            ipv4,
-            ipv6,
+            primary_ip,
+            secondary_ip,
         }
     }
 
