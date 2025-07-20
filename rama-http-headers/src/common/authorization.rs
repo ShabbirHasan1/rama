@@ -11,6 +11,7 @@ use rama_core::context::Extensions;
 use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
+use rama_net::address::SocketAddress;
 use rama_net::user::authority::{AuthorizeResult, Authorizer, StaticAuthorizer, Unauthorized};
 use rama_net::user::{Basic, Bearer, UserId};
 use tokio::sync::RwLock;
@@ -353,6 +354,14 @@ impl UserCredInfo<Basic> {
             primary_ip,
             secondary_ip,
         }
+    }
+
+    pub fn primary_connector(&self) -> SocketAddress {
+        SocketAddress::new(self.primary_ip, 0)
+    }
+
+    pub fn secondary_connector(&self) -> SocketAddress {
+        SocketAddress::new(self.secondary_ip, 0)
     }
 
     pub fn into_authorizer(self) -> StaticAuthorizer<Basic> {
