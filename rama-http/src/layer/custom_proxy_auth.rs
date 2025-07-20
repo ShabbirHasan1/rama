@@ -171,7 +171,7 @@ impl<A, C, L, S, State, ReqBody, ResBody> Service<State, Request<ReqBody>>
     for CustomProxyAuthService<A, C, S, L>
 where
     // A: Authority<C, L>,
-    A: Authority<C, L> + AuthoritySync<C, L>,
+    A: Authority<C, L> + AuthoritySync<C, L> + Clone,
     C: Credentials + Clone + Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     L: 'static,
