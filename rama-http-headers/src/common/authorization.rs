@@ -360,22 +360,50 @@ impl UserCredInfo<Basic> {
     }
 }
 
-impl<C: PartialEq + Send + Sync + 'static> Authorizer<C> for UserCredInfo<C> {
+impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredInfo<C> {
     type Error = Unauthorized;
 
     async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        let mut ext = Extensions::new();
         let result = credentials.eq(&self.credential);
-        result.authorize(credentials).await
+        let AuthorizeResult {
+            credentials: c,
+            result,
+        } = result.authorize(credentials).await;
+        match result {
+            Ok(maybe_ext) => {
+                ext.insert(self.clone());
+                if maybe_ext.is_none() {
+                    return AuthorizeResult {
+                        credentials: c,
+                        result: Ok(Some(ext)),
+                    };
+                }
+                AuthorizeResult {
+                    credentials: c,
+                    result: Ok(maybe_ext),
+                }
+            }
+            Err(err) => AuthorizeResult {
+                credentials: c,
+                result: Err(err),
+            },
+        }
     }
 }
 
 impl<C, L, T> AuthoritySync<C, L> for UserCredInfo<T>
 where
     C: Credentials + Send + 'static,
-    T: AuthoritySync<C, L>,
+    T: AuthoritySync<C, L> + Clone,
 {
     fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
-        self.credential.authorized(ext, credentials)
+        if self.credential.authorized(ext, credentials) {
+            ext.insert(self.clone());
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -406,11 +434,10 @@ impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredSto
         {
             let guard = self.0.read().await;
             for authorizer in guard.iter() {
-                let result = credentials.eq(&authorizer.credential);
                 let AuthorizeResult {
                     credentials: c,
                     result,
-                } = result.authorize(credentials).await;
+                } = authorizer.authorize(credentials).await;
                 match result {
                     Ok(maybe_ext) => {
                         return AuthorizeResult {
