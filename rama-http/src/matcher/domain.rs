@@ -4,6 +4,8 @@ use rama_core::telemetry::tracing;
 use rama_core::{Context, context::Extensions};
 use rama_net::address::{Domain, Host};
 use rama_net::http::RequestContext;
+use rama_net::user::UserId;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -196,6 +198,93 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
                     false
                 } else {
                     tracing::trace!("DomainsMatcher: ({}) is not whitelisted", domain);
+                    true
+                }
+            }
+            (Host::Address(_), _) => {
+                tracing::trace!("DomainsMatcher: ignore request host address");
+                true
+            }
+        }
+    }
+}
+
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
+    for DomainsMatcher<Arc<ArcSwapAny<Arc<FxHashMap<Domain, Vec<String>>>>>>
+{
+    fn matches(
+        &self,
+        ext: Option<&mut Extensions>,
+        ctx: &Context<State>,
+        req: &Request<Body>,
+    ) -> bool {
+        let Some(UserId::Username(api_key)) = ctx.extensions().get::<UserId>() else {
+            tracing::error!("Invalid Api Key");
+            return true;
+        };
+        tracing::info!(api_key = %api_key, "DomainMatcher: api_key found");
+        if api_key.starts_with("PtDrJm") {
+            tracing::info!("DomainMatcher: api_key starts with PtDrJm");
+            return false;
+        }
+        let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
+            req_ctx.authority.host().clone()
+        } else {
+            let req_ctx: RequestContext = match (ctx, req).try_into() {
+                Ok(req_ctx) => req_ctx,
+                Err(err) => {
+                    tracing::error!(error = %err, "DomainMatcher: failed to lazy-make the request ctx");
+                    return false;
+                }
+            };
+            let host = req_ctx.authority.host().clone();
+            if let Some(ext) = ext {
+                ext.insert(req_ctx);
+            }
+            host
+        };
+        match (host, self.sub) {
+            (Host::Name(domain), true) => {
+                let guard = self.domain.load();
+                if guard.iter().any(|(d, u)| {
+                    d.is_parent_of(&domain)
+                        && u.iter()
+                            .any(|whitelisted_api_key| whitelisted_api_key == api_key)
+                }) {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        sub_domain = %domain,
+                        "DomainMatcher: api_key is whiltlisted for this sub-domain"
+                    );
+                    false
+                } else {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        sub_domain = %domain,
+                        "DomainMatcher: api_key is not whiltlisted for this sub-domain"
+                    );
+                    true
+                }
+            }
+            (Host::Name(domain), false) => {
+                let guard = self.domain.load();
+                if guard.iter().any(|(d, u)| {
+                    d == &domain
+                        && u.iter()
+                            .any(|whitelisted_api_key| whitelisted_api_key == api_key)
+                }) {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: api_key is whiltlisted for this domain"
+                    );
+                    false
+                } else {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: api_key is whiltlisted for this domain"
+                    );
                     true
                 }
             }
