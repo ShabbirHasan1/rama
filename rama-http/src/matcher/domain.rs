@@ -112,6 +112,10 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
+        // Pre-define static domains for performance
+        static WHITELISTED_DOMAINS: &[&str] =
+            &["ipify.org", "ifconfig.co", "ifconfig.me", "httpbin.org"];
+
         let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
             req_ctx.authority.host().clone()
         } else {
@@ -128,26 +132,48 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
             }
             host
         };
-        match (host, self.sub) {
-            (Host::Name(domain), true) => {
-                if self.domain.iter().any(|d| d.is_parent_of(&domain)) {
-                    tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
+        match host {
+            Host::Name(domain) => {
+                // Check static whitelisted domains first (fastest path)
+                let is_whitelisted_static = if self.sub {
+                    WHITELISTED_DOMAINS.iter().any(|&static_domain| {
+                        Domain::from_static(static_domain).is_parent_of(&domain)
+                    })
+                } else {
+                    WHITELISTED_DOMAINS
+                        .iter()
+                        .any(|&static_domain| Domain::from_static(static_domain) == domain)
+                };
+
+                if is_whitelisted_static {
+                    tracing::trace!(
+                        domain = %domain,
+                        "DomainMatcher: domain is whitelisted for static domain"
+                    );
+                    return false;
+                }
+
+                let is_whitelisted = if self.sub {
+                    self.domain.iter().any(|d| d.is_parent_of(&domain))
+                } else {
+                    self.domain.iter().any(|d| d == &domain)
+                };
+
+                if is_whitelisted {
+                    tracing::trace!(
+                        domain = %domain,
+                        "DomainMatcher: domain is whitelisted for dynamic domain"
+                    );
                     false
                 } else {
-                    tracing::trace!("DomainsMatcher: ({}) is not whitelisted", domain);
+                    tracing::trace!(
+                        domain = %domain,
+                        "DomainMatcher: domain is not whitelisted for dynamic domain"
+                    );
                     true
                 }
             }
-            (Host::Name(domain), false) => {
-                if self.domain.iter().any(|d| d == &domain) {
-                    tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
-                    false
-                } else {
-                    tracing::trace!("DomainsMatcher: ({}) is not whitelisted", domain);
-                    true
-                }
-            }
-            (Host::Address(_), _) => {
+            Host::Address(_) => {
                 tracing::trace!("DomainsMatcher: ignore request host address");
                 true
             }
@@ -164,6 +190,10 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
+        // Pre-define static domains for performance
+        static WHITELISTED_DOMAINS: &[&str] =
+            &["ipify.org", "ifconfig.co", "ifconfig.me", "httpbin.org"];
+
         let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
             req_ctx.authority.host().clone()
         } else {
@@ -180,28 +210,49 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
             }
             host
         };
-        match (host, self.sub) {
-            (Host::Name(domain), true) => {
+        match host {
+            Host::Name(domain) => {
+                // Check static whitelisted domains first (fastest path)
+                let is_whitelisted_static = if self.sub {
+                    WHITELISTED_DOMAINS.iter().any(|&static_domain| {
+                        Domain::from_static(static_domain).is_parent_of(&domain)
+                    })
+                } else {
+                    WHITELISTED_DOMAINS
+                        .iter()
+                        .any(|&static_domain| Domain::from_static(static_domain) == domain)
+                };
+
+                if is_whitelisted_static {
+                    tracing::trace!(
+                        domain = %domain,
+                        "DomainMatcher: domain is whitelisted for static domain"
+                    );
+                    return false;
+                }
+
                 let guard = self.domain.load();
-                if guard.iter().any(|d| d.is_parent_of(&domain)) {
-                    tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
+                let is_whitelisted = if self.sub {
+                    guard.iter().any(|d| d.is_parent_of(&domain))
+                } else {
+                    guard.iter().any(|d| d == &domain)
+                };
+
+                if is_whitelisted {
+                    tracing::trace!(
+                        domain = %domain,
+                        "DomainMatcher: domain is whitelisted for dynamic domain"
+                    );
                     false
                 } else {
-                    tracing::trace!("DomainsMatcher: ({}) is not whitelisted", domain);
+                    tracing::trace!(
+                        domain = %domain,
+                        "DomainMatcher: domain is not whitelisted for dynamic domain"
+                    );
                     true
                 }
             }
-            (Host::Name(domain), false) => {
-                let guard = self.domain.load();
-                if guard.iter().any(|d| d == &domain) {
-                    tracing::trace!("DomainsMatcher: ({}) is whitelisted", domain);
-                    false
-                } else {
-                    tracing::trace!("DomainsMatcher: ({}) is not whitelisted", domain);
-                    true
-                }
-            }
-            (Host::Address(_), _) => {
+            Host::Address(_) => {
                 tracing::trace!("DomainsMatcher: ignore request host address");
                 true
             }
@@ -218,6 +269,10 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
+        // Pre-define static domains for performance
+        static WHITELISTED_DOMAINS: &[&str] =
+            &["ipify.org", "ifconfig.co", "ifconfig.me", "httpbin.org"];
+
         let Some(UserId::Username(api_key)) = ctx.extensions().get::<UserId>() else {
             tracing::error!("Invalid Api Key");
             return true;
@@ -243,52 +298,61 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
             }
             host
         };
-        match (host, self.sub) {
-            (Host::Name(domain), true) => {
-                let guard = self.domain.load();
-                if guard.iter().any(|(d, u)| {
-                    d.is_parent_of(&domain)
-                        && u.iter()
-                            .any(|whitelisted_api_key| whitelisted_api_key == api_key)
-                }) {
+
+        match host {
+            Host::Name(domain) => {
+                // Check static whitelisted domains first (fastest path)
+                let is_whitelisted_static = if self.sub {
+                    WHITELISTED_DOMAINS.iter().any(|&static_domain| {
+                        Domain::from_static(static_domain).is_parent_of(&domain)
+                    })
+                } else {
+                    WHITELISTED_DOMAINS
+                        .iter()
+                        .any(|&static_domain| Domain::from_static(static_domain) == domain)
+                };
+
+                if is_whitelisted_static {
                     tracing::trace!(
                         api_key = %api_key,
-                        sub_domain = %domain,
-                        "DomainMatcher: api_key is whiltlisted for this sub-domain"
+                        domain = %domain,
+                        "DomainMatcher: api_key is whitelisted for static domain"
+                    );
+                    return false;
+                }
+
+                // Check dynamic domains from the map
+                let guard = self.domain.load();
+                let is_whitelisted_dynamic = guard.iter().any(|(d, users)| {
+                    let domain_matches = if self.sub {
+                        d.is_parent_of(&domain)
+                    } else {
+                        d == &domain
+                    };
+
+                    domain_matches
+                        && users
+                            .iter()
+                            .any(|whitelisted_api_key| whitelisted_api_key == api_key)
+                });
+
+                if is_whitelisted_dynamic {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: api_key is whitelisted for dynamic domain"
                     );
                     false
                 } else {
                     tracing::trace!(
                         api_key = %api_key,
-                        sub_domain = %domain,
-                        "DomainMatcher: api_key is not whiltlisted for this sub-domain"
+                        domain = %domain,
+                        "DomainMatcher: api_key is not whitelisted for this domain"
                     );
                     true
                 }
             }
-            (Host::Name(domain), false) => {
-                let guard = self.domain.load();
-                if guard.iter().any(|(d, u)| {
-                    d == &domain
-                        && u.iter()
-                            .any(|whitelisted_api_key| whitelisted_api_key == api_key)
-                }) {
-                    tracing::trace!(
-                        api_key = %api_key,
-                        domain = %domain,
-                        "DomainMatcher: api_key is whiltlisted for this domain"
-                    );
-                    false
-                } else {
-                    tracing::trace!(
-                        api_key = %api_key,
-                        domain = %domain,
-                        "DomainMatcher: api_key is whiltlisted for this domain"
-                    );
-                    true
-                }
-            }
-            (Host::Address(_), _) => {
+            Host::Address(_) => {
                 tracing::trace!("DomainsMatcher: ignore request host address");
                 true
             }
