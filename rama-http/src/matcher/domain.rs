@@ -7,6 +7,7 @@ use rama_net::http::RequestContext;
 use rama_net::user::UserId;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone)]
 /// Matcher based on the (sub)domain of the request's URI.
@@ -113,8 +114,15 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         req: &Request<Body>,
     ) -> bool {
         // Pre-define static domains for performance
-        static WHITELISTED_DOMAINS: &[&str] =
-            &["ipify.org", "ifconfig.co", "ifconfig.me", "httpbin.org"];
+        static WHITELISTED_DOMAINS: OnceLock<Vec<Domain>> = OnceLock::new();
+        let whitelisted_domains = WHITELISTED_DOMAINS.get_or_init(|| {
+            vec![
+                Domain::from_static("ipify.org"),
+                Domain::from_static("ifconfig.co"),
+                Domain::from_static("ifconfig.me"),
+                Domain::from_static("httpbin.org"),
+            ]
+        });
 
         let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
             req_ctx.authority.host().clone()
@@ -134,15 +142,14 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         };
         match host {
             Host::Name(domain) => {
-                // Check static whitelisted domains first (fastest path)
                 let is_whitelisted_static = if self.sub {
-                    WHITELISTED_DOMAINS.iter().any(|&static_domain| {
-                        Domain::from_static(static_domain).is_parent_of(&domain)
-                    })
-                } else {
-                    WHITELISTED_DOMAINS
+                    whitelisted_domains
                         .iter()
-                        .any(|&static_domain| Domain::from_static(static_domain) == domain)
+                        .any(|static_domain| static_domain.is_parent_of(&domain))
+                } else {
+                    whitelisted_domains
+                        .iter()
+                        .any(|static_domain| static_domain == &domain)
                 };
 
                 if is_whitelisted_static {
@@ -191,8 +198,15 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         req: &Request<Body>,
     ) -> bool {
         // Pre-define static domains for performance
-        static WHITELISTED_DOMAINS: &[&str] =
-            &["ipify.org", "ifconfig.co", "ifconfig.me", "httpbin.org"];
+        static WHITELISTED_DOMAINS: OnceLock<Vec<Domain>> = OnceLock::new();
+        let whitelisted_domains = WHITELISTED_DOMAINS.get_or_init(|| {
+            vec![
+                Domain::from_static("ipify.org"),
+                Domain::from_static("ifconfig.co"),
+                Domain::from_static("ifconfig.me"),
+                Domain::from_static("httpbin.org"),
+            ]
+        });
 
         let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
             req_ctx.authority.host().clone()
@@ -212,15 +226,14 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         };
         match host {
             Host::Name(domain) => {
-                // Check static whitelisted domains first (fastest path)
                 let is_whitelisted_static = if self.sub {
-                    WHITELISTED_DOMAINS.iter().any(|&static_domain| {
-                        Domain::from_static(static_domain).is_parent_of(&domain)
-                    })
-                } else {
-                    WHITELISTED_DOMAINS
+                    whitelisted_domains
                         .iter()
-                        .any(|&static_domain| Domain::from_static(static_domain) == domain)
+                        .any(|static_domain| static_domain.is_parent_of(&domain))
+                } else {
+                    whitelisted_domains
+                        .iter()
+                        .any(|static_domain| static_domain == &domain)
                 };
 
                 if is_whitelisted_static {
@@ -270,18 +283,30 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
         req: &Request<Body>,
     ) -> bool {
         // Pre-define static domains for performance
-        static WHITELISTED_DOMAINS: &[&str] =
-            &["ipify.org", "ifconfig.co", "ifconfig.me", "httpbin.org"];
+        static WHITELISTED_DOMAINS: OnceLock<Vec<Domain>> = OnceLock::new();
+        static WILDCARD_DOMAIN: OnceLock<Domain> = OnceLock::new();
+
+        let whitelisted_domains = WHITELISTED_DOMAINS.get_or_init(|| {
+            vec![
+                Domain::from_static("ipify.org"),
+                Domain::from_static("ifconfig.co"),
+                Domain::from_static("ifconfig.me"),
+                Domain::from_static("httpbin.org"),
+            ]
+        });
+
+        let wildcard_domain = WILDCARD_DOMAIN.get_or_init(|| Domain::from_static("staticip.in"));
 
         let Some(UserId::Username(api_key)) = ctx.extensions().get::<UserId>() else {
             tracing::error!("Invalid Api Key");
             return true;
         };
-        tracing::info!(api_key = %api_key, "DomainMatcher: api_key found");
+
         if api_key.starts_with("PtDrJm") {
-            tracing::info!("DomainMatcher: api_key starts with PtDrJm");
+            tracing::trace!(api_key = %api_key, "DomainMatcher: special api_key bypass");
             return false;
         }
+
         let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
             req_ctx.authority.host().clone()
         } else {
@@ -301,15 +326,14 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
 
         match host {
             Host::Name(domain) => {
-                // Check static whitelisted domains first (fastest path)
                 let is_whitelisted_static = if self.sub {
-                    WHITELISTED_DOMAINS.iter().any(|&static_domain| {
-                        Domain::from_static(static_domain).is_parent_of(&domain)
-                    })
-                } else {
-                    WHITELISTED_DOMAINS
+                    whitelisted_domains
                         .iter()
-                        .any(|&static_domain| Domain::from_static(static_domain) == domain)
+                        .any(|static_domain| static_domain.is_parent_of(&domain))
+                } else {
+                    whitelisted_domains
+                        .iter()
+                        .any(|static_domain| static_domain == &domain)
                 };
 
                 if is_whitelisted_static {
@@ -321,9 +345,26 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
                     return false;
                 }
 
-                // Check dynamic domains from the map
                 let guard = self.domain.load();
+
+                if let Some(users) = guard.get(wildcard_domain)
+                    && users
+                        .iter()
+                        .any(|whitelisted_api_key| whitelisted_api_key == api_key)
+                {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: api_key is whitelisted for wildcard domain"
+                    );
+                    return false;
+                }
+
                 let is_whitelisted_dynamic = guard.iter().any(|(d, users)| {
+                    if d == wildcard_domain {
+                        return false;
+                    }
+
                     let domain_matches = if self.sub {
                         d.is_parent_of(&domain)
                     } else {
