@@ -52,7 +52,7 @@ pub struct Authorization<C>(pub C);
 impl<C> Authorization<C> {
     /// Create a new authorization header.
     pub fn new(credentials: C) -> Self {
-        Authorization(credentials)
+        Self(credentials)
     }
 
     pub fn credentials(&self) -> &C {
@@ -157,14 +157,11 @@ impl Credentials for Basic {
         }
 
         let bytes = &value[Self::SCHEME.len() + 1..];
-        let non_space_pos = match bytes.iter().position(|b| *b != b' ') {
-            Some(pos) => pos,
-            None => {
-                tracing::trace!(
-                    "Basic credentials failed to decode: missing space separator in basic str"
-                );
-                return None;
-            }
+        let Some(non_space_pos) = bytes.iter().position(|b| *b != b' ') else {
+            tracing::trace!(
+                "Basic credentials failed to decode: missing space separator in basic str"
+            );
+            return None;
         };
 
         let bytes = &bytes[non_space_pos..];
@@ -214,12 +211,9 @@ impl Credentials for Bearer {
 
         let bytes = &value[Self::SCHEME.len() + 1..];
 
-        let non_space_pos = match bytes.iter().position(|b| *b != b' ') {
-            Some(pos) => pos,
-            None => {
-                tracing::trace!("Bearer credentials failed to decode: no token found");
-                return None;
-            }
+        let Some(non_space_pos) = bytes.iter().position(|b| *b != b' ') else {
+            tracing::trace!("Bearer credentials failed to decode: no token found");
+            return None;
         };
 
         let bytes = &bytes[non_space_pos..];
@@ -272,8 +266,8 @@ where
     }
 }
 
-impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for Basic {
-    fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
+impl<T: UsernameLabelParser> AuthoritySync<Self, T> for Basic {
+    fn authorized(&self, ext: &mut Extensions, credentials: &Self) -> bool {
         let username = credentials.username();
         let password = credentials.password();
 
