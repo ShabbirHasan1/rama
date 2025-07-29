@@ -16,7 +16,7 @@ use rama_net::user::authority::{AuthorizeResult, Authorizer, StaticAuthorizer, U
 use rama_net::user::{Basic, Bearer, UserId};
 use tokio::sync::RwLock;
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Authorization` header, defined in [RFC7235](https://tools.ietf.org/html/rfc7235#section-4.2)
 ///
@@ -84,11 +84,13 @@ impl<C> DerefMut for Authorization<C> {
     }
 }
 
-impl<C: Credentials> Header for Authorization<C> {
+impl<C: Credentials> TypedHeader for Authorization<C> {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::AUTHORIZATION
     }
+}
 
+impl<C: Credentials> HeaderDecode for Authorization<C> {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
@@ -105,7 +107,9 @@ impl<C: Credentials> Header for Authorization<C> {
             })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl<C: Credentials> HeaderEncode for Authorization<C> {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let mut value = self.0.encode();
         value.set_sensitive(true);
