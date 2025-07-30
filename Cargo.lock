@@ -2824,6 +2824,7 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-test",
+ "tokio-util",
 ]
 
 [[package]]
