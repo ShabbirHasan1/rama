@@ -209,6 +209,11 @@ where
             .map(|h| h.0)
             .or_else(|| ctx.get::<C>().cloned());
 
+        tracing::trace!(
+            credentials = ?credentials,
+            "Checking proxy credentials"
+        );
+
         match credentials {
             Some(creds) => {
                 let auth_result = match &self.proxy_auth.backend {
@@ -225,6 +230,11 @@ where
                         Authority::<C, L>::authorized(data_guard, creds).await
                     }
                 };
+
+                tracing::trace!(
+                    auth_result = ?auth_result,
+                    "Proxy credentials checked"
+                );
 
                 match auth_result {
                     Some(ext) => {
