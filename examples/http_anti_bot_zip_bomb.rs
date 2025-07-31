@@ -27,13 +27,15 @@ use rama::{
     Layer,
     http::{
         StatusCode,
+        body::ZipBomb,
         headers::UserAgent,
-        layer::required_header::AddRequiredResponseHeadersLayer,
-        layer::trace::TraceLayer,
+        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
-        service::web::extract::{Path, TypedHeader},
-        service::web::response::{IntoResponse, ZipBomb},
-        service::web::{Router, response::Html},
+        service::web::{
+            Router,
+            extract::{Path, TypedHeader},
+            response::{Html, IntoResponse},
+        },
     },
     net::address::SocketAddress,
     rt::Executor,
@@ -99,6 +101,14 @@ async fn api_rates_csv(
         // NOTE: in a real product you'll want to do actual Fingerprinting,
         // based on TCP, TLS, HTTP and application+platform signals
         // ... for this example this will do however
+        // ... and of course you want to combine this with other measures:
+        // - rate limit
+        // - hard blocks
+        // - other mechanisms
+        // ... because zip bombs do use some resources from your server as well,
+        // at least when generating them on the fly like this... You could of course
+        // cache them based on input, so adding a caching layer in front of this endpoint
+        // service specific would do a lot already
         ZipBomb::new(format!("rates_{year}.csv")).into_response()
     } else {
         // assume real user
