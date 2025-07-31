@@ -411,6 +411,7 @@ where
     T: AuthoritySync<C, L> + Clone,
 {
     fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
+        tracing::info!("Proxy credentials being checked");
         if self.credential.authorized(ext, credentials) {
             ext.insert(self.clone());
             true
