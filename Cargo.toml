@@ -70,6 +70,7 @@ rust-version = "1.88.0"
 
 [workspace.dependencies]
 arc-swap = "1.7"
+arcshift = { version = "0.4", features = ["nightly"] }
 async-compression = "0.4"
 async-stream = { version = "0.3" }
 atomic-waker = "1.1"

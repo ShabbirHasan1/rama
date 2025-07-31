@@ -157,6 +157,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
 
 [[package]]
+name = "arcshift"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95bcd258b3b56d33539bfd0c0bd423b74ee05abe628386a3a000a88c0147748f"
+
+[[package]]
 name = "asn1-rs"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2779,6 +2785,7 @@ name = "rama-http"
 version = "0.3.0-alpha.2"
 dependencies = [
  "arc-swap",
+ "arcshift",
  "async-compression",
  "bitflags",
  "brotli",
@@ -2882,6 +2889,8 @@ dependencies = [
 name = "rama-http-headers"
 version = "0.3.0-alpha.2"
 dependencies = [
+ "arc-swap",
+ "arcshift",
  "base64",
  "httpdate",
  "mime",
