@@ -92,7 +92,19 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
             },
             (None, Some(h)) => {
                 tracing::trace!(url.full = %uri, "request context: detected host {h} from SNI");
-                (h, default_port).into()
+                if Some(h.as_str()) == uri.host() {
+                    tracing::trace!(url.full = %uri, "request context: detected host {h} from SNI");
+                    (h, default_port).into()
+                } else {
+                    uri
+                        .host()
+                        .and_then(|h| Host::try_from(h).ok().map(|h| {
+                            tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
+                            (h, default_port).into()
+                        })).ok_or_else(|| {
+                            OpaqueError::from_display("RequestContext: no authourity found in http::Request")
+                        })?
+                }
             },
             (None, None) => uri
                 .host()
