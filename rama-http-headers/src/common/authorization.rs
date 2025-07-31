@@ -411,7 +411,6 @@ where
     T: AuthoritySync<C, L> + Clone,
 {
     fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
-        tracing::info!("Proxy credentials being checked");
         if self.credential.authorized(ext, credentials) {
             ext.insert(self.clone());
             true
@@ -478,6 +477,21 @@ impl<A> UserCredStore<A> {
     pub fn new_arc_shift(users: Vec<UserCredInfo<A>>) -> Self {
         Self {
             backend: UserCredStoreBackend::ArcShift(ArcShift::new(users)),
+        }
+    }
+
+    #[must_use]
+    pub fn from_backend(backend: UserCredStoreBackend<A>) -> Self {
+        match backend {
+            UserCredStoreBackend::ArcSwap(swap) => Self {
+                backend: UserCredStoreBackend::ArcSwap(swap),
+            },
+            UserCredStoreBackend::ArcShift(shift) => Self {
+                backend: UserCredStoreBackend::ArcShift(shift),
+            },
+            UserCredStoreBackend::RwLock(lock) => Self {
+                backend: UserCredStoreBackend::RwLock(lock),
+            },
         }
     }
 
