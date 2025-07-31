@@ -6,6 +6,7 @@ use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
 use rama_http_headers::authorization::{AuthoritySync, UserCredStore, UserCredStoreBackend};
 use rama_net::user::UserId;
@@ -209,13 +210,9 @@ where
             .map(|h| h.0)
             .or_else(|| ctx.get::<C>().cloned());
 
-        tracing::trace!(
-            credentials = ?credentials,
-            "Checking proxy credentials"
-        );
-
         match credentials {
             Some(creds) => {
+                tracing::trace!("Proxy credentials found");
                 let auth_result = match &self.proxy_auth.backend {
                     UserCredStoreBackend::RwLock(store) => {
                         let data_guard = store.read().await;
