@@ -224,6 +224,7 @@ where
                     }
                     UserCredStoreBackend::ArcShift(store) => {
                         let data_guard = store.shared_non_reloading_get();
+                        tracing::info!("Proxy credentials being checked");
                         Authority::<C, L>::authorized(data_guard, creds).await
                     }
                 };
