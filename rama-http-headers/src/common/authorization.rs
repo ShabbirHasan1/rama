@@ -4,6 +4,8 @@ use std::net::IpAddr;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use arc_swap::{ArcSwap, ArcSwapAny};
+use arcshift::ArcShift;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
@@ -341,6 +343,7 @@ pub struct UserCredInfo<A> {
 }
 
 impl UserCredInfo<Basic> {
+    #[must_use]
     pub fn new_static(
         username: &'static str,
         password: &'static str,
@@ -354,14 +357,17 @@ impl UserCredInfo<Basic> {
         }
     }
 
+    #[must_use]
     pub fn primary_connector(&self) -> SocketAddress {
         SocketAddress::new(self.primary_ip, 0)
     }
 
+    #[must_use]
     pub fn secondary_connector(&self) -> SocketAddress {
         SocketAddress::new(self.secondary_ip, 0)
     }
 
+    #[must_use]
     pub fn into_authorizer(self) -> StaticAuthorizer<Basic> {
         StaticAuthorizer::new(self.credential)
     }
@@ -414,22 +420,162 @@ where
     }
 }
 
+/// Storage backend for user credentials.
+pub enum UserCredStoreBackend<A> {
+    /// Uses RwLock for thread-safe access with blocking updates.
+    RwLock(Arc<RwLock<Vec<UserCredInfo<A>>>>),
+    /// Uses ArcSwap for lock-free reads with atomic updates.
+    ArcSwap(Arc<ArcSwapAny<Arc<Vec<UserCredInfo<A>>>>>),
+    /// Uses ArcShift for efficient updates with shared access.
+    ArcShift(ArcShift<Vec<UserCredInfo<A>>>),
+}
+
+impl<A> std::fmt::Debug for UserCredStoreBackend<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RwLock(_) => f.debug_tuple("RwLock").finish(),
+            Self::ArcSwap(_) => f.debug_tuple("ArcSwap").finish(),
+            Self::ArcShift(_) => f.debug_tuple("ArcShift").finish(),
+        }
+    }
+}
+
+impl<A> Clone for UserCredStoreBackend<A> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::RwLock(lock) => Self::RwLock(lock.clone()),
+            Self::ArcSwap(swap) => Self::ArcSwap(swap.clone()),
+            Self::ArcShift(shift) => Self::ArcShift(shift.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct UserCredStore<A>(pub Arc<RwLock<Vec<UserCredInfo<A>>>>);
+pub struct UserCredStore<A> {
+    pub backend: UserCredStoreBackend<A>,
+}
 
 impl<A> UserCredStore<A> {
+    /// Create a new store using RwLock backend.
+    #[must_use]
     pub fn new(users: Vec<UserCredInfo<A>>) -> Self {
-        Self(Arc::new(RwLock::new(users)))
+        Self {
+            backend: UserCredStoreBackend::RwLock(Arc::new(RwLock::new(users))),
+        }
+    }
+
+    /// Create a new store using ArcSwap backend for lock-free reads.
+    #[must_use]
+    pub fn new_arc_swap(users: Vec<UserCredInfo<A>>) -> Self {
+        Self {
+            backend: UserCredStoreBackend::ArcSwap(Arc::new(ArcSwap::from(Arc::new(users)))),
+        }
+    }
+
+    /// Create a new store using ArcShift backend.
+    #[must_use]
+    pub fn new_arc_shift(users: Vec<UserCredInfo<A>>) -> Self {
+        Self {
+            backend: UserCredStoreBackend::ArcShift(ArcShift::new(users)),
+        }
+    }
+
+    /// Try to update credentials without blocking (only works with RwLock backend).
+    pub fn try_update(&self, users: Vec<UserCredInfo<A>>) -> Result<(), Vec<UserCredInfo<A>>> {
+        match &self.backend {
+            UserCredStoreBackend::RwLock(lock) => {
+                if let Ok(mut guard) = lock.try_write() {
+                    *guard = users;
+                    tracing::trace!("User credentials updated successfully");
+                    Ok(())
+                } else {
+                    tracing::trace!("Failed to acquire write lock for user credentials update");
+                    Err(users)
+                }
+            }
+            UserCredStoreBackend::ArcSwap(swap) => {
+                swap.store(Arc::new(users));
+                tracing::trace!("User credentials updated successfully");
+                Ok(())
+            }
+            UserCredStoreBackend::ArcShift(_) => {
+                tracing::trace!(
+                    "try_update not supported for ArcShift backend, use update instead"
+                );
+                Err(users)
+            }
+        }
+    }
+
+    /// Update credentials (async for RwLock, sync for others).
+    pub async fn update(&mut self, users: Vec<UserCredInfo<A>>) {
+        match &mut self.backend {
+            UserCredStoreBackend::RwLock(lock) => {
+                let mut guard = lock.write().await;
+                *guard = users;
+                tracing::trace!("User credentials updated successfully");
+            }
+            UserCredStoreBackend::ArcSwap(swap) => {
+                swap.store(Arc::new(users));
+                tracing::trace!("User credentials updated successfully");
+            }
+            UserCredStoreBackend::ArcShift(shift) => {
+                shift.update(users);
+                shift.reload();
+                tracing::trace!("User credentials updated successfully");
+            }
+        }
+    }
+
+    /// Update credentials synchronously (only works with ArcSwap and ArcShift backends).
+    pub fn update_sync(&mut self, users: Vec<UserCredInfo<A>>) -> Result<(), Vec<UserCredInfo<A>>> {
+        match &mut self.backend {
+            UserCredStoreBackend::RwLock(_) => {
+                tracing::trace!(
+                    "Synchronous update not supported for RwLock backend, use update instead"
+                );
+                Err(users)
+            }
+            UserCredStoreBackend::ArcSwap(swap) => {
+                swap.store(Arc::new(users));
+                tracing::trace!("User credentials updated successfully");
+                Ok(())
+            }
+            UserCredStoreBackend::ArcShift(shift) => {
+                shift.update(users);
+                shift.reload();
+                tracing::trace!("User credentials updated successfully");
+                Ok(())
+            }
+        }
     }
 }
 
 impl UserCredStore<Basic> {
     pub async fn get_user_cred_info(&self, username: &str) -> Option<UserCredInfo<Basic>> {
-        let guard = self.0.read().await;
-        guard
-            .iter()
-            .find(|info| info.credential.username().eq(username))
-            .cloned()
+        match &self.backend {
+            UserCredStoreBackend::RwLock(lock) => {
+                let guard = lock.read().await;
+                guard
+                    .iter()
+                    .find(|info| info.credential.username() == username)
+                    .cloned()
+            }
+            UserCredStoreBackend::ArcSwap(swap) => {
+                let guard = swap.load();
+                guard
+                    .iter()
+                    .find(|info| info.credential.username() == username)
+                    .cloned()
+            }
+            UserCredStoreBackend::ArcShift(shift) => {
+                let guard = shift.shared_non_reloading_get();
+                guard
+                    .iter()
+                    .find(|info| info.credential.username() == username)
+                    .cloned()
+            }
+        }
     }
 }
 
@@ -438,23 +584,68 @@ impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredSto
 
     async fn authorize(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
         let mut error = None;
-        {
-            let guard = self.0.read().await;
-            for authorizer in guard.iter() {
-                let AuthorizeResult {
-                    credentials: c,
-                    result,
-                } = authorizer.authorize(credentials).await;
-                match result {
-                    Ok(maybe_ext) => {
-                        return AuthorizeResult {
-                            credentials: c,
-                            result: Ok(maybe_ext),
-                        };
+
+        match &self.backend {
+            UserCredStoreBackend::RwLock(lock) => {
+                let guard = lock.read().await;
+                for authorizer in guard.iter() {
+                    let AuthorizeResult {
+                        credentials: c,
+                        result,
+                    } = authorizer.authorize(credentials).await;
+                    match result {
+                        Ok(maybe_ext) => {
+                            return AuthorizeResult {
+                                credentials: c,
+                                result: Ok(maybe_ext),
+                            };
+                        }
+                        Err(err) => {
+                            error = Some(err);
+                            credentials = c;
+                        }
                     }
-                    Err(err) => {
-                        error = Some(err);
-                        credentials = c;
+                }
+            }
+            UserCredStoreBackend::ArcSwap(swap) => {
+                let guard = swap.load();
+                for authorizer in guard.iter() {
+                    let AuthorizeResult {
+                        credentials: c,
+                        result,
+                    } = authorizer.authorize(credentials).await;
+                    match result {
+                        Ok(maybe_ext) => {
+                            return AuthorizeResult {
+                                credentials: c,
+                                result: Ok(maybe_ext),
+                            };
+                        }
+                        Err(err) => {
+                            error = Some(err);
+                            credentials = c;
+                        }
+                    }
+                }
+            }
+            UserCredStoreBackend::ArcShift(shift) => {
+                let guard = shift.shared_non_reloading_get();
+                for authorizer in guard.iter() {
+                    let AuthorizeResult {
+                        credentials: c,
+                        result,
+                    } = authorizer.authorize(credentials).await;
+                    match result {
+                        Ok(maybe_ext) => {
+                            return AuthorizeResult {
+                                credentials: c,
+                                result: Ok(maybe_ext),
+                            };
+                        }
+                        Err(err) => {
+                            error = Some(err);
+                            credentials = c;
+                        }
                     }
                 }
             }

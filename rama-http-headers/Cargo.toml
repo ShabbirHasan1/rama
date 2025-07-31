@@ -18,6 +18,8 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+arc-swap = { workspace = true }
+arcshift = { workspace = true, features = ["nightly"] }
 base64 = { workspace = true }
 httpdate = { workspace = true }
 mime = { workspace = true }
