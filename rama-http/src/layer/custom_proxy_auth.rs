@@ -7,13 +7,13 @@ use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
 use rama_core::{Context, Layer, Service};
-use rama_http_headers::authorization::{AuthoritySync, UserCredStore};
+use rama_http_headers::authorization::{AuthoritySync, UserCredStore, UserCredStoreBackend};
 use rama_net::user::UserId;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 use std::marker::PhantomData;
 
-/// Layer that applies the [`ProxyAuthService`] middleware which apply a timeout to requests.
+/// Layer that applies the [`CustomProxyAuthService`] middleware which apply a timeout to requests.
 ///
 /// See the [module docs](super) for an example.
 pub struct CustomProxyAuthLayer<A, C, L = ()> {
@@ -26,6 +26,7 @@ impl<A: fmt::Debug, C, L> fmt::Debug for CustomProxyAuthLayer<A, C, L> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("CustomProxyAuthLayer")
             .field("proxy_auth", &self.proxy_auth)
+            .field("allow_anonymous", &self.allow_anonymous)
             .field(
                 "_phantom",
                 &format_args!("{}", std::any::type_name::<fn(C, L) -> ()>()),
@@ -45,9 +46,10 @@ impl<A: Clone, C, L> Clone for CustomProxyAuthLayer<A, C, L> {
 }
 
 impl<A, C> CustomProxyAuthLayer<A, C, ()> {
-    /// Creates a new [`CustomProxyAuthLayer`].
+    /// Creates a new [`CustomProxyAuthLayer`] with UserCredStore.
+    #[must_use]
     pub const fn new(proxy_auth: UserCredStore<A>) -> Self {
-        CustomProxyAuthLayer {
+        Self {
             proxy_auth,
             allow_anonymous: false,
             _phantom: PhantomData,
@@ -61,6 +63,7 @@ impl<A, C> CustomProxyAuthLayer<A, C, ()> {
     }
 
     /// Allow anonymous requests.
+    #[must_use]
     pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
         self.allow_anonymous = allow_anonymous;
         self
@@ -77,6 +80,7 @@ impl<A, C, L> CustomProxyAuthLayer<A, C, L> {
     ///
     /// [`UsernameOpaqueLabelParser`]: rama_core::username::UsernameOpaqueLabelParser
     /// [`UsernameLabelParser`]: rama_core::username::UsernameLabelParser
+    #[must_use]
     pub fn with_labels<L2>(self) -> CustomProxyAuthLayer<A, C, L2> {
         CustomProxyAuthLayer {
             proxy_auth: self.proxy_auth,
@@ -95,10 +99,12 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         CustomProxyAuthService::new(self.proxy_auth.clone(), inner)
+            .with_allow_anonymous(self.allow_anonymous)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
         CustomProxyAuthService::new(self.proxy_auth, inner)
+            .with_allow_anonymous(self.allow_anonymous)
     }
 }
 
@@ -118,6 +124,7 @@ pub struct CustomProxyAuthService<A, C, S, L = ()> {
 
 impl<A, C, S, L> CustomProxyAuthService<A, C, S, L> {
     /// Creates a new [`CustomProxyAuthService`].
+    #[must_use]
     pub const fn new(proxy_auth: UserCredStore<A>, inner: S) -> Self {
         Self {
             proxy_auth,
@@ -134,6 +141,7 @@ impl<A, C, S, L> CustomProxyAuthService<A, C, S, L> {
     }
 
     /// Allow anonymous requests.
+    #[must_use]
     pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
         self.allow_anonymous = allow_anonymous;
         self
@@ -158,7 +166,7 @@ impl<A: fmt::Debug, C, S: fmt::Debug, L> fmt::Debug for CustomProxyAuthService<A
 
 impl<A: Clone, C, S: Clone, L> Clone for CustomProxyAuthService<A, C, S, L> {
     fn clone(&self) -> Self {
-        CustomProxyAuthService {
+        Self {
             proxy_auth: self.proxy_auth.clone(),
             allow_anonymous: self.allow_anonymous,
             inner: self.inner.clone(),
@@ -167,10 +175,18 @@ impl<A: Clone, C, S: Clone, L> Clone for CustomProxyAuthService<A, C, S, L> {
     }
 }
 
+#[inline]
+fn create_auth_required_response<ResBody: Default>(scheme: &'static str) -> Response<ResBody> {
+    Response::builder()
+        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+        .header(PROXY_AUTHENTICATE, scheme)
+        .body(Default::default())
+        .unwrap()
+}
+
 impl<A, C, L, S, State, ReqBody, ResBody> Service<State, Request<ReqBody>>
     for CustomProxyAuthService<A, C, S, L>
 where
-    // A: Authority<C, L>,
     A: Authority<C, L> + AuthoritySync<C, L> + Clone,
     C: Credentials + Clone + Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
@@ -187,34 +203,45 @@ where
         mut ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        if let Some(credentials) = req
+        let credentials = req
             .headers()
             .typed_get::<ProxyAuthorization<C>>()
             .map(|h| h.0)
-            .or_else(|| ctx.get::<C>().cloned())
-        {
-            if let Some(ext) = {
-                let data_guard = self.proxy_auth.0.read().await;
-                Authority::<C, L>::authorized(&*data_guard, credentials).await
-            } {
-                ctx.extend(ext);
-                self.inner.serve(ctx, req).await
-            } else {
-                Ok(Response::builder()
-                    .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                    .header(PROXY_AUTHENTICATE, C::SCHEME)
-                    .body(Default::default())
-                    .unwrap())
+            .or_else(|| ctx.get::<C>().cloned());
+
+        match credentials {
+            Some(creds) => {
+                let auth_result = match &self.proxy_auth.backend {
+                    UserCredStoreBackend::RwLock(store) => {
+                        let data_guard = store.read().await;
+                        Authority::<C, L>::authorized(&*data_guard, creds).await
+                    }
+                    UserCredStoreBackend::ArcSwap(store) => {
+                        let data_guard = store.load();
+                        Authority::<C, L>::authorized(&*data_guard, creds).await
+                    }
+                    UserCredStoreBackend::ArcShift(store) => {
+                        let data_guard = store.shared_non_reloading_get();
+                        Authority::<C, L>::authorized(data_guard, creds).await
+                    }
+                };
+
+                match auth_result {
+                    Some(ext) => {
+                        ctx.extend(ext);
+                        self.inner.serve(ctx, req).await
+                    }
+                    None => Ok(create_auth_required_response(C::SCHEME)),
+                }
             }
-        } else if self.allow_anonymous {
-            ctx.insert(UserId::Anonymous);
-            self.inner.serve(ctx, req).await
-        } else {
-            Ok(Response::builder()
-                .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                .header(PROXY_AUTHENTICATE, C::SCHEME)
-                .body(Default::default())
-                .unwrap())
+            None => {
+                if self.allow_anonymous {
+                    ctx.insert(UserId::Anonymous);
+                    self.inner.serve(ctx, req).await
+                } else {
+                    Ok(create_auth_required_response(C::SCHEME))
+                }
+            }
         }
     }
 }

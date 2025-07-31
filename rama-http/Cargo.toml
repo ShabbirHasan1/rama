@@ -25,6 +25,7 @@ tls = ["rama-net/tls"]
 
 [dependencies]
 arc-swap = { workspace = true }
+arcshift = { version = "0.4", features = ["nightly"] }
 async-compression = { workspace = true, features = [
     "tokio",
     "brotli",

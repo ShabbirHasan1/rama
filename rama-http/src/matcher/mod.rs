@@ -17,7 +17,10 @@ pub use method::MethodMatcher;
 
 mod domain;
 #[doc(inline)]
-pub use domain::{DomainMatcher, DomainsMatcher};
+pub use domain::{
+    DomainMatcher, DomainStore, DomainsMatcher, UserDomainStore, WHITELISTED_DOMAINS,
+    WILDCARD_DOMAIN,
+};
 
 pub mod uri;
 pub use uri::UriMatcher;
