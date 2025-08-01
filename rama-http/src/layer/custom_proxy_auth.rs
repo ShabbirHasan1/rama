@@ -6,6 +6,7 @@ use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
+use rama_core::context::Extensions;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
 use rama_http_headers::authorization::{AuthoritySync, UserCredStore, UserCredStoreBackend};
@@ -223,8 +224,15 @@ where
                         Authority::<C, L>::authorized(&*data_guard, creds).await
                     }
                     UserCredStoreBackend::ArcShift(store) => {
-                        let data_guard = store.shared_non_reloading_get();
-                        Authority::<C, L>::authorized(data_guard, creds).await
+                        let data_guard = store.shared_get();
+                        let mut ext = Extensions::new();
+                        if data_guard.iter().any(|user_cred_info| {
+                            AuthoritySync::<C, L>::authorized(user_cred_info, &mut ext, &creds)
+                        }) {
+                            Some(ext)
+                        } else {
+                            None
+                        }
                     }
                 };
 
