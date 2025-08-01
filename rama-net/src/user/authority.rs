@@ -254,7 +254,7 @@ impl<const N: usize, A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> f
 
 impl<F, Fut, E, C> Authorizer<C> for F
 where
-    F: FnOnce(C) -> Fut + Clone + Send + Sync + 'static,
+    F: Fn(C) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = AuthorizeResult<C, E>> + Send + 'static,
     E: Send + 'static,
     C: Send + 'static,
@@ -265,6 +265,6 @@ where
         &self,
         credentials: C,
     ) -> impl Future<Output = AuthorizeResult<C, Self::Error>> + Send + '_ {
-        self.clone()(credentials)
+        (self)(credentials)
     }
 }
