@@ -51,7 +51,7 @@ impl DomainStore for Arc<ArcSwapAny<Arc<Vec<Domain>>>> {
 
 impl DomainStore for ArcShift<Vec<Domain>> {
     fn check_domain(&self, domain: &Domain, sub: bool) -> bool {
-        let guard = self.shared_non_reloading_get();
+        let guard = self.shared_get();
         if sub {
             guard.iter().any(|d| d.is_parent_of(domain))
         } else {
@@ -93,7 +93,7 @@ impl UserDomainStore for Arc<ArcSwapAny<Arc<FxHashMap<Domain, Vec<String>>>>> {
 
 impl UserDomainStore for ArcShift<FxHashMap<Domain, Vec<String>>> {
     fn check_user_domain(&self, domain: &Domain, api_key: &str, sub: bool) -> bool {
-        let guard = self.shared_non_reloading_get();
+        let guard = self.shared_get();
 
         if let Some(users) = guard.get(&WILDCARD_DOMAIN)
             && users
