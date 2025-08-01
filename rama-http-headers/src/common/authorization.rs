@@ -403,6 +403,34 @@ impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredInf
             },
         }
     }
+
+    fn authorize_sync(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        let mut ext = Extensions::new();
+        let result = credentials.eq(&self.credential);
+        let AuthorizeResult {
+            credentials: c,
+            result,
+        } = result.authorize_sync(credentials);
+        match result {
+            Ok(maybe_ext) => {
+                ext.insert(self.clone());
+                if maybe_ext.is_none() {
+                    return AuthorizeResult {
+                        credentials: c,
+                        result: Ok(Some(ext)),
+                    };
+                }
+                AuthorizeResult {
+                    credentials: c,
+                    result: Ok(maybe_ext),
+                }
+            }
+            Err(err) => AuthorizeResult {
+                credentials: c,
+                result: Err(err),
+            },
+        }
+    }
 }
 
 impl<C, L, T> AuthoritySync<C, L> for UserCredInfo<T>
@@ -477,21 +505,6 @@ impl<A> UserCredStore<A> {
     pub fn new_arc_shift(users: Vec<UserCredInfo<A>>) -> Self {
         Self {
             backend: UserCredStoreBackend::ArcShift(ArcShift::new(users)),
-        }
-    }
-
-    #[must_use]
-    pub fn from_backend(backend: UserCredStoreBackend<A>) -> Self {
-        match backend {
-            UserCredStoreBackend::ArcSwap(swap) => Self {
-                backend: UserCredStoreBackend::ArcSwap(swap),
-            },
-            UserCredStoreBackend::ArcShift(shift) => Self {
-                backend: UserCredStoreBackend::ArcShift(shift),
-            },
-            UserCredStoreBackend::RwLock(lock) => Self {
-                backend: UserCredStoreBackend::RwLock(lock),
-            },
         }
     }
 
@@ -607,7 +620,7 @@ impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredSto
                     let AuthorizeResult {
                         credentials: c,
                         result,
-                    } = authorizer.authorize(credentials).await;
+                    } = authorizer.authorize_sync(credentials);
                     match result {
                         Ok(maybe_ext) => {
                             return AuthorizeResult {
@@ -628,7 +641,7 @@ impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredSto
                     let AuthorizeResult {
                         credentials: c,
                         result,
-                    } = authorizer.authorize(credentials).await;
+                    } = authorizer.authorize_sync(credentials);
                     match result {
                         Ok(maybe_ext) => {
                             return AuthorizeResult {
@@ -644,12 +657,12 @@ impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredSto
                 }
             }
             UserCredStoreBackend::ArcShift(shift) => {
-                let guard = shift.shared_non_reloading_get();
+                let guard = shift.shared_get();
                 for authorizer in guard.iter() {
                     let AuthorizeResult {
                         credentials: c,
                         result,
-                    } = authorizer.authorize(credentials).await;
+                    } = authorizer.authorize_sync(credentials);
                     match result {
                         Ok(maybe_ext) => {
                             return AuthorizeResult {
