@@ -37,6 +37,7 @@ impl<B> OnResponse<B> for () {
 impl<B, F> OnResponse<B> for F
 where
     F: Fn(&Response<B>, Duration, &Span) + Send + Sync + 'static,
+    F: Fn(&mut Response<B>, Duration, &Span) + Send + Sync + 'static,
 {
     fn on_response(self, response: &Response<B>, latency: Duration, span: &Span) {
         self(response, latency, span)
