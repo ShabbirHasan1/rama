@@ -143,7 +143,7 @@ where
         name: N,
         backlog: Option<i32>,
     ) -> Result<TcpListener<S>, BoxError> {
-        tokio::task::spawn_blocking(|| {
+        tokio::task::spawn_blocking(move || {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
             let socket = SocketOptions {
                 device: Some(name),
@@ -171,7 +171,7 @@ where
         name: N,
         backlog: Option<i32>,
     ) -> Result<TcpListener<S>, BoxError> {
-        tokio::task::spawn_blocking(|| {
+        tokio::task::spawn_blocking(move || {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
             let socket = SocketOptions {
                 device: Some(name),
@@ -201,18 +201,18 @@ where
         addr: M,
         backlog: Option<i32>,
     ) -> Result<TcpListener<S>, BoxError> {
-        tokio::task::spawn_blocking(|| {
+        tokio::task::spawn_blocking(move || {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
             let addr = addr.try_into().map_err(Into::<BoxError>::into)?;
             let socket_options = match addr.ip_addr() {
                 std::net::IpAddr::V4(_ip) => SocketOptions {
                     device: Some(name),
-                    address: Some(bind_addr),
+                    address: Some(addr),
                     ..SocketOptions::default_tcp()
                 },
                 std::net::IpAddr::V6(_ip) => SocketOptions {
                     device: Some(name),
-                    address: Some(bind_addr),
+                    address: Some(addr),
                     ..SocketOptions::default_tcp_v6()
                 },
             };
