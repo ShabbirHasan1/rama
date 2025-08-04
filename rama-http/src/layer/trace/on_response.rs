@@ -23,11 +23,15 @@ pub trait OnResponse<B>: Send + Sync + 'static {
     /// [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record
     /// [`TraceLayer::make_span_with`]: crate::layer::trace::TraceLayer::make_span_with
     fn on_response(self, response: &Response<B>, latency: Duration, span: &Span);
+    fn on_mut_response(self, response: &mut Response<B>, latency: Duration, span: &Span);
 }
 
 impl<B> OnResponse<B> for () {
     #[inline]
     fn on_response(self, _: &Response<B>, _: Duration, _: &Span) {}
+
+    #[inline]
+    fn on_mut_response(self, _: &mut Response<B>, _: Duration, _: &Span) {}
 }
 
 impl<B, F> OnResponse<B> for F
@@ -35,6 +39,10 @@ where
     F: Fn(&Response<B>, Duration, &Span) + Send + Sync + 'static,
 {
     fn on_response(self, response: &Response<B>, latency: Duration, span: &Span) {
+        self(response, latency, span)
+    }
+
+    fn on_mut_response(self, response: &mut Response<B>, latency: Duration, span: &Span) {
         self(response, latency, span)
     }
 }
@@ -140,6 +148,24 @@ impl DefaultOnResponse {
 
 impl<B> OnResponse<B> for DefaultOnResponse {
     fn on_response(self, response: &Response<B>, latency: Duration, _: &Span) {
+        let latency = Latency {
+            unit: self.latency_unit,
+            duration: latency,
+        };
+        let response_headers = self
+            .include_headers
+            .then(|| tracing::field::debug(response.headers()));
+
+        event_dynamic_lvl!(
+            self.level,
+            %latency,
+            status = status(response),
+            response_headers,
+            "finished processing request"
+        );
+    }
+
+    fn on_mut_response(self, response: &mut Response<B>, latency: Duration, _: &Span) {
         let latency = Latency {
             unit: self.latency_unit,
             duration: latency,
