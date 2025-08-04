@@ -194,7 +194,7 @@ where
     /// The returned listener is ready for accepting connections.
     pub async fn bind_device_with_address<
         N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static,
-        M: TryInto<SocketAddress, Error: Into<BoxError>>,
+        M: TryInto<SocketAddress, Error: Into<BoxError>> + Send + 'static,
     >(
         self,
         name: N,
