@@ -124,7 +124,11 @@ where
     pub async fn bind_socket(
         self,
         socket: rama_net::socket::core::Socket,
+        backlog: Option<i32>,
     ) -> Result<TcpListener<S>, BoxError> {
+        socket
+            .listen(backlog.unwrap_or(4096))
+            .context("mark the socket as ready to accept incoming connection requests")?;
         tokio::task::spawn_blocking(|| bind_socket_internal(self.state, socket))
             .await
             .context("await blocking bind socket task")?
@@ -137,6 +141,7 @@ where
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         self,
         name: N,
+        backlog: Option<i32>,
     ) -> Result<TcpListener<S>, BoxError> {
         tokio::task::spawn_blocking(|| {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
@@ -147,7 +152,75 @@ where
             .try_build_socket()
             .context("create tcp ipv4 socket attached to device")?;
             socket
-                .listen(4096)
+                .listen(backlog.unwrap_or(4096))
+                .context("mark the socket as ready to accept incoming connection requests")?;
+            bind_socket_internal(self.state, socket)
+        })
+        .await
+        .context("await blocking bind socket task")?
+    }
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    /// Creates a new TcpListener, which will be bound to the specified (interface) device name).
+    ///
+    /// The returned listener is ready for accepting connections.
+    pub async fn bind_device_with_ipv6<
+        N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static,
+    >(
+        self,
+        name: N,
+        backlog: Option<i32>,
+    ) -> Result<TcpListener<S>, BoxError> {
+        tokio::task::spawn_blocking(|| {
+            let name = name.try_into().map_err(Into::<BoxError>::into)?;
+            let socket = SocketOptions {
+                device: Some(name),
+                ..SocketOptions::default_tcp_v6()
+            }
+            .try_build_socket()
+            .context("create tcp ipv4 socket attached to device")?;
+            socket
+                .listen(backlog.unwrap_or(4096))
+                .context("mark the socket as ready to accept incoming connection requests")?;
+            bind_socket_internal(self.state, socket)
+        })
+        .await
+        .context("await blocking bind socket task")?
+    }
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    /// Creates a new TcpListener, which will be bound to the specified (interface) device name).
+    ///
+    /// The returned listener is ready for accepting connections.
+    pub async fn bind_device_with_address<
+        N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static,
+        M: TryInto<SocketAddress, Error: Into<BoxError>>,
+    >(
+        self,
+        name: N,
+        addr: M,
+        backlog: Option<i32>,
+    ) -> Result<TcpListener<S>, BoxError> {
+        tokio::task::spawn_blocking(|| {
+            let name = name.try_into().map_err(Into::<BoxError>::into)?;
+            let addr = addr.try_into().map_err(Into::<BoxError>::into)?;
+            let socket_options = match addr.ip_addr() {
+                std::net::IpAddr::V4(_ip) => SocketOptions {
+                    device: Some(name),
+                    address: Some(bind_addr),
+                    ..SocketOptions::default_tcp()
+                },
+                std::net::IpAddr::V6(_ip) => SocketOptions {
+                    device: Some(name),
+                    address: Some(bind_addr),
+                    ..SocketOptions::default_tcp_v6()
+                },
+            };
+            let socket = socket_options
+                .try_build_socket()
+                .context("create tcp ipv4 socket attached to device")?;
+            socket
+                .listen(backlog.unwrap_or(4096))
                 .context("mark the socket as ready to accept incoming connection requests")?;
             bind_socket_internal(self.state, socket)
         })
@@ -165,15 +238,12 @@ where
         match interface.try_into().map_err(Into::<BoxError>::into)? {
             Interface::Address(addr) => self.bind_address(addr).await,
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            Interface::Device(name) => self.bind_device(name).await,
+            Interface::Device(name) => self.bind_device(name, None).await,
             Interface::Socket(opts) => {
                 let socket = opts
                     .try_build_socket()
                     .context("build socket from options")?;
-                socket
-                    .listen(4096)
-                    .context("mark the socket as ready to accept incoming connection requests")?;
-                self.bind_socket(socket).await
+                self.bind_socket(socket, None).await
             }
         }
     }
@@ -232,8 +302,13 @@ impl TcpListener<()> {
     /// Creates a new TcpListener, which will be bound to the specified socket.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_socket(socket: rama_net::socket::core::Socket) -> Result<Self, BoxError> {
-        TcpListenerBuilder::default().bind_socket(socket).await
+    pub async fn bind_socket(
+        socket: rama_net::socket::core::Socket,
+        backlog: Option<i32>,
+    ) -> Result<Self, BoxError> {
+        TcpListenerBuilder::default()
+            .bind_socket(socket, backlog)
+            .await
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -242,8 +317,43 @@ impl TcpListener<()> {
     /// The returned listener is ready for accepting connections.
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         name: N,
+        backlog: Option<i32>,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::default().bind_device(name).await
+        TcpListenerBuilder::default()
+            .bind_device(name, backlog)
+            .await
+    }
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    /// Creates a new TcpListener, which will be bound to the specified (interface) device name.
+    ///
+    /// The returned listener is ready for accepting connections.
+    pub async fn bind_device_with_ipv6<
+        N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static,
+    >(
+        name: N,
+        backlog: Option<i32>,
+    ) -> Result<Self, BoxError> {
+        TcpListenerBuilder::default()
+            .bind_device_with_ipv6(name, backlog)
+            .await
+    }
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    /// Creates a new TcpListener, which will be bound to the specified (interface) device name.
+    ///
+    /// The returned listener is ready for accepting connections.
+    pub async fn bind_device_with_address<
+        N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static,
+        M: TryInto<SocketAddress, Error: Into<BoxError>>,
+    >(
+        name: N,
+        addr: M,
+        backlog: Option<i32>,
+    ) -> Result<Self, BoxError> {
+        TcpListenerBuilder::default()
+            .bind_device_with_address(name, backlog)
+            .await
     }
 
     /// Creates a new TcpListener, which will be bound to the specified interface.
