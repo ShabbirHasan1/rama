@@ -344,10 +344,12 @@ where
         let latency = start.elapsed();
 
         match result {
-            Ok(res) => {
+            Ok(mut res) => {
                 let classification = classifier.classify_response(&res);
 
-                self.on_response.clone().on_response(&res, latency, &span);
+                self.on_response
+                    .clone()
+                    .on_response(&mut res, latency, &span);
 
                 match classification {
                     ClassifiedResponse::Ready(classification) => {
