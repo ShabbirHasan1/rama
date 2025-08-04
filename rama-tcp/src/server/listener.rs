@@ -352,7 +352,7 @@ impl TcpListener<()> {
         backlog: Option<i32>,
     ) -> Result<Self, BoxError> {
         TcpListenerBuilder::default()
-            .bind_device_with_address(name, backlog)
+            .bind_device_with_address(name, addr, backlog)
             .await
     }
 
