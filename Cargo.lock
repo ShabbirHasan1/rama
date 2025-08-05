@@ -336,9 +336,9 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
-version = "0.71.1"
+version = "0.72.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+checksum = "4f72209734318d0b619a5e0f5129918b848c416e122a3c4ce054e03cb87b726f"
 dependencies = [
  "bitflags",
  "cexpr",
@@ -2541,9 +2541,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "477c2786c6d332805856da39868fb26c9e9878a95914723aebb8e0c03b0a5e56"
+checksum = "c6c52217ff947d630f3807cde9f8fe4cc69005b17a1e81fc99fa432cb3fb9c78"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -2554,12 +2554,12 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1ef4ffb23eee3766621ba55c60e5299d4de98552509fca9ccf7bd6d57b1e6db"
+checksum = "1c7fd7057828ca9fa148c704f1bf0fff12f6367891212c9c0caad63ae17902a7"
 dependencies = [
  "autocfg",
- "bindgen 0.71.1",
+ "bindgen 0.72.0",
  "cmake",
  "fs_extra",
  "fslock",
@@ -2567,9 +2567,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf9946ee3eecebeb9c2b3c4cf557dbd5a6aa185ef48362a013feb4fb8d962a75"
+checksum = "b07c71d66f9fa0b52b02055b94c779e98fc27d228e67105c6e528cfd1f19a7a4"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -2637,7 +2637,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-test",
- "tokio-util",
  "x509-parser",
 ]
 
@@ -2941,7 +2940,6 @@ dependencies = [
  "rama-core",
  "rama-crypto",
  "rama-http",
- "rama-net",
  "rama-utils",
  "serde",
  "serde_json",
@@ -4009,9 +4007,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.9.4"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41ae868b5a0f67631c14589f7e250c1ea2c574ee5ba21c6c8dd4b1485705a5a1"
+checksum = "75129e1dc5000bfbaa9fee9d1b21f974f9fbad9daec557a521ee6e080825f6e8"
 dependencies = [
  "indexmap",
  "serde",
@@ -4033,9 +4031,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97200572db069e74c512a14117b296ba0a80a30123fbbb5aa1f4a348f639ca30"
+checksum = "b551886f449aa90d4fe2bdaa9f4a2577ad2dde302c61ecf262d80b116db95c10"
 dependencies = [
  "winnow",
 ]
@@ -5049,9 +5047,9 @@ dependencies = [
 
 [[package]]
 name = "zerovec"
-version = "0.11.2"
+version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a05eb080e015ba39cc9e23bbe5e7fb04d5fb040350f99f34e338d5fdd294428"
+checksum = "bdbb9122ea75b11bf96e7492afb723e8a7fbe12c67417aa95e7e3d18144d37cd"
 dependencies = [
  "yoke",
  "zerofrom",
