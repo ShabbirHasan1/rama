@@ -10,6 +10,7 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 pub static WHITELISTED_DOMAINS: [Domain; 5] = [
+    Domain::from_static("staticip.in"),
     Domain::from_static("ipify.org"),
     Domain::from_static("ifconfig.co"),
     Domain::from_static("ifconfig.me"),
