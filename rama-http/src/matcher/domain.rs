@@ -9,7 +9,7 @@ use rama_net::user::UserId;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-pub static WHITELISTED_DOMAINS: [Domain; 5] = [
+pub static WHITELISTED_DOMAINS: [Domain; 6] = [
     Domain::from_static("staticip.in"),
     Domain::from_static("ipify.org"),
     Domain::from_static("ifconfig.co"),
