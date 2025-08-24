@@ -2982,6 +2982,7 @@ dependencies = [
  "rama-net",
  "rama-ua",
  "rama-utils",
+ "schannel",
  "tokio",
  "zstd",
 ]
