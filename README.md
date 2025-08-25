@@ -123,8 +123,8 @@ Rama comes with 🔋 batteries included, giving you the full freedom to build th
 
 > 🗒️ _Footnotes_
 >
-> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/2)
-> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/3)
+> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
+> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/3)
 > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
 
 The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
@@ -634,3 +634,6 @@ Available at <https://ramaproxy.org/book/faq.html>.
 [![Star History Chart](https://api.star-history.com/svg?repos=plabayo/rama&type=Date)](https://star-history.com/#plabayo/rama&Date)
 
 [![original (OG) rama logo](./docs/book/src/img/old_logo.png)](https://ramaproxy.org/)
+
+📚 Want to know why we built Rama?
+Check out [the NetstackFM podcast](https://ramaproxy.org/book/netstackfm.html).
