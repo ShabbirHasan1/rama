@@ -42,12 +42,12 @@ mod subdomain_trie;
 pub use subdomain_trie::SubdomainTrieMatcher;
 
 /// A matcher that is used to match an http [`Request`]
-pub struct HttpMatcher<State, Body> {
-    kind: HttpMatcherKind<State, Body>,
+pub struct HttpMatcher<Body> {
+    kind: HttpMatcherKind<Body>,
     negate: bool,
 }
 
-impl<State, Body> Clone for HttpMatcher<State, Body> {
+impl<Body> Clone for HttpMatcher<Body> {
     fn clone(&self) -> Self {
         Self {
             kind: self.kind.clone(),
@@ -56,7 +56,7 @@ impl<State, Body> Clone for HttpMatcher<State, Body> {
     }
 }
 
-impl<State, Body> fmt::Debug for HttpMatcher<State, Body> {
+impl<Body> fmt::Debug for HttpMatcher<Body> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpMatcher")
             .field("kind", &self.kind)
@@ -66,9 +66,9 @@ impl<State, Body> fmt::Debug for HttpMatcher<State, Body> {
 }
 
 /// A matcher that is used to match an http [`Request`]
-pub enum HttpMatcherKind<State, Body> {
+pub enum HttpMatcherKind<Body> {
     /// zero or more [`HttpMatcher`]s that all need to match in order for the matcher to return `true`.
-    All(Vec<HttpMatcher<State, Body>>),
+    All(Vec<HttpMatcher<Body>>),
     /// [`MethodMatcher`], a matcher that matches one or more HTTP methods.
     Method(MethodMatcher),
     /// [`PathMatcher`], a matcher based on the URI path.
@@ -78,7 +78,7 @@ pub enum HttpMatcherKind<State, Body> {
     /// [`VersionMatcher`], a matcher based on the HTTP version of the request.
     Version(VersionMatcher),
     /// zero or more [`HttpMatcher`]s that at least one needs to match in order for the matcher to return `true`.
-    Any(Vec<HttpMatcher<State, Body>>),
+    Any(Vec<HttpMatcher<Body>>),
     /// [`UriMatcher`], a matcher the request's URI, using a substring or regex pattern.
     Uri(UriMatcher),
     /// [`HeaderMatcher`], a matcher based on the [`Request`]'s headers.
@@ -86,14 +86,14 @@ pub enum HttpMatcherKind<State, Body> {
     /// [`SocketMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
-    Socket(SocketMatcher<State, Request<Body>>),
+    Socket(SocketMatcher<Request<Body>>),
     /// [`SubdomainTrieMatcher`], a matcher based on domain and subdomains using a trie structure.
     SubdomainTrie(SubdomainTrieMatcher),
     /// A custom matcher that implements [`rama_core::matcher::Matcher`].
-    Custom(Arc<dyn rama_core::matcher::Matcher<State, Request<Body>>>),
+    Custom(Arc<dyn rama_core::matcher::Matcher<Request<Body>>>),
 }
 
-impl<State, Body> Clone for HttpMatcherKind<State, Body> {
+impl<Body> Clone for HttpMatcherKind<Body> {
     fn clone(&self) -> Self {
         match self {
             Self::All(inner) => Self::All(inner.clone()),
@@ -111,7 +111,7 @@ impl<State, Body> Clone for HttpMatcherKind<State, Body> {
     }
 }
 
-impl<State, Body> fmt::Debug for HttpMatcherKind<State, Body> {
+impl<Body> fmt::Debug for HttpMatcherKind<Body> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::All(inner) => f.debug_tuple("All").field(inner).finish(),
@@ -129,7 +129,7 @@ impl<State, Body> fmt::Debug for HttpMatcherKind<State, Body> {
     }
 }
 
-impl<State, Body> HttpMatcher<State, Body> {
+impl<Body> HttpMatcher<Body> {
     /// Create a new matcher that matches one or more HTTP methods.
     ///
     /// See [`MethodMatcher`] for more information.
@@ -639,7 +639,7 @@ impl<State, Body> HttpMatcher<State, Body> {
 
     /// Create a [`SocketMatcher`] matcher.
     #[must_use]
-    pub fn socket(socket: SocketMatcher<State, Request<Body>>) -> Self {
+    pub fn socket(socket: SocketMatcher<Request<Body>>) -> Self {
         Self {
             kind: HttpMatcherKind::Socket(socket),
             negate: false,
@@ -650,7 +650,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     ///
     /// See [`SocketMatcher`] for more information.
     #[must_use]
-    pub fn and_socket(self, socket: SocketMatcher<State, Request<Body>>) -> Self {
+    pub fn and_socket(self, socket: SocketMatcher<Request<Body>>) -> Self {
         self.and(Self::socket(socket))
     }
 
@@ -658,7 +658,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     ///
     /// See [`SocketMatcher`] for more information.
     #[must_use]
-    pub fn or_socket(self, socket: SocketMatcher<State, Request<Body>>) -> Self {
+    pub fn or_socket(self, socket: SocketMatcher<Request<Body>>) -> Self {
         self.or(Self::socket(socket))
     }
 
@@ -674,7 +674,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     #[must_use]
     pub fn custom<M>(matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Request<Body>>,
+        M: rama_core::matcher::Matcher<Request<Body>>,
     {
         Self {
             kind: HttpMatcherKind::Custom(Arc::new(matcher)),
@@ -688,7 +688,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     #[must_use]
     pub fn and_custom<M>(self, matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Request<Body>>,
+        M: rama_core::matcher::Matcher<Request<Body>>,
     {
         self.and(Self::custom(matcher))
     }
@@ -699,7 +699,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     #[must_use]
     pub fn or_custom<M>(self, matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Request<Body>>,
+        M: rama_core::matcher::Matcher<Request<Body>>,
     {
         self.or(Self::custom(matcher))
     }
@@ -832,33 +832,21 @@ impl<State, Body> HttpMatcher<State, Body> {
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for HttpMatcher<State, Body>
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for HttpMatcher<Body>
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let matches = self.kind.matches(ext, ctx, req);
         if self.negate { !matches } else { matches }
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for HttpMatcherKind<State, Body>
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for HttpMatcherKind<Body>
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         match self {
             Self::All(all) => all.iter().matches_and(ext, ctx, req),
             Self::Method(method) => method.matches(ext, ctx, req),
@@ -885,11 +873,11 @@ mod test {
 
     struct BooleanMatcher(bool);
 
-    impl Matcher<(), Request<()>> for BooleanMatcher {
+    impl Matcher<Request<()>> for BooleanMatcher {
         fn matches(
             &self,
             _ext: Option<&mut Extensions>,
-            _ctx: &Context<()>,
+            _ctx: &Context,
             _req: &Request<()>,
         ) -> bool {
             self.0

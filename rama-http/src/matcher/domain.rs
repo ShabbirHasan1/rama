@@ -193,13 +193,8 @@ impl DomainMatcher {
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMatcher {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let Some(host) = extract_host(ext, ctx, req) else {
             return false;
         };
