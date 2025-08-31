@@ -510,7 +510,7 @@ mod tests {
                 span.record("foo", 42);
                 ON_REQUEST_COUNT().fetch_add(1, Ordering::AcqRel);
             })
-            .on_response(|_res: &Response, _latency: Duration, _span: &Span| {
+            .on_response(|_res: &mut Response, _latency: Duration, _span: &Span| {
                 ON_RESPONSE_COUNT().fetch_add(1, Ordering::AcqRel);
             })
             .on_body_chunk(|_chunk: &Bytes, _latency: Duration, _span: &Span| {
@@ -568,7 +568,7 @@ mod tests {
             .on_request(|_req: &Request, _span: &Span| {
                 ON_REQUEST_COUNT().fetch_add(1, Ordering::AcqRel);
             })
-            .on_response(|_res: &Response, _latency: Duration, _span: &Span| {
+            .on_response(|_res: &mut Response, _latency: Duration, _span: &Span| {
                 ON_RESPONSE_COUNT().fetch_add(1, Ordering::AcqRel);
             })
             .on_body_chunk(|_chunk: &Bytes, _latency: Duration, _span: &Span| {

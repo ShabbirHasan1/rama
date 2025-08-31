@@ -124,9 +124,9 @@ impl UserDomainStore for ArcShift<FxHashMap<Domain, Vec<String>>> {
 }
 
 /// Common helper functions
-fn extract_host<State, Body>(
+fn extract_host<Body>(
     ext: Option<&mut Extensions>,
-    ctx: &Context<State>,
+    ctx: &Context,
     req: &Request<Body>,
 ) -> Option<Host> {
     if let Some(req_ctx) = ctx.get::<RequestContext>() {
@@ -159,7 +159,7 @@ fn check_static_whitelist(domain: &Domain, sub: bool) -> bool {
     }
 }
 
-fn extract_api_key<State>(ctx: &Context<State>) -> Option<&str> {
+fn extract_api_key(ctx: &Context) -> Option<&str> {
     ctx.extensions()
         .get::<UserId>()
         .and_then(|user_id| match user_id {
@@ -247,16 +247,11 @@ where
     }
 }
 
-impl<State, Body, T> rama_core::matcher::Matcher<State, Request<Body>> for DomainsMatcher<T>
+impl<Body, T> rama_core::matcher::Matcher<Request<Body>> for DomainsMatcher<T>
 where
     T: DomainStore,
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let Some(host) = extract_host(ext, ctx, req) else {
             return false;
         };
@@ -295,15 +290,10 @@ where
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
+impl<Body> rama_core::matcher::Matcher<Request<Body>>
     for DomainsMatcher<Arc<ArcSwapAny<Arc<FxHashMap<Domain, Vec<String>>>>>>
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let Some(api_key) = extract_api_key(ctx) else {
             tracing::error!("Invalid Api Key");
             return true;
@@ -353,15 +343,10 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
+impl<Body> rama_core::matcher::Matcher<Request<Body>>
     for DomainsMatcher<ArcShift<FxHashMap<Domain, Vec<String>>>>
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let Some(api_key) = extract_api_key(ctx) else {
             tracing::error!("Invalid Api Key");
             return true;

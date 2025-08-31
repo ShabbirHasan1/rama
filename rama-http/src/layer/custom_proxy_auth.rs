@@ -186,23 +186,21 @@ fn create_auth_required_response<ResBody: Default>(scheme: &'static str) -> Resp
         .unwrap()
 }
 
-impl<A, C, L, S, State, ReqBody, ResBody> Service<State, Request<ReqBody>>
-    for CustomProxyAuthService<A, C, S, L>
+impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for CustomProxyAuthService<A, C, S, L>
 where
     A: Authority<C, L> + AuthoritySync<C, L> + Clone,
     C: Credentials + Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     L: 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let credentials = req

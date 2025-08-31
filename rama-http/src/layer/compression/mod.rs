@@ -300,7 +300,7 @@ mod tests {
                 B: rama_http_types::dep::http_body::Body,
             {
                 let mut guard = self.0.write().unwrap();
-                let should_compress = *guard % 2 != 0;
+                let should_compress = !(*guard).is_multiple_of(2);
                 *guard += 1;
                 should_compress
             }

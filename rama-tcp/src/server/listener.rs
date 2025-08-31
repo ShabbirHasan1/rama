@@ -129,7 +129,7 @@ impl TcpListenerBuilder {
         self,
         name: N,
         backlog: Option<i32>,
-    ) -> Result<TcpListener<S>, BoxError> {
+    ) -> Result<TcpListener, BoxError> {
         tokio::task::spawn_blocking(move || {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
             let socket = SocketOptions {
@@ -159,7 +159,7 @@ impl TcpListenerBuilder {
         name: N,
         addr: M,
         backlog: Option<i32>,
-    ) -> Result<TcpListener<S>, BoxError> {
+    ) -> Result<TcpListener, BoxError> {
         tokio::task::spawn_blocking(move || {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
             let addr = addr.try_into().map_err(Into::<BoxError>::into)?;
