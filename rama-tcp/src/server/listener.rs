@@ -113,7 +113,7 @@ impl TcpListenerBuilder {
             socket
                 .listen(backlog.unwrap_or(4096))
                 .context("mark the socket as ready to accept incoming connection requests")?;
-            bind_socket_internal(self.state, socket)
+            bind_socket_internal(socket)
         })
         .await
         .context("await blocking bind socket task")?
@@ -141,7 +141,7 @@ impl TcpListenerBuilder {
             socket
                 .listen(backlog.unwrap_or(4096))
                 .context("mark the socket as ready to accept incoming connection requests")?;
-            bind_socket_internal(self.state, socket)
+            bind_socket_internal(socket)
         })
         .await
         .context("await blocking bind socket task")?
