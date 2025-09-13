@@ -36,6 +36,7 @@ use std::{
 };
 use tokio::time::sleep;
 
+#[derive(Debug)]
 /// Acme client that will used for all acme operations
 pub struct AcmeClient {
     https_client: BoxService<Request, Response, OpaqueError>,
@@ -127,6 +128,18 @@ impl AcmeClient {
                 .await
                 .context("create account request")?;
 
+            if !response.status().is_success() {
+                return Err(OpaqueError::from_display(format!(
+                    "unexpected http response with status {}: {}",
+                    response.status(),
+                    response
+                        .try_into_string()
+                        .await
+                        .unwrap_or_else(|err| format!("body collect err post-error: {err}"))
+                ))
+                .into());
+            }
+
             let location: String = response
                 .header_str(Location::name())
                 .context("get location header")?
@@ -199,7 +212,7 @@ impl AcmeProvider {
     #[must_use]
     pub fn as_directory_url(&self) -> &str {
         match self {
-            Self::LetsEncryptProduction => "https://acme-v01.api.letsencrypt.org/directory",
+            Self::LetsEncryptProduction => "https://acme-v02.api.letsencrypt.org/directory",
             Self::LetsEncryptStaging => "https://acme-staging-v02.api.letsencrypt.org/directory",
             Self::ZeroSslProduction => "https://acme.zerossl.com/v2/DV90",
             Self::GoogleTrustServicesProduction => "https://dv.acme-v02.api.pki.goog/directory",
@@ -260,7 +273,13 @@ impl<'a> Account<'a> {
     pub async fn orders(&self, ctx: Context) -> Result<server::OrdersList, ClientError> {
         let do_request = async || {
             let ctx = ctx.clone();
-            let response = self.post(ctx, &self.inner.orders, NO_PAYLOAD).await?;
+            let response = self
+                .post(
+                    ctx,
+                    self.inner.orders.as_deref().unwrap_or_default(),
+                    NO_PAYLOAD,
+                )
+                .await?;
 
             let orders = parse_response::<server::OrdersList>(response).await?;
             Ok(orders)
@@ -409,6 +428,12 @@ impl<'a> Order<'a> {
     /// This does two things behind the scene
     /// 1. Notify acme server that challenge is ready and should be verified by the server ([`Self::notify_challenge_ready`])
     /// 2. Polls the acme server until the server has verified this challenge and has updated its internal status ([`Self::wait_until_challenge_finished`])
+    ///
+    /// Note that this (1) has the pre-condition that your challenge is indeed ready:
+    /// - for http/tls this means your server is ready to serve the challenge to incoming  clients
+    /// - for dns this means your record exists and has the correct value
+    ///
+    /// An error (underlying http 403) is returned in case the challenge is not ready.
     pub async fn finish_challenge(
         &self,
         ctx: Context,
