@@ -8,6 +8,7 @@ use rama_core::bytes::Bytes;
 use rama_core::futures::TryStream;
 use rama_core::futures::stream::Stream;
 use rama_error::{BoxError, OpaqueError};
+use serde::de::DeserializeOwned;
 use sse::{EventDataRead, EventStream};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -33,6 +34,8 @@ pub mod sse;
 
 mod infinite;
 pub use infinite::InfiniteReader;
+
+pub mod json;
 
 // Implementations copied over from http-body but addapted to work with our Requests/Response types
 
@@ -164,6 +167,29 @@ impl Body {
     #[must_use]
     pub fn into_event_stream<T: EventDataRead>(self) -> EventStream<BodyDataStream, T> {
         EventStream::new(self.into_data_stream())
+    }
+
+    /// Convert the body into a [`JsonStream`].
+    ///
+    /// Stream of json objects, each object separated by a newline (`\n`).
+    #[must_use]
+    pub fn into_json_stream<T: DeserializeOwned>(
+        self,
+    ) -> self::json::JsonStream<T, BodyDataStream> {
+        let stream = self.into_data_stream();
+        self::json::JsonStream::new(stream)
+    }
+
+    /// Convert the body into a [`JsonStream`].
+    ///
+    /// Stream of json objects, each object separated by a newline (`\n`).
+    #[must_use]
+    pub fn into_json_stream_with_config<T: DeserializeOwned>(
+        self,
+        cfg: self::json::ParseConfig,
+    ) -> self::json::JsonStream<T, BodyDataStream> {
+        let stream = self.into_data_stream();
+        self::json::JsonStream::new_with_config(stream, cfg)
     }
 
     /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.
