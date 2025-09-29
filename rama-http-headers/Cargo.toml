@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 arc-swap = { workspace = true }
 arcshift = { workspace = true, features = ["nightly"] }
 base64 = { workspace = true }
+chrono = { workspace = true }
 httpdate = { workspace = true }
 mime = { workspace = true }
 rama-core = { workspace = true }
@@ -37,6 +38,7 @@ tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
+tracing-test = { workspace = true }
 
 [lints]
 workspace = true
