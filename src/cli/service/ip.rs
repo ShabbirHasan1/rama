@@ -9,17 +9,18 @@ use crate::{
     error::{BoxError, OpaqueError},
     http::{
         Request, Response, StatusCode,
+        dep::mime,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        headers::{Accept, HeaderMapExt},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
         server::HttpServer,
-        service::web::response::IntoResponse,
+        service::web::response::{Html, IntoResponse, Json},
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
-    net::http::server::HttpPeekRouter,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
@@ -27,38 +28,34 @@ use crate::{
     telemetry::tracing,
 };
 
-use std::{convert::Infallible, marker::PhantomData, time::Duration};
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+
+#[cfg(feature = "boring")]
+use crate::{
+    net::tls::server::ServerConfig,
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+};
+
+#[cfg(feature = "boring")]
+type TlsConfig = ServerConfig;
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+type TlsConfig = TlsAcceptorData;
+
+use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own ip [`Service`],
 /// echo'ing back the client IP over http or tcp.
 pub struct IpServiceBuilder<M> {
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    tls_server_config: Option<TlsConfig>,
     concurrent_limit: usize,
     timeout: Duration,
-    peek_timeout: Duration,
     forward: Option<ForwardKind>,
     _mode: PhantomData<fn(M)>,
-}
-
-impl Default for IpServiceBuilder<mode::Auto> {
-    fn default() -> Self {
-        Self {
-            concurrent_limit: 0,
-            timeout: Duration::ZERO,
-            peek_timeout: Duration::ZERO,
-            forward: None,
-            _mode: PhantomData,
-        }
-    }
-}
-
-impl IpServiceBuilder<mode::Auto> {
-    /// Create a new [`IpServiceBuilder`], echoing the IP back over HTTP.
-    #[must_use]
-    pub fn auto() -> Self {
-        Self::default()
-    }
 }
 
 impl IpServiceBuilder<mode::Http> {
@@ -66,9 +63,10 @@ impl IpServiceBuilder<mode::Http> {
     #[must_use]
     pub fn http() -> Self {
         Self {
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            tls_server_config: None,
             concurrent_limit: 0,
             timeout: Duration::ZERO,
-            peek_timeout: Duration::ZERO,
             forward: None,
             _mode: PhantomData,
         }
@@ -80,9 +78,10 @@ impl IpServiceBuilder<mode::Transport> {
     #[must_use]
     pub fn tcp() -> Self {
         Self {
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            tls_server_config: None,
             concurrent_limit: 0,
             timeout: Duration::ZERO,
-            peek_timeout: Duration::ZERO,
             forward: None,
             _mode: PhantomData,
         }
@@ -90,7 +89,7 @@ impl IpServiceBuilder<mode::Transport> {
 }
 
 impl<M> IpServiceBuilder<M> {
-    rama_utils::macros::generate_set_and_with! {
+    crate::utils::macros::generate_set_and_with! {
         /// set the number of concurrent connections to allow
         #[must_use]
         pub fn concurrent(mut self, limit: usize) -> Self {
@@ -99,7 +98,7 @@ impl<M> IpServiceBuilder<M> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    crate::utils::macros::generate_set_and_with! {
         /// set the timeout in seconds for each connection
         #[must_use]
         pub fn timeout(mut self, timeout: Duration) -> Self {
@@ -108,7 +107,7 @@ impl<M> IpServiceBuilder<M> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    crate::utils::macros::generate_set_and_with! {
         /// maybe enable support for one of the following "forward" headers or protocols
         ///
         /// Supported headers:
@@ -126,47 +125,112 @@ impl<M> IpServiceBuilder<M> {
             self
         }
     }
+
+    crate::utils::macros::generate_set_and_with! {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// define a tls server cert config to be used for tls terminaton
+        /// by the IP service.
+        pub fn tls_server_config(mut self, cfg: Option<TlsConfig>) -> Self {
+            self.tls_server_config = cfg;
+            self
+        }
+    }
 }
 
 impl IpServiceBuilder<mode::Http> {
+    #[allow(unused_mut)]
     #[inline]
-    /// build a tcp service ready to echo http traffic back
+    /// build a tcp service ready to echo the client IP back
     pub fn build(
-        self,
+        mut self,
         executor: Executor,
     ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
+        #[cfg(all(feature = "rustls", not(feature = "boring")))]
+        let tls_cfg = self.tls_server_config.take();
+
+        #[cfg(feature = "boring")]
+        let tls_cfg: Option<TlsAcceptorData> = match self.tls_server_config.take() {
+            Some(cfg) => Some(cfg.try_into()?),
+            None => None,
+        };
+
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        {
+            let maybe_tls_acceptor_layer = tls_cfg.map(TlsAcceptorLayer::new);
+            self.build_http(executor, maybe_tls_acceptor_layer)
+        }
+
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
         self.build_http(executor)
     }
 }
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-/// The inner http echo-service used by the [`IpServiceBuilder`].
-struct HttpEchoService;
+/// The inner http ip-service used by the [`IpServiceBuilder`].
+struct HttpIpService;
 
-impl Service<Request> for HttpEchoService {
+impl Service<Request> for HttpIpService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, _req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let peer_ip = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
             .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
 
         Ok(match peer_ip {
-            Some(ip) => ip.to_string().into_response(),
+            Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
+                HttpBodyContentFormat::Txt => ip.to_string().into_response(),
+                HttpBodyContentFormat::Html => format_html_page(ip).into_response(),
+                HttpBodyContentFormat::Json => Json(serde_json::json!({
+                    "ip": ip,
+                }))
+                .into_response(),
+            },
             None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum HttpBodyContentFormat {
+    #[default]
+    Txt,
+    Html,
+    Json,
+}
+
+impl HttpBodyContentFormat {
+    fn derive_from_req(req: &Request) -> Self {
+        let Some(accept) = req.headers().typed_get::<Accept>() else {
+            return Self::default();
+        };
+        accept
+            .iter()
+            .find_map(|qv| {
+                let r#type = qv.value.subtype();
+                if r#type == mime::JSON {
+                    Some(Self::Json)
+                } else if r#type == mime::HTML {
+                    Some(Self::Html)
+                } else if r#type == mime::TEXT {
+                    Some(Self::Txt)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
     }
 }
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 /// The inner tcp echo-service used by the [`IpServiceBuilder`].
-struct TcpEchoService;
+struct TcpIpService;
 
-impl<Input> Service<Input> for TcpEchoService
+impl<Input> Service<Input> for TcpIpService
 where
     Input: Stream + Unpin,
 {
@@ -204,11 +268,28 @@ where
 }
 
 impl IpServiceBuilder<mode::Transport> {
+    #[allow(unused_mut)]
     #[inline]
-    /// build a tcp service ready to echo http traffic back
+    /// build a tcp service ready to echo client IP back
     pub fn build(
-        self,
+        mut self,
     ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
+        #[cfg(all(feature = "rustls", not(feature = "boring")))]
+        let tls_cfg = self.tls_server_config.take();
+
+        #[cfg(feature = "boring")]
+        let tls_cfg: Option<TlsAcceptorData> = match self.tls_server_config.take() {
+            Some(cfg) => Some(cfg.try_into()?),
+            None => None,
+        };
+
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        {
+            let maybe_tls_acceptor_layer = tls_cfg.map(TlsAcceptorLayer::new);
+            self.build_tcp(maybe_tls_acceptor_layer)
+        }
+
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
         self.build_tcp()
     }
 }
@@ -216,6 +297,9 @@ impl IpServiceBuilder<mode::Transport> {
 impl<M> IpServiceBuilder<M> {
     fn build_tcp<S: Stream + Unpin + Send + Sync + 'static>(
         self,
+        #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
+            TlsAcceptorLayer,
+        >,
     ) -> Result<impl Service<S, Response = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             None => None,
@@ -234,14 +318,19 @@ impl<M> IpServiceBuilder<M> {
                 .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
             (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
             tcp_forwarded_layer,
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            maybe_tls_accept_layer,
         );
 
-        Ok(tcp_service_builder.into_layer(TcpEchoService))
+        Ok(tcp_service_builder.into_layer(TcpIpService))
     }
 
     fn build_http<S: Stream + Unpin + Send + Sync + 'static>(
         self,
         executor: Executor,
+        #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
+            TlsAcceptorLayer,
+        >,
     ) -> Result<impl Service<S, Response = (), Error = Infallible>, BoxError> {
         let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
             None => (None, None),
@@ -283,6 +372,8 @@ impl<M> IpServiceBuilder<M> {
             tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
             BodyLimitLayer::request_only(1024 * 1024),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            maybe_tls_accept_layer,
         );
 
         let http_service = (
@@ -292,38 +383,9 @@ impl<M> IpServiceBuilder<M> {
             ConsumeErrLayer::default(),
             http_forwarded_layer,
         )
-            .into_layer(HttpEchoService);
-
-        // TODO: enable TLS once we make use of our remote ACME provider
-        // TlsPeekRouter::new(TlsAcceptorLayer::new(TlsAcceptorDataBuilder::new(cert_chain, key_der)))
+            .into_layer(HttpIpService);
 
         Ok(tcp_service_builder.into_layer(HttpServer::auto(executor).service(http_service)))
-    }
-}
-
-impl IpServiceBuilder<mode::Auto> {
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the peek window to timeout on (to wait for http traffic)
-        pub fn peek_timeout(mut self, peek_timeout: Duration) -> Self {
-            self.peek_timeout = peek_timeout;
-            self
-        }
-    }
-
-    /// build a tcp service ready to echo http traffic back
-    pub fn build(
-        self,
-        executor: Executor,
-    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
-        let svc_http = self.clone().build_http(executor)?;
-        let peek_timeout = self.peek_timeout;
-        let svc_tcp = self.build_tcp()?;
-
-        Ok(ConsumeErrLayer::trace(tracing::Level::DEBUG).into_layer(
-            HttpPeekRouter::new(svc_http)
-                .with_fallback(svc_tcp)
-                .maybe_with_peek_timeout((!peek_timeout.is_zero()).then_some(peek_timeout)),
-        ))
     }
 }
 
@@ -339,10 +401,10 @@ pub mod mode {
     #[non_exhaustive]
     /// Alternative mode of the Ip service, echo'ng the ip info over tcp
     pub struct Transport;
+}
 
-    #[derive(Debug, Clone)]
-    #[non_exhaustive]
-    /// Default mode of the Ip service, echo'ng the IP over
-    /// http if that was detected, otherwise over tcp directly.
-    pub struct Auto;
+fn format_html_page(ip: IpAddr) -> Html<String> {
+    Html(format!(
+        r##"<!doctype html> <html lang="en"> <head> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width,initial-scale=1" /> <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🦙</text></svg>" /> <title>Rama IP</title> <style> *, *::before, *::after {{ box-sizing: border-box; }} :root{{ --bg:#000; --panel:#0f0f0f; --green:#45d23a; --muted:#bfbfbf; }} html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}} body{{ background:var(--bg); color:var(--muted); display:flex; align-items:center; justify-content:center; padding:2.8rem; }} .card{{ text-align:center; }} .logo{{ display:flex; align-items:center; justify-content:center; gap:0.8rem; margin-bottom:1.1rem; }} .logo, .logo a, .logo a:hover {{ color:var(--green); font-weight:700; font-size:2rem; letter-spacing:0.4rem; }} .logo a {{ text-decoration: none; }} .logo a:hover {{ text-decoration: underline; }} .subtitle{{ font-size:1.1rem; margin:0.3rem 0 2rem 0; color:var(--muted); }} .panel{{ background:linear-gradient(180deg,#0b0b0b 0%, #111 100%); border-radius:0.8rem; padding:2rem; box-shadow:0 0.3rem 2rem rgba(0,0,0,0.7), inset 0 0.05rem 0 rgba(255,255,255,0.02); border:0.1rem solid rgba(69,210,58,0.06); }} .ip{{ background:transparent; border-radius:0.6rem; padding:1rem 1.1rem; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:1.1rem; color:#fff139; margin:0.6rem auto 1.1rem auto; word-break:break-all; border:0.05rem solid rgba(69,210,58,0.12); }} .muted{{ color:var(--muted); font-size:1rem; margin-bottom:0.9rem; }} .controls{{display:flex;gap:0.8rem;justify-content:center;flex-wrap:wrap;}} button{{ background:transparent; color:var(--green); padding:0.8rem 1.1rem; border-radius:0.6rem; font-weight:700; border:0.1rem solid rgba(69,210,58,0.9); cursor:pointer; }} button.primary{{ background:var(--green); color:#032; box-shadow:0 0.4rem 1.2rem rgba(69,210,58,0.08); }} .note{{font-size:0.95rem;color:#9aa; margin-top:1rem;}} .small{{font-size:0.9rem;color:#808080;margin-top:0.7rem}} </style> </head> <body> <div class="card"> <div class="logo"> <div>🦙</div> <div><a href="https://ramaproxy.org">ラマ</a></div> </div> <div class="panel" role="region" aria-label="ip panel"> <div class="muted">Your public ip</div><div id="ip" class="ip"> <code>{ip}</code> </div> <div class="controls"> <button id="copyBtn" class="primary" title="Copy ip to clipboard">📋 Copy IP</button></div> </div> <script> (async function(){{ const ipEl = document.getElementById('ip'); const copyBtn = document.getElementById('copyBtn'); copyBtn.addEventListener('click', async ()=>{{ const txt = ipEl.textContent.trim(); try{{ await navigator.clipboard.writeText(txt); copyBtn.textContent = 'Copied'; setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }}catch(e){{ const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try{{ document.execCommand('copy'); copyBtn.textContent = 'Copied'; }} catch(e){{ alert('Copy failed. Select and copy manually.'); }} ta.remove(); setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }} }}); }})(); </script> </body> </html>"##,
+    ))
 }
