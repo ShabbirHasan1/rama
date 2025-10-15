@@ -58,7 +58,6 @@ rama-utils = { workspace = true }
 rand = { workspace = true }
 rawzip = { workspace = true, optional = true }
 regex = { workspace = true }
-rustc-hash = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
