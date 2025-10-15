@@ -2646,7 +2646,7 @@ dependencies = [
  "rand 0.9.2",
  "rawzip",
  "regex",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "serde",
  "serde_html_form",
  "serde_json",
