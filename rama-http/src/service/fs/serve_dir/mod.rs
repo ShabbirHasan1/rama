@@ -1,11 +1,13 @@
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
-use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, StreamingBody, header};
+use crate::mime::Mime;
+use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
 use percent_encoding::percent_decode;
+use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Service};
 use rama_utils::include_dir::Dir;
 use std::fmt;
 use std::str::FromStr;
@@ -88,7 +90,7 @@ impl ServeDir<DefaultServeDirFallback> {
     }
 
     /// Create a new [`ServeDir`] configured to serve a single file.
-    pub(crate) fn new_single_file<P>(path: P, mime: HeaderValue) -> Self
+    pub(crate) fn new_single_file<P>(path: P, mime: Mime) -> Self
     where
         P: AsRef<Path>,
     {
@@ -338,7 +340,6 @@ impl<F> ServeDir<F> {
     /// service that wraps a `ServeDir` and calls `try_call` instead of `call`.
     pub async fn try_call<ReqBody, FResBody>(
         &self,
-        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Response, std::io::Error>
     where
@@ -348,7 +349,7 @@ impl<F> ServeDir<F> {
         if req.method() != Method::GET && req.method() != Method::HEAD {
             if self.call_fallback_on_method_not_allowed {
                 if let Some(fallback) = self.fallback.as_ref() {
-                    return future::serve_fallback(fallback, ctx, req).await;
+                    return future::serve_fallback(fallback, req).await;
                 }
             } else {
                 return Ok(future::method_not_allowed());
@@ -371,15 +372,15 @@ impl<F> ServeDir<F> {
             *fallback_req.headers_mut() = req.headers().clone();
             *fallback_req.extensions_mut() = extensions;
 
-            (fallback, ctx, fallback_req)
+            (fallback, fallback_req)
         });
 
         let Some(path_to_file) = self
             .variant
             .build_and_validate_path(&self.base, req.uri().path())
         else {
-            return if let Some((fallback, ctx, request)) = fallback_and_request {
-                future::serve_fallback(fallback, ctx, request).await
+            return if let Some((fallback, request)) = fallback_and_request {
+                future::serve_fallback(fallback, request).await
             } else {
                 Ok(future::not_found())
             };
@@ -423,12 +424,8 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let result = self.try_call(ctx, req).await;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let result = self.try_call(req).await;
         Ok(result.unwrap_or_else(|err| {
             tracing::error!("Failed to read file: {err:?}");
 
@@ -499,7 +496,7 @@ impl TryFrom<&str> for DirectoryServeMode {
 #[derive(Clone, Debug)]
 enum ServeVariant {
     Directory { serve_mode: DirectoryServeMode },
-    SingleFile { mime: HeaderValue },
+    SingleFile { mime: Mime },
 }
 
 impl ServeVariant {
@@ -558,11 +555,7 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        _ctx: Context,
-        _req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         match self.0 {}
     }
 }

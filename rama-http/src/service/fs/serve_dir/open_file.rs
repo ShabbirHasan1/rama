@@ -8,6 +8,7 @@ use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
+use rama_http_types::mime::Mime;
 use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
 use std::io::Cursor;
 use std::{
@@ -39,7 +40,7 @@ impl OpenFileOutput {
     pub(super) fn new_file_opened(
         extent: FileRequestExtent,
         chunk_size: usize,
-        mime: HeaderValue,
+        mime: Mime,
         maybe_encoding: Option<Encoding>,
         maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
         last_modified: Option<LastModified>,
@@ -47,7 +48,7 @@ impl OpenFileOutput {
         Self::FileOpened(Box::new(FileOpened {
             extent,
             chunk_size,
-            mime_header_value: mime,
+            mime_value: mime,
             maybe_encoding,
             maybe_range,
             last_modified,
@@ -59,7 +60,7 @@ impl OpenFileOutput {
 pub(super) struct FileOpened {
     pub(super) extent: FileRequestExtent,
     pub(super) chunk_size: usize,
-    pub(super) mime_header_value: HeaderValue,
+    pub(super) mime_value: Mime,
     pub(super) maybe_encoding: Option<Encoding>,
     pub(super) maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
     pub(super) last_modified: Option<LastModified>,
@@ -270,11 +271,10 @@ fn is_invalid_filename_error(err: &io::Error) -> bool {
 
 // Common MIME type guessing logic
 /// Guess the MIME type from a file path extension.
-fn guess_mime_type(path: &Path) -> HeaderValue {
-    mime_guess::from_path(path)
-        .first_raw()
-        .map(HeaderValue::from_static)
-        .unwrap_or_else(|| HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap())
+fn guess_mime_type(path: &Path) -> Mime {
+    crate::mime::guess::from_path(path)
+        .first()
+        .unwrap_or(crate::mime::APPLICATION_OCTET_STREAM)
 }
 
 /// Check conditional request headers (If-Modified-Since, If-Unmodified-Since)
@@ -570,7 +570,7 @@ fn format_size(bytes: u64) -> HumanSize {
 }
 
 /// Get an appropriate emoji icon for a file based on its MIME type.
-fn emoji_for_mime(mime: Option<&mime::Mime>, is_dir: bool) -> &'static str {
+fn emoji_for_mime(mime: Option<&crate::mime::Mime>, is_dir: bool) -> &'static str {
     if is_dir {
         return "📁";
     }
@@ -680,7 +680,7 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
         let mime = if entry.is_dir {
             None
         } else {
-            mime_guess::from_path(entry.name.as_str()).first()
+            crate::mime::guess::from_path(entry.name.as_str()).first()
         };
         let emoji = emoji_for_mime(mime.as_ref(), entry.is_dir);
 
@@ -763,7 +763,7 @@ mod test {
     use std::str::FromStr;
 
     use super::*;
-    use mime::Mime;
+    use crate::mime::Mime;
 
     #[test]
     fn test_emoji_for_mime() {

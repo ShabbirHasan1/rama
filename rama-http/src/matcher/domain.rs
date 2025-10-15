@@ -1,9 +1,9 @@
 use crate::Request;
 use arc_swap::ArcSwapAny;
 use arcshift::ArcShift;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
-use rama_core::{Context, context::Extensions};
-use rama_net::address::{Domain, Host};
+use rama_net::address::{Domain, Host, IntoDomain};
 use rama_net::http::RequestContext;
 use rama_net::user::UserId;
 use rustc_hash::FxHashMap;
@@ -126,13 +126,13 @@ impl UserDomainStore for ArcShift<FxHashMap<Domain, Vec<String>>> {
 /// Common helper functions
 fn extract_host<Body>(
     ext: Option<&mut Extensions>,
-    ctx: &Context,
     req: &Request<Body>,
 ) -> Option<Host> {
-    if let Some(req_ctx) = ctx.get::<RequestContext>() {
+    if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
         Some(req_ctx.authority.host().clone())
     } else {
-        let req_ctx: RequestContext = match (ctx, req).try_into() {
+        // let req_ctx = match RequestContext::try_from(req) {
+        let req_ctx = match RequestContext::try_from(req) {
             Ok(req_ctx) => req_ctx,
             Err(err) => {
                 tracing::error!(error = %err, "DomainMatcher: failed to lazy-make the request ctx");
@@ -159,8 +159,8 @@ fn check_static_whitelist(domain: &Domain, sub: bool) -> bool {
     }
 }
 
-fn extract_api_key(ctx: &Context) -> Option<&str> {
-    ctx.extensions()
+fn extract_api_key(req: &Request<Body>) -> Option<&str> {
+    req.extensions()
         .get::<UserId>()
         .and_then(|user_id| match user_id {
             UserId::Username(api_key) => Some(api_key.as_str()),
@@ -180,22 +180,28 @@ impl DomainMatcher {
     ///
     /// If the host is an Ip it will not match.
     #[must_use]
-    pub fn exact(domain: Domain) -> Self {
-        Self { domain, sub: false }
+    pub fn exact(domain: impl IntoDomain) -> Self {
+        Self {
+            domain: domain.into_domain(),
+            sub: false,
+        }
     }
     /// create a new domain matcher to match on a subdomain of the URI host match.
     ///
     /// Note that a domain is also a subdomain of itself, so this will also
     /// include all matches that [`Self::exact`] would capture.
     #[must_use]
-    pub fn sub(domain: Domain) -> Self {
-        Self { domain, sub: true }
+    pub fn sub(domain: impl IntoDomain) -> Self {
+        Self {
+            domain: domain.into_domain(),
+            sub: true,
+        }
     }
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
-        let Some(host) = extract_host(ext, ctx, req) else {
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+        let Some(host) = extract_host(ext, req) else {
             return false;
         };
         match host {

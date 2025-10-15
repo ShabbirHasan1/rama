@@ -255,6 +255,7 @@ fn hash12(s: impl AsRef<str>) -> Cow<'static, str> {
         "000000000000".into()
     } else {
         let sha256 = Sha256::digest(s);
+        #[allow(deprecated)]
         hex::encode(&sha256.as_slice()[..6]).into()
     }
 }
@@ -363,7 +364,7 @@ mod tests {
                     ).unwrap();
                 )+
 
-                let mut extensions = rama_core::context::Extensions::default();
+                let mut extensions = rama_core::extensions::Extensions::default();
                 let headers = map.consume(&mut extensions);
 
                 let (mut parts, body) = Request::new(()).into_parts();

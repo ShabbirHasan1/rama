@@ -8,14 +8,15 @@ use crate::{
     service::web::response::{Html, IntoResponse},
 };
 use rama_core::bytes::Bytes;
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError};
+use rama_http_headers::{AcceptRanges, ContentType, HttpResponseBuilderExt};
 use std::{convert::Infallible, io};
 
 /// Consume the result of opening a file and create an appropriate HTTP response.
 /// Handles various file opening outcomes including success, redirection, HTML listing, and errors.
 pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
     open_file_result: Result<OpenFileOutput, std::io::Error>,
-    fallback_and_request: Option<(&F, Context, Request<ReqBody>)>,
+    fallback_and_request: Option<(&F, Request<ReqBody>)>,
 ) -> Result<Response, std::io::Error>
 where
     F: Service<Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
@@ -35,8 +36,8 @@ where
         Ok(OpenFileOutput::Html(payload)) => Ok(Html(payload).into_response()),
 
         Ok(OpenFileOutput::FileNotFound | OpenFileOutput::InvalidFilename) => {
-            if let Some((fallback, ctx, request)) = fallback_and_request {
-                serve_fallback(fallback, ctx, request).await
+            if let Some((fallback, request)) = fallback_and_request {
+                serve_fallback(fallback, request).await
             } else {
                 Ok(not_found())
             }
@@ -67,8 +68,8 @@ where
                 io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
             ) || error_is_not_a_directory
             {
-                if let Some((fallback, ctx, request)) = fallback_and_request {
-                    serve_fallback(fallback, ctx, request).await
+                if let Some((fallback, request)) = fallback_and_request {
+                    serve_fallback(fallback, request).await
                 } else {
                     Ok(not_found())
                 }
@@ -100,14 +101,13 @@ pub(super) fn not_found() -> Response {
 /// Serve a request using the fallback service and convert the response body.
 pub(super) async fn serve_fallback<F, B, FResBody>(
     fallback: &F,
-    ctx: Context,
     req: Request<B>,
 ) -> Result<Response, std::io::Error>
 where
     F: Service<Request<B>, Response = Response<FResBody>, Error = Infallible>,
     FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    let response = fallback.serve(ctx, req).await.unwrap();
+    let response = fallback.serve(req).await.unwrap();
     Ok(response
         .map(|body| {
             body.map_err(|err| match err.into().downcast::<io::Error>() {
@@ -125,8 +125,8 @@ fn build_response(output: FileOpened) -> Response {
     let size = output.extent.file_size();
 
     let mut builder = Response::builder()
-        .header(header::CONTENT_TYPE, output.mime_header_value)
-        .header(header::ACCEPT_RANGES, "bytes");
+        .typed_header(ContentType::new(output.mime_value))
+        .typed_header(AcceptRanges::bytes());
 
     if let Some(encoding) = output
         .maybe_encoding

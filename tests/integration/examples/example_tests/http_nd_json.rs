@@ -1,7 +1,6 @@
 use super::utils;
 
 use rama::{
-    Context,
     futures::StreamExt,
     http::{
         StatusCode,
@@ -9,8 +8,8 @@ use rama::{
     },
 };
 
+use ahash::{HashSet, HashSetExt as _};
 use serde::Deserialize;
-use std::collections::HashSet;
 
 #[tokio::test]
 #[ignore]
@@ -31,7 +30,7 @@ async fn test_http_nd_json() {
     let mut event_count = 0;
     let response = runner
         .get("http://127.0.0.1:62041/orders")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
 

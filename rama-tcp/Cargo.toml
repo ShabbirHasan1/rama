@@ -22,6 +22,7 @@ default = []
 http = ["dep:rama-http-types", "rama-net/http"]
 
 [dependencies]
+pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-dns = { workspace = true }
 rama-http-types = { workspace = true, optional = true }
@@ -32,6 +33,7 @@ tokio = { workspace = true, features = ["macros", "net"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
+ahash = { workspace = true }
 
 [lints]
 workspace = true

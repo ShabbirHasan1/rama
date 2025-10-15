@@ -3,7 +3,7 @@
 <div class="book-article-intro">
     <img src="./img/rama_intro.jpeg" alt="llama teaching a class of crabs">
     <div>
-        🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
+        🦙 rama™ (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
         The reasons behind the creation of rama can be read in <a href="https://ramaproxy.org/book/why_rama.html">the "Why Rama" chapter</a>.
         In this chapter we'll start to dive deeper into the architecture, design and philosophy behind rama.
         At the end of this chapter you should know enough in order to start diving into
@@ -22,7 +22,7 @@ And of course as a reminder, if you want to use Rama but are still learning Rust
 - [Service Stack](./intro/service_stack.md)
 - [🍔 Middlewares and ☘️ Leaf Services](./intro/terminology.md)
 - [Network Layers](./intro/network_layers.md)
-- [☀️ Context](./intro/context.md)
+- [☀️ State](./intro/state.md)
 - [🧱 Modular](./intro/modular.md)
 - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
 - [🚫 Errors](./intro/errors.md)

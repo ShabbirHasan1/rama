@@ -2,7 +2,7 @@ use itertools::Itertools as _;
 use rama_core::telemetry::tracing;
 use std::{borrow::Cow, fmt};
 
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 
 use crate::{
     fingerprint::ClientHelloProvider,
@@ -232,6 +232,7 @@ fn hash12(s: impl AsRef<str>) -> Cow<'static, str> {
         "000000000000".into()
     } else {
         let sha256 = Sha256::digest(s);
+        #[allow(deprecated)]
         hex::encode(&sha256.as_slice()[..6]).into()
     }
 }

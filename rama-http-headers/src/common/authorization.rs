@@ -9,7 +9,7 @@ use arcshift::ArcShift;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};

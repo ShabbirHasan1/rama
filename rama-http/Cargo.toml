@@ -26,6 +26,7 @@ tls = ["rama-net/tls"]
 [dependencies]
 arc-swap = { workspace = true }
 arcshift = { version = "0.4", features = ["nightly"] }
+ahash = { workspace = true }
 async-compression = { workspace = true, features = [
     "tokio",
     "brotli",
@@ -44,8 +45,6 @@ http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
 matchit = { workspace = true }
-mime = { workspace = true }
-mime_guess = { workspace = true }
 opentelemetry-http = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }

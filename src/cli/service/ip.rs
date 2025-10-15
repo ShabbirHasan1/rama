@@ -3,21 +3,22 @@
 //! [`Service`]: crate::Service
 
 use crate::{
-    Context, Layer, Service,
+    Layer, Service,
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Request, Response, StatusCode,
-        dep::mime,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         headers::{Accept, HeaderMapExt},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer, ua::UserAgentClassifierLayer,
+            trace::TraceLayer,
         },
+        mime,
         server::HttpServer,
-        service::web::response::{Html, IntoResponse, Json},
+        service::web::response::{Html, IntoResponse, Json, Redirect},
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
@@ -25,11 +26,15 @@ use crate::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     stream::Stream,
+    tcp::TcpStream,
     telemetry::tracing,
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::http::{headers::StrictTransportSecurity, layer::set_header::SetResponseHeaderLayer};
 
 #[cfg(feature = "boring")]
 use crate::{
@@ -44,7 +49,7 @@ type TlsConfig = ServerConfig;
 type TlsConfig = TlsAcceptorData;
 
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own ip [`Service`],
@@ -174,11 +179,22 @@ impl Service<Request> for HttpIpService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let peer_ip = ctx
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let norm_req_path = req.uri().path().trim_matches('/');
+        if !norm_req_path.is_empty() {
+            tracing::debug!("unexpected request path '{norm_req_path}', redirect to root");
+            return Ok(Redirect::permanent("/").into_response());
+        }
+
+        let peer_ip = req
+            .extensions()
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
-            .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
+            .or_else(|| {
+                req.extensions()
+                    .get::<SocketInfo>()
+                    .map(|s| s.peer_addr().ip())
+            });
 
         Ok(match peer_ip {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
@@ -232,17 +248,23 @@ struct TcpIpService;
 
 impl<Input> Service<Input> for TcpIpService
 where
-    Input: Stream + Unpin,
+    Input: Stream + Unpin + ExtensionsRef,
 {
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, stream: Input) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Input) -> Result<Self::Response, Self::Error> {
         tracing::info!("connection received");
-        let peer_ip = ctx
+        let peer_ip = stream
+            .extensions()
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
-            .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
+            .or_else(|| {
+                stream
+                    .extensions()
+                    .get::<SocketInfo>()
+                    .map(|s| s.peer_addr().ip())
+            });
         let Some(peer_ip) = peer_ip else {
             tracing::error!("missing peer information");
             return Ok(());
@@ -295,7 +317,7 @@ impl IpServiceBuilder<mode::Transport> {
 }
 
 impl<M> IpServiceBuilder<M> {
-    fn build_tcp<S: Stream + Unpin + Send + Sync + 'static>(
+    fn build_tcp<S: Stream + ExtensionsMut + Unpin + Send + Sync + 'static>(
         self,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
@@ -325,7 +347,7 @@ impl<M> IpServiceBuilder<M> {
         Ok(tcp_service_builder.into_layer(TcpIpService))
     }
 
-    fn build_http<S: Stream + Unpin + Send + Sync + 'static>(
+    fn build_http<S: Stream + Unpin + Send + Sync + ExtensionsMut + 'static>(
         self,
         executor: Executor,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
@@ -364,6 +386,13 @@ impl<M> IpServiceBuilder<M> {
             Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
         };
 
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let hsts_layer = maybe_tls_accept_layer.is_some().then(|| {
+            SetResponseHeaderLayer::if_not_present_typed(
+                StrictTransportSecurity::excluding_subdomains(Duration::from_secs(31536000)),
+            )
+        });
+
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::DEBUG),
             (self.concurrent_limit > 0)
@@ -379,8 +408,9 @@ impl<M> IpServiceBuilder<M> {
         let http_service = (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
-            UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            hsts_layer,
             http_forwarded_layer,
         )
             .into_layer(HttpIpService);

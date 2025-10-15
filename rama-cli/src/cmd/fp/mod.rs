@@ -1,10 +1,11 @@
 //! Echo service that echos the http request and tls client config
 
 use rama::{
-    Context, Service,
+    Service,
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
@@ -347,18 +348,21 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        mut req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
             let cookie = cookie
                 .iter()
                 .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
-                        if Some(v) == ctx.get::<Arc<State>>().unwrap().storage_auth.as_deref() {
-                            ctx.insert(StorageAuthorized);
+                        if Some(v)
+                            == req
+                                .extensions()
+                                .get::<Arc<State>>()
+                                .unwrap()
+                                .storage_auth
+                                .as_deref()
+                        {
+                            req.extensions_mut().insert(StorageAuthorized);
                         }
                         Some("rama-storage-auth=xxx".to_owned())
                     } else if !k.starts_with("source-") {
@@ -374,6 +378,6 @@ where
             }
         }
 
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }

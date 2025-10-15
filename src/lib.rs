@@ -1,4 +1,4 @@
-//! 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
+//! 🦙 rama™ (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 //!
 //! > The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 //! >
@@ -56,7 +56,7 @@
 //! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::DnsResolver] |
 //! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::haproxy) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ ✅ [socks5(h) proxy](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) |
 //! | ✅ web protocols | ✅ [SSE](crate::http::sse) ⸱ ✅ [WS](crate::http::ws) ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(2)</sup> |
-//! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
+//! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [extensions] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
 //! | ✅ [telemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry][telemetry::opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::net::stream::layer::opentelemetry) |
 //! | ✅ Diagnostics | ✅ [curl export](crate::http::convert::curl) ⸱ ✅ [HAR](crate::http::layer::har) |
 //! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
@@ -179,7 +179,7 @@
 //! - [`rama-utils`](https://crates.io/crates/rama-utils): utilities crate for rama
 //! - [`rama-ws`](https://crates.io/crates/rama-ws): WebSocket (WS) support for rama
 //! - [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
-//!   context used by all other `rama` code, as well as some other _core_ utilities
+//!   extensions used by all other `rama` code, as well as some other _core_ utilities
 //! - [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
@@ -355,7 +355,7 @@
 //!     .get("http://example.com/info")
 //!     .header("x-magic", "42")
 //!     .typed_header(Accept::json())
-//!     .send(Context::default())
+//!     .send()
 //!     .await
 //!     .unwrap()
 //!     .try_into_json()
@@ -368,14 +368,14 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
-#![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 #[doc(inline)]
 pub use ::rama_core::{
-    Context, Layer, Service, bytes, combinators, context, conversion, error, futures, graceful,
-    inspect, layer, matcher, rt, service, stream, username,
+    Layer, Service, bytes, combinators, conversion, error, extensions, futures, graceful, inspect,
+    layer, matcher, rt, service, stream, username,
 };
 
 #[cfg(feature = "crypto")]
