@@ -31,6 +31,7 @@ use crate::{
         ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher},
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    net::fingerprint::AkamaiH2,
     net::fingerprint::Ja4H,
     net::forwarded::Forwarded,
     net::http::RequestContext,
@@ -694,10 +695,20 @@ impl Service<Request> for EchoService {
         if parts.version == Version::HTTP_2 {
             let early_frames = parts.extensions.get::<EarlyFrameCapture>();
             let pseudo_headers = parts.extensions.get::<PseudoHeaderOrder>();
+            let akamai_h2 = AkamaiH2::compute(&parts.extensions)
+                .inspect_err(|err| tracing::trace!("akamai h2 compute failure: {err:?}"))
+                .ok()
+                .map(|akamai| {
+                    json!({
+                        "hash": format!("{akamai}"),
+                        "verbose": format!("{akamai:?}"),
+                    })
+                });
 
             h2 = Some(json!({
                 "early_frames": early_frames,
                 "pseudo_headers": pseudo_headers,
+                "akamai_h2": akamai_h2,
             }));
         }
 
