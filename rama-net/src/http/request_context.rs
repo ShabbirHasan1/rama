@@ -115,14 +115,38 @@ pub fn try_request_ctx_from_http_parts(
                     })
                 })
         })
+        // .or_else(|| {
+        //     parts
+        //         .extensions()
+        //         .get()
+        //         .and_then(try_get_sni_from_secure_transport)
+        //         .map(|host| {
+        //             tracing::trace!(url.full = %uri, "request context: detected host {host} from SNI");
+        //             (host, default_port).into()
+        //         })
+        // })
         .or_else(|| {
             parts
                 .extensions()
                 .get()
-                .and_then(try_get_sni_from_secure_transport)
-                .map(|host| {
-                    tracing::trace!(url.full = %uri, "request context: detected host {host} from SNI");
-                    (host, default_port).into()
+                .and_then(|t| {
+                    let domain = try_get_sni_from_secure_transport(t);
+                    match domain {
+                        Some(host) if Some(host.as_str()) == uri.host() => {
+                            tracing::trace!(url.full = %uri, "request context: detected host {host} from SNI");
+                            let authority: Authority = (host, default_port).into();
+                            Some(authority)
+                        }
+                        _ => {
+                            uri
+                                .host()
+                                .and_then(|h| Host::try_from(h).ok().map(|h| {
+                                    tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
+                                    let authority: Authority = (h, default_port).into();
+                                    authority
+                                }))
+                        }
+                    }
                 })
         })
         .or_else(|| {
