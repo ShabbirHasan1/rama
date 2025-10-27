@@ -50,13 +50,13 @@ pub struct CliCommandIp {
     /// operate the IP service on transport layer (tcp)
     transport: bool,
 
-    #[arg(long)]
-    /// operate the IP service on transport layer (http)
-    http: bool,
-
     #[arg(long, short = 's')]
     /// run IP service in secure mode (enable TLS)
     secure: bool,
+
+    #[arg(long, default_value_t = 5)]
+    /// the graceful shutdown timeout in seconds (0 = no timeout)
+    graceful: u64,
 }
 
 /// run the rama ip service
@@ -64,7 +64,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
     crate::trace::init_tracing(LevelFilter::INFO);
 
     let maybe_tls_server_config = cfg.secure.then(|| {
-        new_server_config(cfg.http.then_some(vec![
+        new_server_config((!cfg.transport).then_some(vec![
             ApplicationProtocol::HTTP_2,
             ApplicationProtocol::HTTP_11,
         ]))
@@ -115,7 +115,14 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 
-    graceful.shutdown_with_limit(Duration::from_secs(5)).await?;
+    let delay = if cfg.graceful > 0 {
+        graceful
+            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
+            .await?
+    } else {
+        graceful.shutdown().await
+    };
+    tracing::info!("IP address echo service gracefully shutdown with a delay of: {delay:?}");
 
     Ok(())
 }
