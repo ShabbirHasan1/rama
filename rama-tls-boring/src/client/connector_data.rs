@@ -79,7 +79,7 @@ pub struct TlsConnectorDataBuilder {
     server_verify_mode: Option<ServerVerifyMode>,
     keylog_intent: Option<KeyLogIntent>,
     cipher_list: Option<Vec<u16>>,
-    server_verify_cert_store: Option<X509Store>,
+    server_verify_cert_store: Option<Arc<X509Store>>,
     store_server_certificate_chain: Option<bool>,
     alpn_protos: Option<Bytes>,
     min_ssl_version: Option<SslVersion>,
@@ -160,6 +160,21 @@ impl TlsConnectorDataBuilder {
         signed_cert_timestamps_enabled: Option<bool>,
     );
 
+    /// Get reference to this field.
+    ///
+    /// Will return Some(&value) if it is set on this builder.
+    /// If not set on this builder `base_builders` will be checked
+    /// starting from the end to see if one of them contains a value.
+    /// The first match is returned.
+    pub fn server_verify_cert_store(&self) -> Option<&X509Store> {
+        self.server_verify_cert_store.as_deref().or_else(|| {
+            self.base_builders
+                .iter()
+                .rev()
+                .find_map(|builder| builder.server_verify_cert_store())
+        })
+    }
+
     implement_reference_getters!(
         cipher_list: Option<Vec<u16>>,
         extension_order: Option<Vec<u16>>,
@@ -170,7 +185,6 @@ impl TlsConnectorDataBuilder {
         certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
         delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
         server_name: Option<Domain>,
-        server_verify_cert_store: Option<X509Store>,
     );
 
     /// Return the SSL keylog file path if one exists.
@@ -254,7 +268,7 @@ impl TlsConnectorDataBuilder {
         /// (unless the mode is [`ServerVerifyMode::Disable`])
         pub fn server_verify_cert_store(
             mut self,
-            server_verify_cert_store: Option<X509Store>,
+            server_verify_cert_store: Option<Arc<X509Store>>,
         ) -> Self {
             self.server_verify_cert_store = server_verify_cert_store;
             self
@@ -458,11 +472,9 @@ impl TlsConnectorDataBuilder {
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
-        if let Some(store) = self.server_verify_cert_store().cloned() {
+        if let Some(store) = self.server_verify_cert_store() {
             trace!("boring connector: set provided cert store to verify as server");
-            cfg_builder
-                .set_verify_cert_store(store)
-                .context("set verify cert store")?;
+            cfg_builder.set_cert_store_ref(store)
         } else {
             #[cfg(target_os = "windows")]
             {
@@ -489,14 +501,8 @@ impl TlsConnectorDataBuilder {
                         Ok(builder.build())
                     });
 
-                let store = WINDOWS_ROOT_CA
-                    .as_ref()
-                    .context("create windows root CA")?
-                    .clone();
-
-                cfg_builder
-                    .set_verify_cert_store(store)
-                    .context("set default windows verify cert store")?;
+                let store_ref = WINDOWS_ROOT_CA.as_ref().context("create windows root CA")?;
+                cfg_builder.set_cert_store_ref(store_ref);
             }
             #[cfg(not(target_os = "windows"))]
             trace!("boring connector: do not set (root) ca file"); // on non-windows we assume that the default is fine
@@ -988,8 +994,8 @@ impl TlsConnectorDataBuilder {
             .as_ref()
             .map(|v| v.iter().copied().map(Into::into).collect());
         trace!(
-            "TlsConnectorData: builder: from std client config: cipher list: {:?}",
-            cipher_list
+            "TlsConnectorData: builder: from std client config: cipher list: {:?}; supported groups: {:?}",
+            cipher_list, curves,
         );
 
         let client_auth = client_auth
@@ -1145,7 +1151,8 @@ fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), OpaqueError> 
                 .critical()
                 .ca()
                 .build()
-                .context("x509 cert builder: build basic constraints")?,
+                .context("x509 cert builder: build basic constraints")?
+                .as_ref(),
         )
         .context("x509 cert builder: add basic constraints as x509 extension")?;
     cert_builder
@@ -1155,7 +1162,8 @@ fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), OpaqueError> 
                 .key_cert_sign()
                 .crl_sign()
                 .build()
-                .context("x509 cert builder: create key usage")?,
+                .context("x509 cert builder: create key usage")?
+                .as_ref(),
         )
         .context("x509 cert builder: add key usage x509 extension")?;
 
@@ -1163,7 +1171,7 @@ fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), OpaqueError> 
         .build(&cert_builder.x509v3_context(None, None))
         .context("x509 cert builder: build subject key id")?;
     cert_builder
-        .append_extension(subject_key_identifier)
+        .append_extension(subject_key_identifier.as_ref())
         .context("x509 cert builder: add subject key id x509 extension")?;
 
     cert_builder
