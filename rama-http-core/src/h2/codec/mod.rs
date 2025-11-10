@@ -10,6 +10,7 @@ use self::framed_write::FramedWrite;
 use crate::h2::proto::Error;
 
 use rama_core::bytes::Buf;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
 use rama_core::stream::codec::length_delimited;
@@ -77,6 +78,7 @@ impl<T, B> Codec<T, B> {
     /// frames will be rejected.
     #[cfg(feature = "unstable")]
     #[inline]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
     pub fn max_recv_frame_size(&self) -> usize {
         self.inner.max_frame_size()
     }
@@ -108,6 +110,7 @@ impl<T, B> Codec<T, B> {
 
     /// Get a reference to the inner stream.
     #[cfg(feature = "unstable")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
     pub fn get_ref(&self) -> &T {
         self.inner.get_ref().get_ref()
     }
@@ -155,6 +158,18 @@ where
     /// Shutdown the send half
     pub fn shutdown(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
         self.framed_write().shutdown(cx)
+    }
+}
+
+impl<T: ExtensionsRef, B> ExtensionsRef for Codec<T, B> {
+    fn extensions(&self) -> &rama_core::extensions::Extensions {
+        self.inner.extensions()
+    }
+}
+
+impl<T: ExtensionsMut, B> ExtensionsMut for Codec<T, B> {
+    fn extensions_mut(&mut self) -> &mut rama_core::extensions::Extensions {
+        self.inner.extensions_mut()
     }
 }
 

@@ -9,7 +9,6 @@ use rama_core::{
     Service,
     error::{ErrorContext, OpaqueError},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
-    futures::{StreamExt, TryStreamExt},
     matcher::Matcher,
     rt::Executor,
     telemetry::tracing::{self, Instrument},
@@ -362,6 +361,7 @@ impl WebSocketAcceptor {
     #[cfg(feature = "compression")]
     rama_utils::macros::generate_set_and_with! {
         /// Set or add the deflate WebSocket extension with the default config
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate(mut self) -> Self {
             self.extensions = match self.extensions.take() {
                 Some(ext) => {
@@ -377,6 +377,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Set the deflate WebSocket extension with the default config,
         /// erasing existing if it already exists.
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_overwrite_extensions(mut self) -> Self {
             self.extensions = Some(headers::SecWebSocketExtensions::per_message_deflate());
             self
@@ -387,6 +388,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Set or add the deflate WebSocket extension with the given config,
         /// erasing existing if it already exists.
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_with_config(mut self, config: impl Into<sec_websocket_extensions::PerMessageDeflateConfig>) -> Self {
             self.extensions = match self.extensions.take() {
                 Some(ext) => {
@@ -402,6 +404,7 @@ impl WebSocketAcceptor {
     rama_utils::macros::generate_set_and_with! {
         /// Set or add the deflate WebSocket extension with the given config,
         /// erasing existing if it already exists.
+        #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
         pub fn per_message_deflate_with_config_overwrite_extensions(mut self, config: impl Into<sec_websocket_extensions::PerMessageDeflateConfig>) -> Self {
             self.extensions = Some(headers::SecWebSocketExtensions::per_message_deflate_with_config(config.into()));
             self
@@ -844,49 +847,38 @@ impl Service<AsyncWebSocket> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
-    async fn serve(&self, socket: AsyncWebSocket) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut socket: AsyncWebSocket) -> Result<Self::Response, Self::Error> {
         let protocol = socket
             .extensions()
             .get::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
             .map(|p| p.as_str())
             .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT);
+
         let transformer = if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_LOWER) {
-            |msg: Message| {
-                std::future::ready(Ok(match msg {
-                    Message::Text(original) => Some(original.to_lowercase().into()),
-                    msg @ Message::Binary(_) => Some(msg),
-                    Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
-                        None
-                    }
-                }))
+            |msg: Message| match msg {
+                Message::Text(original) => Some(original.to_lowercase().into()),
+                msg @ Message::Binary(_) => Some(msg),
+                Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
             }
         } else if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_UPPER) {
-            |msg: Message| {
-                std::future::ready(Ok(match msg {
-                    Message::Text(original) => Some(original.to_uppercase().into()),
-                    msg @ Message::Binary(_) => Some(msg),
-                    Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
-                        None
-                    }
-                }))
+            |msg: Message| match msg {
+                Message::Text(original) => Some(original.to_uppercase().into()),
+                msg @ Message::Binary(_) => Some(msg),
+                Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
             }
         } else {
-            |msg: Message| {
-                std::future::ready(Ok(match msg {
-                    msg @ (Message::Text(_) | Message::Binary(_)) => Some(msg),
-                    Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
-                        None
-                    }
-                }))
+            |msg: Message| match msg {
+                msg @ (Message::Text(_) | Message::Binary(_)) => Some(msg),
+                Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
             }
         };
 
-        let (write, read) = socket.split();
-        // We should not forward messages other than text or binary.
-        read.try_filter_map(transformer)
-            .forward(write)
-            .await
-            .context("forward messages")
+        loop {
+            let msg = socket.recv_message().await.context("recv next msg")?;
+            if let Some(msg2) = transformer(msg) {
+                socket.send_message(msg2).await.context("echo msg back")?;
+            }
+        }
     }
 }
 

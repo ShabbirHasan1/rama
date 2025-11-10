@@ -7,6 +7,7 @@ use std::task::{Context, Poll, ready};
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
 use rama_http_types::{Request, Response};
@@ -61,7 +62,7 @@ where
 
 impl<T, B> Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Return the inner IO object, and additional information.
@@ -123,7 +124,7 @@ pub struct Builder {
 /// See [`client::conn`](crate::client::conn) for more.
 pub async fn handshake<T, B>(io: T) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     Builder::new().handshake(io).await
@@ -271,7 +272,7 @@ where
 
 impl<T, B> Future for Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
@@ -317,7 +318,7 @@ impl Builder {
 
     /// Set whether HTTP/0.9 responses should be tolerated.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn http09_responses(&mut self, enabled: bool) -> &mut Self {
         self.h09_responses = enabled;
         self
@@ -337,7 +338,7 @@ impl Builder {
     /// > of 400 (Bad Request). A proxy MUST remove any such whitespace from a
     /// > response message before forwarding the message downstream.
     ///
-    /// Default is false.
+    /// Default is `false`.
     ///
     /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
     pub fn allow_spaces_after_header_name_in_responses(&mut self, enabled: bool) -> &mut Self {
@@ -375,7 +376,7 @@ impl Builder {
     /// > obs-fold with one or more SP octets prior to interpreting the field
     /// > value.
     ///
-    /// Default is false.
+    /// Default is `false`.
     ///
     /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
     pub fn allow_obsolete_multiline_headers_in_responses(&mut self, enabled: bool) -> &mut Self {
@@ -390,7 +391,7 @@ impl Builder {
     /// name, or does not include a colon at all, the line will be silently ignored
     /// and no error will be reported.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_parser_config
             .ignore_invalid_headers_in_responses(enabled);
@@ -417,7 +418,7 @@ impl Builder {
     /// Set whether HTTP/1 connections will write header names as title case at
     /// the socket level.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_title_case_headers = enabled;
         self
@@ -482,7 +483,7 @@ impl Builder {
         io: T,
     ) -> impl Future<Output = crate::Result<(SendRequest<B>, Connection<T, B>)>>
     where
-        T: AsyncRead + AsyncWrite + Unpin,
+        T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
         B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let opts = self.clone();
@@ -545,7 +546,7 @@ mod upgrades {
 
     impl<I, B> Future for UpgradeableConnection<I, B>
     where
-        I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        I: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
         B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         type Output = crate::Result<()>;

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::ExtensionsMut;
 use rama_http::Body;
 use rama_http::io::upgrade::Upgraded;
 use std::task::ready;
@@ -112,7 +113,7 @@ where
 impl<I, S> Connection<I, S>
 where
     S: HttpService<IncomingBody>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -188,7 +189,7 @@ where
 impl<I, S> Future for Connection<I, S>
 where
     S: HttpService<IncomingBody>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = crate::Result<()>;
 
@@ -252,7 +253,7 @@ impl Builder {
 
     /// Enables or disables HTTP/1 keep-alive.
     ///
-    /// Default is true.
+    /// Default is `true`.
     pub fn keep_alive(&mut self, val: bool) -> &mut Self {
         self.h1_keep_alive = val;
         self
@@ -261,9 +262,18 @@ impl Builder {
     /// Set whether HTTP/1 connections will write header names as title case at
     /// the socket level.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_title_case_headers = enabled;
+        self
+    }
+
+    /// Set whether multiple spaces are allowed as delimiters in request lines.
+    ///
+    /// Default is `false`.
+    pub fn allow_multiple_spaces_in_request_line_delimiters(&mut self, enabled: bool) -> &mut Self {
+        self.h1_parser_config
+            .allow_multiple_spaces_in_request_line_delimiters(enabled);
         self
     }
 
@@ -273,7 +283,7 @@ impl Builder {
     /// name, or does not include a colon at all, the line will be silently ignored
     /// and no error will be reported.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_parser_config
             .ignore_invalid_headers_in_requests(enabled);
@@ -349,7 +359,7 @@ impl Builder {
     ///
     /// Note that including the `date` header is recommended by RFC 7231.
     ///
-    /// Default is true.
+    /// Default is `true`.
     pub fn auto_date_header(&mut self, enabled: bool) -> &mut Self {
         self.date_header = enabled;
         self
@@ -359,7 +369,7 @@ impl Builder {
     ///
     /// Experimental, may have bugs.
     ///
-    /// Default is false.
+    /// Default is `false`.
     pub fn pipeline_flush(&mut self, enabled: bool) -> &mut Self {
         self.pipeline_flush = enabled;
         self
@@ -377,7 +387,7 @@ impl Builder {
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<I, S>
     where
         S: HttpService<IncomingBody>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         let mut conn = proto::Conn::new(io);
         conn.set_h1_parser_config(self.h1_parser_config.clone());
@@ -427,7 +437,7 @@ where
 impl<I, S> UpgradeableConnection<I, S>
 where
     S: HttpService<IncomingBody>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -445,7 +455,7 @@ where
 impl<I, S> Future for UpgradeableConnection<I, S>
 where
     S: HttpService<IncomingBody>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = crate::Result<()>;
 

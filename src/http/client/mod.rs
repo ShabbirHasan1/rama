@@ -24,6 +24,7 @@ pub use builder::EasyHttpWebClientBuilder;
 #[cfg(feature = "socks5")]
 mod proxy_connector;
 #[cfg(feature = "socks5")]
+#[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
 #[doc(inline)]
 pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnectorLayer};
 
@@ -79,6 +80,7 @@ where
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
             .with_tls_support_using_boringssl(Some(tls_config))
+            .with_default_http_connector()
             .build()
     }
 
@@ -92,6 +94,7 @@ where
             .with_tls_proxy_support_using_rustls()
             .with_proxy_support()
             .with_tls_support_using_rustls(Some(tls_config))
+            .with_default_http_connector()
             .build()
     }
 
@@ -102,6 +105,7 @@ where
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
+            .with_default_http_connector()
             .build()
     }
 }
