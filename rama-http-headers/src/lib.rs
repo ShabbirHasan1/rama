@@ -41,6 +41,7 @@ mod map_ext;
 mod req_builder_ext;
 mod resp_builder_ext;
 
+pub mod exotic;
 pub mod privacy;
 
 pub mod x_robots_tag;
