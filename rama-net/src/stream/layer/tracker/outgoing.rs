@@ -2,22 +2,14 @@ use super::bytes::BytesRWTracker;
 use crate::client::{ConnectorService, EstablishedClientConnection};
 use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// A [`Service`] that wraps a [`Service`]'s output IO [`Stream`] with an atomic R/W tracker.
 ///
 /// [`Service`]: rama_core::Service
 /// [`Stream`]: rama_core::stream::Stream
+#[derive(Debug, Clone)]
 pub struct OutgoingBytesTrackerService<S> {
     inner: S,
-}
-
-impl<S: fmt::Debug> fmt::Debug for OutgoingBytesTrackerService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OutgoingBytesTrackerService")
-            .field("inner", &self.inner)
-            .finish()
-    }
 }
 
 impl<S> OutgoingBytesTrackerService<S> {
@@ -31,31 +23,20 @@ impl<S> OutgoingBytesTrackerService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S> Clone for OutgoingBytesTrackerService<S>
+impl<S, Input> Service<Input> for OutgoingBytesTrackerService<S>
 where
-    S: Clone,
+    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    Input: Send + 'static,
 {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<S, Request> Service<Request> for OutgoingBytesTrackerService<S>
-where
-    S: ConnectorService<Request, Connection: Stream + Unpin>,
-    Request: Send + 'static,
-{
-    type Response = EstablishedClientConnection<BytesRWTracker<S::Connection>, Request>;
+    type Output = EstablishedClientConnection<BytesRWTracker<S::Connection>, Input>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { req, conn } = self.inner.connect(req).await?;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let mut conn = BytesRWTracker::new(conn);
         let handle = conn.handle();
         conn.extensions_mut().insert(handle);
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }
 

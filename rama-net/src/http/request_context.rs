@@ -1,9 +1,10 @@
+use crate::address::{HostWithOptPort, HostWithPort};
 use crate::forwarded::Forwarded;
 use crate::proxy::ProxyTarget;
 use crate::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
 use crate::{
     Protocol,
-    address::{Authority, Domain, Host},
+    address::{Domain, Host},
 };
 use rama_core::conversion::RamaTryFrom;
 use rama_core::error::OpaqueError;
@@ -53,14 +54,14 @@ pub struct RequestContext {
     /// This can be also manually set in case there is support for
     /// forward headers (e.g. `Forwarded`, or `X-Forwarded-Host`)
     /// or forward protocols (e.g. `HaProxy`).
-    pub authority: Authority,
+    pub authority: HostWithOptPort,
 }
 
 impl RequestContext {
-    /// Check if [`Authority`] is using the default port for the [`Protocol`] set in this [`RequestContext`]
+    /// Check if the authority is using the default port for the [`Protocol`] set in this [`RequestContext`]
     #[must_use]
     pub fn authority_has_default_port(&self) -> bool {
-        self.protocol.default_port() == Some(self.authority.port())
+        self.protocol.default_port() == self.authority.port
     }
 }
 
@@ -108,8 +109,8 @@ pub fn try_request_ctx_from_http_parts(
                 .extensions()
                 .get::<ProxyTarget>()
                 .and_then(|t| {
-                    t.0.host().is_domain().then(|| {
-                        let authority = t.0.clone();
+                    t.0.host.is_domain().then(|| {
+                        let authority = t.0.clone().into();
                         tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
                         authority
                     })
@@ -152,7 +153,7 @@ pub fn try_request_ctx_from_http_parts(
         .or_else(|| {
             parts.extensions().get::<Forwarded>().and_then(|f| {
                 f.client_host().map(|fauth| {
-                    let (host, port) = fauth.clone().into_parts();
+                    let HostWithOptPort { host, port } = fauth.0.clone();
                     let port = port.unwrap_or(default_port);
                     tracing::trace!(url.full = %uri, "request context: detected host {host} from forwarded info");
                     (host, port).into()
@@ -162,13 +163,8 @@ pub fn try_request_ctx_from_http_parts(
         .or_else(|| {
             parts.headers()
                 .get(rama_http_types::header::HOST)
-                .and_then(|host| {
-                    host.try_into() // try to consume as Authority, otherwise as Host
-                        .or_else(|_| Host::try_from(host).map(|h| {
-                            tracing::trace!(url.full = %uri, "request context: detected host {h} from host header");
-                            (h, default_port).into()
-                        }))
-                        .ok()
+                .and_then(|host_header_value| {
+                    HostWithOptPort::try_from(host_header_value.as_bytes()).ok()
                 })
         })
         .ok_or_else(|| {
@@ -218,6 +214,19 @@ fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
     } else {
         Protocol::HTTP
     })
+}
+
+impl RequestContext {
+    #[must_use]
+    pub fn host_with_port(&self) -> HostWithPort {
+        let port = self
+            .authority
+            .port
+            .or_else(|| self.protocol.default_port())
+            .unwrap_or(Protocol::HTTP_DEFAULT_PORT);
+        let host = self.authority.host.clone();
+        HostWithPort { host, port }
+    }
 }
 
 impl From<RequestContext> for TransportContext {
@@ -304,7 +313,7 @@ mod tests {
         assert_eq!(req_ctx.protocol, Protocol::HTTP);
         assert_eq!(
             req_ctx.authority,
-            Authority::try_from("example.com:8080").unwrap()
+            HostWithOptPort::try_from("example.com:8080").unwrap()
         );
     }
 
@@ -387,7 +396,7 @@ mod tests {
             .unwrap();
 
         req.extensions_mut()
-            .insert(Forwarded::new(ForwardedElement::forwarded_for(
+            .insert(Forwarded::new(ForwardedElement::new_forwarded_for(
                 NodeId::try_from("127.0.0.1:61234").unwrap(),
             )));
 
@@ -395,6 +404,10 @@ mod tests {
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, "http");
-        assert_eq!(req_ctx.authority.to_string(), "echo.ramaproxy.org:80");
+        assert_eq!(req_ctx.authority.to_string(), "echo.ramaproxy.org");
+        assert_eq!(
+            req_ctx.host_with_port().to_string(),
+            "echo.ramaproxy.org:80"
+        );
     }
 }

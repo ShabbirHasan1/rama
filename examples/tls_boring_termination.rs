@@ -29,13 +29,15 @@
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
 // rama provides everything out of the box to build a TLS termination proxy
+
 use rama::{
     Layer,
     extensions::ExtensionsRef,
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer},
-    layer::{ConsumeErrLayer, GetExtensionLayer},
+    layer::{ConsumeErrLayer, GetInputExtensionLayer},
     net::{
+        address::HostWithPort,
         forwarded::Forwarded,
         stream::SocketInfo,
         tls::{
@@ -52,17 +54,21 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio
+
 use std::{convert::Infallible, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -81,35 +87,42 @@ async fn main() {
     shutdown.spawn_task_fn(async move |guard| {
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data).with_store_client_hello(true),
-            GetExtensionLayer::new(async move |st: SecureTransport| {
+            GetInputExtensionLayer::new(async move |st: SecureTransport| {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
         )
-            .into_layer(Forwarder::new(([127, 0, 0, 1], 62801)).connector(
-                // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
-            ));
+            .into_layer(
+                Forwarder::new(
+                    Executor::graceful(guard.clone()),
+                    HostWithPort::local_ipv4(62801),
+                )
+                .with_connector(
+                    // ha proxy protocol used to forwarded the client original IP
+                    HaProxyClientLayer::tcp()
+                        .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
+                ),
+            );
 
-        TcpListener::bind("127.0.0.1:63801")
+        TcpListener::bind("127.0.0.1:63801", Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener: tls")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 
     // create http server
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(http_service));
+        let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service =
             (ConsumeErrLayer::default(), HaProxyServerLayer::new()).into_layer(http_service);
 
-        TcpListener::bind("127.0.0.1:62801")
+        TcpListener::bind("127.0.0.1:62801", exec)
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

@@ -11,7 +11,6 @@ use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use rama_utils::macros::generate_set_and_with;
-use std::fmt;
 use std::sync::Arc;
 
 use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder, TlsStream};
@@ -23,27 +22,10 @@ use rama_http_types::{Version, conn::TargetHttpVersion};
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
 /// See [`TlsConnector`] for more information.
+#[derive(Debug, Clone)]
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
     connector_data: Option<Arc<TlsConnectorDataBuilder>>,
     kind: K,
-}
-
-impl<K: fmt::Debug> std::fmt::Debug for TlsConnectorLayer<K> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TlsConnectorLayer")
-            .field("connector_data", &self.connector_data)
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-impl<K: Clone> Clone for TlsConnectorLayer<K> {
-    fn clone(&self) -> Self {
-        Self {
-            connector_data: self.connector_data.clone(),
-            kind: self.kind.clone(),
-        }
-    }
 }
 
 impl<K> TlsConnectorLayer<K> {
@@ -136,32 +118,13 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 /// By default it will created in auto mode ([`TlsConnector::auto`]),
 /// which will perform the Tls handshake on the underlying stream,
 /// only if the request requires a secure connection. You can instead use
-/// [`TlsConnector::secure_only`] to force the connector to always
+/// [`TlsConnector::secure`] to force the connector to always
 /// establish a secure connection.
+#[derive(Debug, Clone)]
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
     connector_data: Option<Arc<TlsConnectorDataBuilder>>,
     kind: K,
-}
-
-impl<S: fmt::Debug, K: fmt::Debug> fmt::Debug for TlsConnector<S, K> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TlsConnector")
-            .field("inner", &self.inner)
-            .field("connector_data", &self.connector_data)
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-impl<S: Clone, K: Clone> Clone for TlsConnector<S, K> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            connector_data: self.connector_data.clone(),
-            kind: self.kind.clone(),
-        }
-    }
 }
 
 impl<S, K> TlsConnector<S, K> {
@@ -222,22 +185,22 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 // this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
 
-impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindAuto>
+impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
         + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
+    type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut req, conn } =
-            self.inner.connect(req).await.map_err(Into::into)?;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection { mut input, conn } =
+            self.inner.connect(input).await.map_err(Into::into)?;
 
-        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("TlsConnector(auto): compute transport context")
         })?;
@@ -249,90 +212,98 @@ where
             .unwrap_or_default()
         {
             tracing::trace!(
-                server.address = %transport_ctx.authority.host(),
-                server.port = %transport_ctx.authority.port(),
+                server.address = %transport_ctx.authority.host,
+                server.port = transport_ctx.authority.port,
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
             return Ok(EstablishedClientConnection {
-                req,
+                input,
                 conn: AutoTlsStream::plain(conn),
             });
         }
 
-        let host = transport_ctx.authority.host().clone();
+        let host = transport_ctx.authority.host.clone();
 
-        let connector_data = self.connector_data(req.extensions_mut())?;
+        let connector_data = self.connector_data(input.extensions_mut())?;
         let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(auto): protocol secure, established tls connection",
         );
 
         let mut conn = AutoTlsStream::secure(stream);
 
         #[cfg(feature = "http")]
-        set_target_http_version(req.extensions(), conn.extensions_mut(), &negotiated_params)?;
+        set_target_http_version(
+            input.extensions(),
+            conn.extensions_mut(),
+            &negotiated_params,
+        )?;
 
         conn.extensions_mut().insert(negotiated_params);
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }
 
-impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindSecure>
+impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
         + 'static,
 {
-    type Response = EstablishedClientConnection<TlsStream<S::Connection>, Request>;
+    type Output = EstablishedClientConnection<TlsStream<S::Connection>, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut req, conn } =
-            self.inner.connect(req).await.map_err(Into::into)?;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection { mut input, conn } =
+            self.inner.connect(input).await.map_err(Into::into)?;
 
-        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("TlsConnector(auto): compute transport context")
         })?;
         tracing::trace!(
-            server.address = %transport_ctx.authority.host(),
-            server.port = %transport_ctx.authority.port(),
+            server.address = %transport_ctx.authority.host,
+            server.port = transport_ctx.authority.port,
             "TlsConnector(secure): attempt to secure inner connection w/ app protocol: {:?}",
             transport_ctx.app_protocol,
         );
 
-        let host = transport_ctx.authority.host().clone();
+        let host = transport_ctx.authority.host.clone();
 
-        let connector_data = self.connector_data(req.extensions_mut())?;
+        let connector_data = self.connector_data(input.extensions_mut())?;
         let (conn, negotiated_params) = handshake(connector_data, host, conn).await?;
         let mut conn = TlsStream::new(conn);
 
         #[cfg(feature = "http")]
-        set_target_http_version(req.extensions(), conn.extensions_mut(), &negotiated_params)?;
+        set_target_http_version(
+            input.extensions(),
+            conn.extensions_mut(),
+            &negotiated_params,
+        )?;
 
         conn.extensions_mut().insert(negotiated_params);
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }
 
-impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindTunnel>
+impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin>,
-    Request: Send + ExtensionsMut + 'static,
+    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    Input: Send + ExtensionsMut + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
+    type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut req, conn } =
-            self.inner.connect(req).await.map_err(Into::into)?;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection { mut input, conn } =
+            self.inner.connect(input).await.map_err(Into::into)?;
 
-        let host = if let Some(host) = req
+        let host = if let Some(host) = input
             .extensions()
             .get::<TlsTunnel>()
             .as_ref()
@@ -345,21 +316,25 @@ where
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
             return Ok(EstablishedClientConnection {
-                req,
+                input,
                 conn: AutoTlsStream::plain(conn),
             });
         };
 
-        let connector_data = self.connector_data(req.extensions_mut())?;
+        let connector_data = self.connector_data(input.extensions_mut())?;
         let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
         let mut conn = AutoTlsStream::secure(stream);
 
         #[cfg(feature = "http")]
-        set_target_http_version(req.extensions(), conn.extensions_mut(), &negotiated_params)?;
+        set_target_http_version(
+            input.extensions(),
+            conn.extensions_mut(),
+            &negotiated_params,
+        )?;
 
         conn.extensions_mut().insert(negotiated_params);
         tracing::trace!("TlsConnector(tunnel): connection secured");
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }
 
@@ -396,17 +371,18 @@ impl<S, K> TlsConnector<S, K> {
             .map(|version| ApplicationProtocol::try_from(version.0))
             .transpose()?;
 
-        let builder = if let Some(builder) = extensions.get_mut::<TlsConnectorDataBuilder>() {
-            tracing::trace!(
-                "use TlsConnectorDataBuilder from extensions as foundation for connector cfg"
-            );
-            builder
-        } else {
-            tracing::trace!(
-                "start from Default TlsConnectorDataBuilder as foundation for connector cfg"
-            );
-            extensions.insert_mut(TlsConnectorDataBuilder::default())
-        };
+        let mut builder =
+            if let Some(builder) = extensions.get::<TlsConnectorDataBuilder>().cloned() {
+                tracing::trace!(
+                    "use TlsConnectorDataBuilder from extensions as foundation for connector cfg"
+                );
+                builder
+            } else {
+                tracing::trace!(
+                    "start from Default TlsConnectorDataBuilder as foundation for connector cfg"
+                );
+                TlsConnectorDataBuilder::default()
+            };
 
         if let Some(base_builder) = self.connector_data.clone() {
             tracing::trace!("prepend connector data (base) config to TlsConnectorDataBuilder");
@@ -417,6 +393,9 @@ impl<S, K> TlsConnector<S, K> {
         if let Some(target_version) = target_version {
             builder.try_set_rama_alpn_protos(&[target_version])?;
         }
+
+        // We dont have to insert, but it's nice to have...
+        extensions.insert(builder.clone());
         builder.build()
     }
 }
@@ -436,13 +415,23 @@ where
 
     let server_host = data.server_name.map(Host::Name).unwrap_or(server_host);
     let stream: SslStream<T> =
-        rama_boring_tokio::connect(data.config, server_host.to_string().as_str(), stream)
+        rama_boring_tokio::connect(data.config, &server_host.to_str(), stream)
             .await
-            .map_err(|err| match err.as_io_error() {
-                Some(err) => OpaqueError::from_display(err.to_string())
-                    .context("boring ssl connector: connect")
-                    .into_boxed(),
-                None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
+            .map_err(|err| {
+                let maybe_ssl_code = err.code();
+                if let Some(io_err) = err.as_io_error() {
+                    OpaqueError::from_display(format!(
+                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; without io-error: {io_err}"
+                    )).into_boxed()
+                } else if let Some(err) = err.as_ssl_error_stack() {
+                    OpaqueError::from_std(err).context(format!(
+                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; with ssl-error info"
+                    )).into_boxed()
+                } else {
+                    OpaqueError::from_display(format!(
+                        "boring ssl connector: connect (code: {maybe_ssl_code:?}); domain = {server_host}; without error info"
+                    )).into_boxed()
+                }
             })?;
     Ok(TlsStream::new(stream))
 }
@@ -526,7 +515,7 @@ pub struct ConnectorKindSecure;
 /// and using the hardcoded host otherwise.
 /// Context always overwrites though.
 ///
-/// [`TlsTunnel`]: crate::TlsTunnel
+/// [`TlsTunnel`]: rama_net::tls::TlsTunnel
 pub struct ConnectorKindTunnel {
     host: Option<Host>,
 }

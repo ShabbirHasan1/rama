@@ -1,12 +1,10 @@
-//! A middleware that limits the number of in-flight requests.
+//! A middleware that limits the number of in-flight inputs.
 //!
 //! See [`Limit`].
 
-use std::fmt;
-
 use crate::Service;
 use crate::error::BoxError;
-use into_response::{ErrorIntoResponse, ErrorIntoResponseFn};
+use into_output::{ErrorIntoOutput, ErrorIntoOutputFn};
 use rama_utils::macros::define_inner_service_accessors;
 
 pub mod policy;
@@ -17,15 +15,16 @@ mod layer;
 #[doc(inline)]
 pub use layer::LimitLayer;
 
-mod into_response;
+mod into_output;
 
-/// Limit requests based on a [`Policy`].
+/// Limit inputs based on a [`Policy`].
 ///
 /// [`Policy`]: crate::layer::limit::Policy
+#[derive(Debug, Clone)]
 pub struct Limit<S, P, F = ()> {
     inner: S,
     policy: P,
-    error_into_response: F,
+    error_into_output: F,
 }
 
 impl<S, P> Limit<S, P, ()> {
@@ -35,17 +34,17 @@ impl<S, P> Limit<S, P, ()> {
         Self {
             inner,
             policy,
-            error_into_response: (),
+            error_into_output: (),
         }
     }
 
     /// Attach a function to this [`Limit`] to allow you to turn the Policy error
     /// into a Result fully compatible with the inner `Service` Result.
-    pub fn with_error_into_response_fn<F>(self, f: F) -> Limit<S, P, ErrorIntoResponseFn<F>> {
+    pub fn with_error_into_output_fn<F>(self, f: F) -> Limit<S, P, ErrorIntoOutputFn<F>> {
         Limit {
             inner: self.inner,
             policy: self.policy,
-            error_into_response: ErrorIntoResponseFn(f),
+            error_into_output: ErrorIntoOutputFn(f),
         }
     }
 
@@ -55,60 +54,35 @@ impl<S, P> Limit<S, P, ()> {
 impl<T> Limit<T, UnlimitedPolicy, ()> {
     /// Creates a new [`Limit`] with an unlimited policy.
     ///
-    /// Meaning that all requests are allowed to proceed.
+    /// Meaning that all inputs are allowed to proceed.
     pub const fn unlimited(inner: T) -> Self {
         Self {
             inner,
             policy: UnlimitedPolicy,
-            error_into_response: (),
+            error_into_output: (),
         }
     }
 }
 
-impl<T: fmt::Debug, P: fmt::Debug, F: fmt::Debug> fmt::Debug for Limit<T, P, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Limit")
-            .field("inner", &self.inner)
-            .field("policy", &self.policy)
-            .field("error_into_response", &self.error_into_response)
-            .finish()
-    }
-}
-
-impl<T, P, F> Clone for Limit<T, P, F>
+impl<T, P, Input> Service<Input> for Limit<T, P, ()>
 where
-    T: Clone,
-    P: Clone,
-    F: Clone,
+    T: Service<Input, Error: Into<BoxError>>,
+    P: policy::Policy<Input, Error: Into<BoxError>>,
+    Input: Send + Sync + 'static,
 {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            policy: self.policy.clone(),
-            error_into_response: self.error_into_response.clone(),
-        }
-    }
-}
-
-impl<T, P, Request> Service<Request> for Limit<T, P, ()>
-where
-    T: Service<Request, Error: Into<BoxError>>,
-    P: policy::Policy<Request, Error: Into<BoxError>>,
-    Request: Send + Sync + 'static,
-{
-    type Response = T::Response;
+    type Output = T::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut request: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
         loop {
-            let result = self.policy.check(request).await;
+            let result = self.policy.check(input).await;
 
-            request = result.request;
+            input = result.input;
 
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
                     let _ = guard;
-                    return self.inner.serve(request).await.map_err(Into::into);
+                    return self.inner.serve(input).await.map_err(Into::into);
                 }
                 policy::PolicyOutput::Abort(err) => return Err(err.into()),
                 policy::PolicyOutput::Retry => (),
@@ -117,31 +91,31 @@ where
     }
 }
 
-impl<T, P, F, Request, FnResponse, FnError> Service<Request> for Limit<T, P, ErrorIntoResponseFn<F>>
+impl<T, P, F, Input, FnOutput, FnError> Service<Input> for Limit<T, P, ErrorIntoOutputFn<F>>
 where
-    T: Service<Request>,
-    P: policy::Policy<Request>,
-    F: Fn(P::Error) -> Result<FnResponse, FnError> + Send + Sync + 'static,
-    FnResponse: Into<T::Response> + Send + 'static,
+    T: Service<Input>,
+    P: policy::Policy<Input>,
+    F: Fn(P::Error) -> Result<FnOutput, FnError> + Send + Sync + 'static,
+    FnOutput: Into<T::Output> + Send + 'static,
     FnError: Into<T::Error> + Send + Sync + 'static,
-    Request: Send + Sync + 'static,
+    Input: Send + Sync + 'static,
 {
-    type Response = T::Response;
+    type Output = T::Output;
     type Error = T::Error;
 
-    async fn serve(&self, mut request: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
         loop {
-            let result = self.policy.check(request).await;
+            let result = self.policy.check(input).await;
 
-            request = result.request;
+            input = result.input;
 
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
                     let _ = guard;
-                    return self.inner.serve(request).await;
+                    return self.inner.serve(input).await;
                 }
                 policy::PolicyOutput::Abort(err) => {
-                    return match self.error_into_response.error_into_response(err) {
+                    return match self.error_into_output.error_into_output(err) {
                         Ok(ok) => Ok(ok.into()),
                         Err(err) => Err(err.into()),
                     };
@@ -163,33 +137,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit() {
-        async fn handle_request<Request>(req: Request) -> Result<Request, Infallible> {
+        async fn handle_input<Input>(req: Input) -> Result<Input, Infallible> {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             Ok(req)
         }
 
         let layer: LimitLayer<ConcurrentPolicy<_, _>> = LimitLayer::new(ConcurrentPolicy::max(1));
 
-        let service_1 = layer.layer(service_fn(handle_request));
-        let service_2 = layer.layer(service_fn(handle_request));
+        let service_1 = layer.layer(service_fn(handle_input));
+        let service_2 = layer.layer(service_fn(handle_input));
 
         let future_1 = service_1.serve("Hello");
         let future_2 = service_2.serve("Hello");
 
         let (result_1, result_2) = zip(future_1, future_2).await;
 
-        // check that one request succeeded and the other failed
-        if result_1.is_err() {
-            assert_eq!(result_2.unwrap(), "Hello");
-        } else {
-            assert_eq!(result_1.unwrap(), "Hello");
+        // check that one input succeeded and the other failed
+        if let Ok(value_1) = result_1 {
+            assert_eq!(value_1, "Hello");
             assert!(result_2.is_err());
+        } else {
+            assert_eq!(result_2.unwrap(), "Hello");
         }
     }
 
     #[tokio::test]
     async fn test_with_error_into_response_fn() {
-        async fn handle_request<Request>(_req: Request) -> Result<&'static str, Infallible> {
+        async fn handle_input<Input>(_req: Input) -> Result<&'static str, Infallible> {
             Ok("good")
         }
 
@@ -197,7 +171,7 @@ mod tests {
             LimitLayer::new(ConcurrentPolicy::max(0))
                 .with_error_into_response_fn(|_| Ok::<_, Infallible>("bad"));
 
-        let service = layer.layer(service_fn(handle_request));
+        let service = layer.layer(service_fn(handle_input));
 
         let resp = service.serve("Hello").await.unwrap();
         assert_eq!("bad", resp);
@@ -205,13 +179,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_zero_limit() {
-        async fn handle_request<Request>(req: Request) -> Result<Request, Infallible> {
+        async fn handle_input<Input>(req: Input) -> Result<Input, Infallible> {
             Ok(req)
         }
 
         let layer: LimitLayer<ConcurrentPolicy<_, _>> = LimitLayer::new(ConcurrentPolicy::max(0));
 
-        let service_1 = layer.layer(service_fn(handle_request));
+        let service_1 = layer.layer(service_fn(handle_input));
         let result_1 = service_1.serve("Hello").await;
         assert!(result_1.is_err());
     }

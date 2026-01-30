@@ -2,12 +2,15 @@
 
 #[cfg(feature = "http-full")]
 use rama::http::Body;
-use rama::telemetry::tracing::{self, level_filters::LevelFilter};
+use rama::telemetry::tracing::{
+    self,
+    level_filters::LevelFilter,
+    subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+};
 use std::{
     process::{Child, ExitStatus},
     sync::Once,
 };
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg(feature = "http-full")]
 use ::std::time::Duration;
@@ -44,6 +47,9 @@ use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_cli
 #[cfg(all(feature = "http-full", feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::client as rustls_client;
 
+#[cfg(all(feature = "http-full", any(feature = "rustls", feature = "boring")))]
+use rama::rt::Executor;
+
 #[cfg(feature = "http-full")]
 pub(super) type ClientService = BoxService<Request, Response, BoxError>;
 
@@ -65,7 +71,7 @@ static INIT_TRACING_ONCE: Once = Once::new();
 /// Initialize tracing for example tests
 pub(super) fn init_tracing() {
     INIT_TRACING_ONCE.call_once(|| {
-        let _ = tracing_subscriber::registry()
+        let _ = subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()
@@ -86,6 +92,19 @@ impl ExampleRunner {
         example_name: impl AsRef<str>,
         extra_features: Option<&'static str>,
     ) -> Self {
+        Self::interactive_with_envs(example_name, extra_features, [])
+    }
+
+    /// Run an example server and create a client for it for interactive testing.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the server process cannot be spawned.
+    pub(super) fn interactive_with_envs(
+        example_name: impl AsRef<str>,
+        extra_features: Option<&'static str>,
+        envs: impl IntoIterator<Item = (&'static str, &'static str)>,
+    ) -> Self {
         let child = escargot::CargoBuild::new()
             .arg(format!(
                 "--features=cli,tcp,http-full,proxy-full,{}",
@@ -102,6 +121,7 @@ impl ExampleRunner {
                 std::env::var("RUST_LOG").unwrap_or("trace".into()),
             )
             .env("SSLKEYLOGFILE", "./target/test_ssl_key_log.txt")
+            .envs(envs)
             .spawn()
             .unwrap();
 
@@ -128,13 +148,13 @@ impl ExampleRunner {
                     .with_server_verify_mode(ServerVerifyMode::Disable)
                     .into_shared_builder();
 
-                EasyHttpWebClient::builder()
+                EasyHttpWebClient::connector_builder()
                     .with_default_transport_connector()
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(Some(tls_config))
-                    .with_default_http_connector()
-                    .build()
+                    .with_default_http_connector(Executor::default())
+                    .build_client()
             };
 
             #[cfg(all(feature = "rustls", not(feature = "boring")))]
@@ -158,7 +178,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_rustls(Some(tls_config))
-                    .with_default_http_connector()
+                    .with_default_http_connector(Executor::default())
                     .build()
             };
 

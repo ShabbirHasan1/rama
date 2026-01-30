@@ -14,7 +14,7 @@
 //! # Expected output
 //!
 //! The server will start and listen on `:62035`.
-//! Open it in the browser to see it in action or use `rama ws` cli client to test it.
+//! Open it in the browser to see it in action or use `rama` cli client to test it.
 //!
 //! Note that firefox does not support h2 bootstrapping of WebSockets,
 //! Chrome does support it.
@@ -27,20 +27,25 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::ConsumeErrLayer,
-    net::tls::ApplicationProtocol,
-    net::tls::server::{SelfSignedData, ServerAuth, ServerConfig},
+    net::tls::{
+        ApplicationProtocol,
+        server::{SelfSignedData, ServerAuth, ServerConfig},
+    },
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{Level, info, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self, Level, info,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
-use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -59,23 +64,23 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let mut h2 = HttpServer::h2(Executor::graceful(guard.clone()));
-        h2.h2_mut().enable_connect_protocol(); // required for WS sockets
-        let server = h2.service(
-            Router::new().get("/", Html(INDEX)).connect(
+        h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
+        let server = h2.service(Arc::new(
+            Router::new().with_get("/", Html(INDEX)).with_connect(
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG)
                     .into_layer(WebSocketAcceptor::new().into_echo_service()),
             ),
-        );
+        ));
 
         let tls_server = TlsAcceptorLayer::new(acceptor_data).into_layer(server);
 
         info!("open web echo chat @ https://127.0.0.1:62035");
-        info!("or connect directly to wss://127.0.0.1:62035/echo (via 'rama ws')");
-        TcpListener::bind("127.0.0.1:62035")
+        info!("or connect directly to wss://127.0.0.1:62035/echo (via 'rama')");
+        TcpListener::bind("127.0.0.1:62035", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(guard, tls_server)
+            .serve(tls_server)
             .await;
     });
 

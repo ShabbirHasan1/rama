@@ -8,7 +8,7 @@ use rama::{
     extensions::ExtensionsMut,
     graceful::ShutdownGuard,
     http::{
-        Body, Request, Response, StatusCode,
+        Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -53,8 +53,9 @@ pub struct CliCommandProxy {
 /// run the rama proxy service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
     tracing::info!("starting proxy on: bind interface = {}", cfg.bind);
+    let exec = Executor::graceful(graceful);
 
-    let tcp_service = TcpListener::build()
+    let tcp_service = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -64,15 +65,15 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    graceful.into_spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(
+    exec.clone().into_spawn_task(async move {
+        let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
                 UpgradeLayer::new(
+                    exec.clone(),
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
-                    ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                    ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
                 ),
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 RemoveRequestHeaderLayer::hop_by_hop(),
@@ -102,7 +103,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
         );
 
         tcp_service
-            .serve_graceful(guard, tcp_service_builder.into_layer(http_service))
+            .serve(tcp_service_builder.into_layer(http_service))
             .await;
     });
 
@@ -110,11 +111,11 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
 }
 
 async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
+    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
         Ok(authority) => {
             tracing::info!(
-                server.address = %authority.host(),
-                server.port = %authority.port(),
+                server.address = %authority.host,
+                server.port = authority.port,
                 "accept CONNECT (lazy): insert proxy target into context",
             );
             req.extensions_mut().insert(ProxyTarget(authority));
@@ -134,10 +135,7 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty())
-                .unwrap())
+            Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
     }
 }

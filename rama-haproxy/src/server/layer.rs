@@ -8,7 +8,7 @@ use rama_core::{
 };
 use rama_net::forwarded::{Forwarded, ForwardedElement};
 use rama_utils::macros::generate_set_and_with;
-use std::{fmt, net::SocketAddr};
+use std::net::SocketAddr;
 use tokio::io::AsyncReadExt;
 
 /// Layer to decode the HaProxy Protocol
@@ -53,6 +53,7 @@ impl<S> Layer<S> for HaProxyLayer {
 ///
 /// This service will decode the HaProxy Protocol header and pass the decoded
 /// information to the inner service.
+#[derive(Debug, Clone)]
 pub struct HaProxyService<S> {
     inner: S,
     peek: bool,
@@ -77,33 +78,15 @@ impl<S> HaProxyService<S> {
     );
 }
 
-impl<S: fmt::Debug> fmt::Debug for HaProxyService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HaProxyService")
-            .field("inner", &self.inner)
-            .field("peek", &self.peek)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for HaProxyService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            peek: self.peek,
-        }
-    }
-}
-
 impl<S, IO> Service<IO> for HaProxyService<S>
 where
     S: Service<PeekStream<HeapReader, IO>, Error: Into<BoxError>>,
     IO: Stream + Unpin + ExtensionsMut,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: IO) -> Result<Self::Output, Self::Error> {
         let (mut buffer, mut read) = if self.peek {
             tracing::trace!("haproxy protocol peeking enabled: start detection");
 
@@ -176,23 +159,29 @@ where
                 match header.addresses {
                     v1::Addresses::Tcp4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
+                        let el = ForwardedElement::new_forwarded_for(peer_addr);
+                        let forwarded = if let Some(mut forwarded) =
+                            stream.extensions_mut().get::<Forwarded>().cloned()
+                        {
                             forwarded.append(el);
+                            forwarded
                         } else {
-                            let forwarded = Forwarded::new(el);
-                            stream.extensions_mut().insert(forwarded);
-                        }
+                            Forwarded::new(el)
+                        };
+                        stream.extensions_mut().insert(forwarded);
                     }
                     v1::Addresses::Tcp6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
+                        let el = ForwardedElement::new_forwarded_for(peer_addr);
+                        let forwarded = if let Some(mut forwarded) =
+                            stream.extensions_mut().get::<Forwarded>().cloned()
+                        {
                             forwarded.append(el);
+                            forwarded
                         } else {
-                            let forwarded = Forwarded::new(el);
-                            stream.extensions_mut().insert(forwarded);
-                        }
+                            Forwarded::new(el)
+                        };
+                        stream.extensions_mut().insert(forwarded);
                     }
                     v1::Addresses::Unknown => (),
                 };
@@ -202,23 +191,29 @@ where
                 match header.addresses {
                     v2::Addresses::IPv4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
+                        let el = ForwardedElement::new_forwarded_for(peer_addr);
+                        let forwarded = if let Some(mut forwarded) =
+                            stream.extensions_mut().get::<Forwarded>().cloned()
+                        {
                             forwarded.append(el);
+                            forwarded
                         } else {
-                            let forwarded = Forwarded::new(el);
-                            stream.extensions_mut().insert(forwarded);
-                        }
+                            Forwarded::new(el)
+                        };
+                        stream.extensions_mut().insert(forwarded);
                     }
                     v2::Addresses::IPv6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
+                        let el = ForwardedElement::new_forwarded_for(peer_addr);
+                        let forwarded = if let Some(mut forwarded) =
+                            stream.extensions_mut().get::<Forwarded>().cloned()
+                        {
                             forwarded.append(el);
+                            forwarded
                         } else {
-                            let forwarded = Forwarded::new(el);
-                            stream.extensions_mut().insert(forwarded);
-                        }
+                            Forwarded::new(el)
+                        };
+                        stream.extensions_mut().insert(forwarded);
                     }
                     v2::Addresses::Unix(_) | v2::Addresses::Unspecified => (),
                 };

@@ -6,8 +6,12 @@ use crate::headers::encoding::{AcceptEncoding, Encoding};
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
 use rama_core::Service;
+use rama_core::telemetry::tracing;
+use rama_http_headers::ContentEncoding;
+use rama_http_headers::HeaderDecode;
 use rama_http_types::HeaderValue;
 use rama_http_types::StreamingBody;
+use rama_http_types::header::Entry;
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::submatch_ignore_ascii_case;
 
@@ -17,41 +21,13 @@ use rama_utils::str::submatch_ignore_ascii_case;
 /// `Content-Encoding` header to responses.
 ///
 /// See the [module docs](crate::layer::compression) for more details.
+#[derive(Debug, Clone)]
 pub struct Compression<S, P = DefaultPredicate> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,
     pub(crate) predicate: P,
+    pub(crate) respect_content_encoding_if_possible: bool,
     pub(crate) quality: CompressionLevel,
-}
-
-impl<S, P> std::fmt::Debug for Compression<S, P>
-where
-    S: std::fmt::Debug,
-    P: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Compression")
-            .field("inner", &self.inner)
-            .field("accept", &self.accept)
-            .field("predicate", &self.predicate)
-            .field("quality", &self.quality)
-            .finish()
-    }
-}
-
-impl<S, P> Clone for Compression<S, P>
-where
-    S: Clone,
-    P: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            accept: self.accept,
-            predicate: self.predicate.clone(),
-            quality: self.quality,
-        }
-    }
 }
 
 impl<S> Compression<S, DefaultPredicate> {
@@ -61,6 +37,7 @@ impl<S> Compression<S, DefaultPredicate> {
             inner: service,
             accept: AcceptEncoding::default(),
             predicate: DefaultPredicate::default(),
+            respect_content_encoding_if_possible: false,
             quality: CompressionLevel::default(),
         }
     }
@@ -69,69 +46,56 @@ impl<S> Compression<S, DefaultPredicate> {
 impl<S, P> Compression<S, P> {
     define_inner_service_accessors!();
 
-    /// Sets whether to enable the gzip encoding.
-    #[must_use]
-    pub fn gzip(mut self, enable: bool) -> Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the gzip encoding.
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.accept.set_gzip(enable);
+            self
+        }
     }
 
-    /// Sets whether to enable the gzip encoding.
-    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Deflate encoding.
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.accept.set_deflate(enable);
+            self
+        }
     }
 
-    /// Sets whether to enable the Deflate encoding.
-    #[must_use]
-    pub fn deflate(mut self, enable: bool) -> Self {
-        self.accept.set_deflate(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Brotli encoding.
+        pub fn br(mut self, enable: bool) -> Self {
+            self.accept.set_br(enable);
+            self
+        }
     }
 
-    /// Sets whether to enable the Deflate encoding.
-    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_deflate(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Zstd encoding.
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.accept.set_zstd(enable);
+            self
+        }
     }
 
-    /// Sets whether to enable the Brotli encoding.
-    #[must_use]
-    pub fn br(mut self, enable: bool) -> Self {
-        self.accept.set_br(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the compression quality.
+        pub fn quality(mut self, quality: CompressionLevel) -> Self {
+            self.quality = quality;
+            self
+        }
     }
 
-    /// Sets whether to enable the Brotli encoding.
-    pub fn set_br(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to enable the Zstd encoding.
-    #[must_use]
-    pub fn zstd(mut self, enable: bool) -> Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets whether to enable the Zstd encoding.
-    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets the compression quality.
-    #[must_use]
-    pub fn quality(mut self, quality: CompressionLevel) -> Self {
-        self.quality = quality;
-        self
-    }
-
-    /// Sets the compression quality.
-    pub fn set_quality(&mut self, quality: CompressionLevel) -> &mut Self {
-        self.quality = quality;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow responses with content-encoding.
+        ///
+        /// Useful in case your stack uses that response header as preference.
+        /// Not something you want for regular servers or proxies however,
+        /// or most use cases for that matter.
+        pub fn respect_content_encoding_if_possible(mut self) -> Self {
+            self.respect_content_encoding_if_possible = true;
+            self
+        }
     }
 
     /// Replace the current compression predicate.
@@ -144,6 +108,7 @@ impl<S, P> Compression<S, P> {
     /// # Changing the compression predicate
     ///
     /// ```
+    /// use rama_utils::str::arcstr::arcstr;
     /// use rama_http::layer::compression::{
     ///     Compression,
     ///     predicate::{Predicate, NotForContentType, DefaultPredicate},
@@ -160,9 +125,9 @@ impl<S, P> Compression<S, P> {
     /// // custom predicates
     /// let predicate = DefaultPredicate::new()
     ///     // don't compress responses who's `content-type` starts with `application/json`
-    ///     .and(NotForContentType::new("application/json"));
+    ///     .and(NotForContentType::new(arcstr!("application/json")));
     ///
-    /// let service = Compression::new(service).compress_when(predicate);
+    /// let service = Compression::new(service).with_compress_predicate(predicate);
     /// ```
     ///
     /// See [`predicate`](super::predicate) for more utilities for building compression predicates.
@@ -170,7 +135,7 @@ impl<S, P> Compression<S, P> {
     /// Responses that are already compressed (ie have a `content-encoding` header) will _never_ be
     /// recompressed, regardless what they predicate says.
     #[must_use]
-    pub fn compress_when<C>(self, predicate: C) -> Compression<S, C>
+    pub fn with_compress_predicate<C>(self, predicate: C) -> Compression<S, C>
     where
         C: Predicate,
     {
@@ -178,6 +143,7 @@ impl<S, P> Compression<S, P> {
             inner: self.inner,
             accept: self.accept,
             predicate,
+            respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
         }
     }
@@ -185,25 +151,39 @@ impl<S, P> Compression<S, P> {
 
 impl<ReqBody, ResBody, S, P> Service<Request<ReqBody>> for Compression<S, P>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ResBody: StreamingBody<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
     P: Predicate + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
-    type Response = Response<CompressionBody<ResBody>>;
+    type Output = Response<CompressionBody<ResBody>>;
     type Error = S::Error;
 
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
-        let encoding = Encoding::from_accept_encoding_headers(req.headers(), self.accept);
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let mut selected_encoding =
+            Encoding::from_accept_encoding_headers(req.headers(), self.accept);
 
-        let res = self.inner.serve(req).await?;
+        let mut res = self.inner.serve(req).await?;
 
-        // never recompress responses that are already compressed
-        let should_compress = !res.headers().contains_key(header::CONTENT_ENCODING)
-            // never compress responses that are ranges
-            && !res.headers().contains_key(header::CONTENT_RANGE)
-            && self.predicate.should_compress(&res);
+        let should_compress =
+            //never compress responses that are ranges
+            !res.headers().contains_key(header::CONTENT_RANGE) &&
+            self.predicate.should_compress(&res) && if self.respect_content_encoding_if_possible {
+                if let Entry::Occupied(entry) =  res.headers_mut().entry(header::CONTENT_ENCODING) {
+                    let mut opt = entry.remove_entry_mult().1.next();
+                    tracing::trace!("detected response content-encoding: {opt:?}");
+                    if let Ok(encoding) = ContentEncoding::decode(&mut opt.iter())
+                        && let Some(overwrite) = Encoding::maybe_from_content_encoding_directive(&encoding.0.head, self.accept) {
+                            tracing::debug!("overwrite req encoding {selected_encoding:?} with respected content-encoding: {overwrite:?}");
+                            selected_encoding = overwrite;
+                    }
+                }
+                true
+            } else {
+                // unless requested do not recompress responses that are already compressed
+                !res.headers().contains_key(header::CONTENT_ENCODING)
+            };
 
         let (mut parts, body) = res.into_parts();
 
@@ -220,7 +200,7 @@ where
                 .append(header::VARY, header::ACCEPT_ENCODING.into());
         }
 
-        let body = match (should_compress, encoding) {
+        let body = match (should_compress, selected_encoding) {
             // if compression is _not_ supported or the client doesn't accept it
             (false, _) | (_, Encoding::Identity) => {
                 return Ok(Response::from_parts(
@@ -267,9 +247,10 @@ where
         parts.headers.remove(header::ACCEPT_RANGES);
         parts.headers.remove(header::CONTENT_LENGTH);
 
-        parts
-            .headers
-            .insert(header::CONTENT_ENCODING, HeaderValue::from(encoding));
+        parts.headers.insert(
+            header::CONTENT_ENCODING,
+            HeaderValue::from(selected_encoding),
+        );
 
         let res = Response::from_parts(parts, body);
         Ok(res)

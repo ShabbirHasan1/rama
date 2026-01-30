@@ -23,16 +23,16 @@ pub struct HARExportService<R, S, T> {
 impl<R, S, W, ReqBody, ResBody> Service<Request<ReqBody>> for HARExportService<R, S, W>
 where
     R: Recorder,
-    S: Service<Request, Response = Response<ResBody>>,
+    S: Service<Request, Output = Response<ResBody>>,
     S::Error: Into<BoxError> + Send + Sync + 'static,
     W: Toggle,
     ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         struct EntryStartInfo {
             start_time: DateTime<Utc>,
             begin: Instant, // TODO: replace with total time
@@ -121,7 +121,11 @@ where
             let entry = Entry {
                 page_ref: None,
                 started_date_time: entry_start_info.start_time,
-                time: entry_start_info.begin.elapsed().as_millis() as u64,
+                time: entry_start_info
+                    .begin
+                    .elapsed()
+                    .as_millis()
+                    .min(i64::MAX as u128) as i64,
                 request: entry_start_info.request,
                 response,
                 cache,

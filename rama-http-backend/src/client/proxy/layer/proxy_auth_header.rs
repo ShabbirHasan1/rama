@@ -4,12 +4,13 @@ use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::Request;
 use rama_net::{address::ProxyAddress, http::RequestContext, user::ProxyCredential};
-use std::fmt;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A [`Layer`] which will set the http auth header
-/// in case there is a [`ProxyAddress`] in the [`Context`].
+/// in case there is a [`ProxyAddress`] in the [`Extensions`].
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct SetProxyAuthHttpHeaderLayer;
 
 impl SetProxyAuthHttpHeaderLayer {
@@ -29,25 +30,12 @@ impl<S> Layer<S> for SetProxyAuthHttpHeaderLayer {
 }
 
 /// A [`Service`] wwhich will set the http auth header
-/// in case there is a [`ProxyAddress`] in the [`Context`].
+/// in case there is a [`ProxyAddress`] in the [`Extensions`].
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
+#[derive(Debug, Clone)]
 pub struct SetProxyAuthHttpHeaderService<S> {
     inner: S,
-}
-
-impl<S: fmt::Debug> fmt::Debug for SetProxyAuthHttpHeaderService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SetProxyAuthHttpHeaderService")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for SetProxyAuthHttpHeaderService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl<S> SetProxyAuthHttpHeaderService<S> {
@@ -62,13 +50,13 @@ where
     S: Service<Request<Body>>,
     Body: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         mut req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         if let Some(pa) = req.extensions().get::<ProxyAddress>()
             && let Some(credential) = pa.credential.clone()
         {

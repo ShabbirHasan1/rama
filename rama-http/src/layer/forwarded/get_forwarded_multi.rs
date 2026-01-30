@@ -34,11 +34,11 @@ use std::marker::PhantomData;
 /// There are no [`GetForwardedHeadersLayer`] constructors for these headers,
 /// but you can use the [`GetForwardedHeadersLayer::new`] constructor and pass the header type as a type parameter in a tuple with other headers.
 ///
-/// [`X-Real-Ip`]: crate::headers::XRealIp
-/// [`X-Client-Ip`]: crate::headers::XClientIp
-/// [`Client-Ip`]: crate::headers::ClientIp
-/// [`CF-Connecting-Ip`]: crate::headers::CFConnectingIp
-/// [`True-Client-Ip`]: crate::headers::TrueClientIp
+/// [`X-Real-Ip`]: crate::headers::forwarded::XRealIp
+/// [`X-Client-Ip`]: crate::headers::forwarded::XClientIp
+/// [`Client-Ip`]: crate::headers::forwarded::ClientIp
+/// [`CF-Connecting-Ip`]: crate::headers::forwarded::CFConnectingIp
+/// [`True-Client-Ip`]: crate::headers::forwarded::TrueClientIp
 pub struct GetForwardedHeadersLayer<T = Forwarded> {
     _headers: PhantomData<fn() -> T>,
 }
@@ -134,15 +134,14 @@ macro_rules! get_forwarded_service_for_tuple {
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
             S: Service<Request<Body>>,
             Body: Send + 'static,
-
         {
-            type Response = S::Response;
+            type Output = S::Output;
             type Error = S::Error;
 
             fn serve(
                 &self,
                 mut req: Request<Body>,
-            ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+            ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
                 let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
 
                 $(
@@ -164,17 +163,19 @@ macro_rules! get_forwarded_service_for_tuple {
                 )*
 
                 if !forwarded_elements.is_empty() {
-                    match req.extensions_mut().get_mut::<Forwarded>() {
-                        Some(ref mut f) => {
-                            f.extend(forwarded_elements);
+                    let forwarded = match req.extensions_mut().get::<Forwarded>().cloned() {
+                        Some(mut forwarded) => {
+                            forwarded.extend(forwarded_elements);
+                            forwarded
                         }
                         None => {
                             let mut it = forwarded_elements.into_iter();
                             let mut forwarded = Forwarded::new(it.next().unwrap());
                             forwarded.extend(it);
-                            req.extensions_mut().insert(forwarded);
+                            forwarded
                         }
-                    }
+                    };
+                    req.extensions_mut().insert(forwarded);
                 }
 
                 self.inner.serve(req)

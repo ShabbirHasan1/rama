@@ -3,15 +3,18 @@ use std::net::IpAddr;
 use super::utils;
 
 use rama::{
-    Service,
-    extensions::ExtensionsMut,
-    http::layer::required_header::AddRequiredRequestHeaders,
-    http::{Body, BodyExtractExt, Request, client::HttpConnector},
+    Layer as _, Service,
+    extensions::{ExtensionsMut, ExtensionsRef},
+    http::{
+        Body, BodyExtractExt, Request, client::HttpConnectorLayer,
+        layer::required_header::AddRequiredRequestHeaders,
+    },
     net::{
         client::{ConnectorService, EstablishedClientConnection},
         forwarded::{Forwarded, ForwardedElement},
     },
     proxy::haproxy::client::HaProxyService,
+    rt::Executor,
     tcp::client::service::TcpConnector,
 };
 
@@ -39,7 +42,8 @@ async fn test_haproxy_client_ip() {
 }
 
 async fn test_server_with_haproxy_v1() {
-    let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()).v1());
+    let client = HttpConnectorLayer::default()
+        .into_layer(HaProxyService::tcp(TcpConnector::new(Executor::default())).v1());
 
     let mut request = Request::builder()
         .uri("http://127.0.0.1:62025")
@@ -50,18 +54,21 @@ async fn test_server_with_haproxy_v1() {
 
     request
         .extensions_mut()
-        .insert(Forwarded::new(ForwardedElement::forwarded_for((
+        .insert(Forwarded::new(ForwardedElement::new_forwarded_for((
             IpAddr::V4([1u8, 2u8, 3u8, 4u8].into()),
             0,
         ))));
 
     let EstablishedClientConnection {
-        req,
+        input: mut req,
         conn: http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a connection to the http server using haproxy v1");
+
+    req.extensions_mut()
+        .extend(http_service.extensions().clone());
 
     let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(req)
@@ -75,7 +82,8 @@ async fn test_server_with_haproxy_v1() {
 }
 
 async fn test_server_with_haproxy_v2() {
-    let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()));
+    let client = HttpConnectorLayer::default()
+        .into_layer(HaProxyService::tcp(TcpConnector::new(Executor::default())));
 
     let mut request = Request::builder()
         .uri("http://127.0.0.1:62025")
@@ -86,18 +94,21 @@ async fn test_server_with_haproxy_v2() {
 
     request
         .extensions_mut()
-        .insert(Forwarded::new(ForwardedElement::forwarded_for((
+        .insert(Forwarded::new(ForwardedElement::new_forwarded_for((
             IpAddr::V4([2u8, 3u8, 4u8, 5u8].into()),
             0,
         ))));
 
     let EstablishedClientConnection {
-        req,
+        input: mut req,
         conn: http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a connection to the http server using haproxy v2");
+
+    req.extensions_mut()
+        .extend(http_service.extensions().clone());
 
     let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(req)

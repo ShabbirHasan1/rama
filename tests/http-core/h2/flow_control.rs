@@ -120,6 +120,87 @@ async fn release_capacity_sends_window_update() {
 }
 
 #[tokio::test]
+async fn window_updates_include_padded_length() {
+    h2_support::trace_init!();
+
+    // Our manual way of sending padding frames, not supported publicly
+    const PAYLOAD_LEN: usize = 16_378; // 16_384; does padding + payload count for max frame size?
+    let mut payload = Vec::with_capacity(PAYLOAD_LEN + 6);
+    payload.push(5);
+    payload.extend_from_slice(&[b'z'; PAYLOAD_LEN][..]);
+    payload.extend_from_slice(&[b'0'; 5][..]);
+
+    let (io, mut srv) = mock::new();
+
+    let mock = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://http2.akamai.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+        srv.send_frame(frames::data(1, &payload[..]).padded()).await;
+        srv.send_frame(frames::data(1, &payload[..]).padded()).await;
+        srv.send_frame(frames::data(1, &payload[..]).padded()).await;
+        // the other 6 was auto-released earlier
+        srv.recv_frame(frames::window_update(0, 32_774)).await;
+        srv.recv_frame(frames::window_update(1, 32_774)).await;
+        srv.send_frame(frames::data(1, &payload[..]).padded().eos())
+            .await;
+        // but not double released here
+        srv.recv_frame(frames::window_update(0, 32_762)).await;
+        // and no one cares about closed stream window
+    };
+
+    let h2 = async move {
+        let (mut client, h2) = client::handshake(io).await.unwrap();
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://http2.akamai.com/")
+            .body(())
+            .unwrap();
+
+        let req = async move {
+            let resp = client.send_request(request, true).unwrap().0.await.unwrap();
+            // Get the response
+            assert_eq!(resp.status(), StatusCode::OK);
+            let mut body = resp.into_parts().1;
+
+            // read some body to use up window size to below half
+
+            let buf = body.data().await.unwrap().unwrap();
+            assert_eq!(buf.len(), PAYLOAD_LEN);
+
+            let buf = body.data().await.unwrap().unwrap();
+            assert_eq!(buf.len(), PAYLOAD_LEN);
+
+            let buf = body.data().await.unwrap().unwrap();
+            assert_eq!(buf.len(), PAYLOAD_LEN);
+            body.flow_control().release_capacity(buf.len() * 2).unwrap();
+
+            let buf = body.data().await.unwrap().unwrap();
+            assert_eq!(buf.len(), PAYLOAD_LEN);
+            drop(body);
+            idle_ms(20).await;
+        };
+
+        join(
+            async move {
+                h2.await.unwrap();
+            },
+            req,
+        )
+        .await
+    };
+
+    join(mock, h2).await;
+}
+
+#[tokio::test]
 async fn release_capacity_of_small_amount_does_not_send_window_update() {
     h2_support::trace_init!();
 
@@ -261,7 +342,7 @@ async fn recv_data_overflows_stream_window() {
 
     let h2 = async move {
         let (mut client, conn) = client::Builder::new()
-            .initial_window_size(16_384)
+            .with_initial_window_size(16_384)
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
@@ -801,7 +882,7 @@ async fn recv_settings_removes_available_capacity() {
     let (io, mut srv) = mock::new();
 
     let mut settings = frame::Settings::default();
-    settings.set_initial_window_size(Some(0));
+    settings.config.initial_window_size = Some(0);
 
     let srv = async move {
         let settings = srv.assert_client_handshake_with_settings(settings).await;
@@ -854,7 +935,7 @@ async fn recv_settings_keeps_assigned_capacity() {
         assert_default_settings!(settings);
         srv.recv_frame(frames::headers(1).request("POST", "https://http2.akamai.com/"))
             .await;
-        srv.send_frame(frames::settings().initial_window_size(64))
+        srv.send_frame(frames::settings().with_initial_window_size(64))
             .await;
         srv.recv_frame(frames::settings_ack()).await;
         sent_settings.send(()).unwrap();
@@ -893,7 +974,7 @@ async fn recv_no_init_window_then_receive_some_init_window() {
     let (io, mut srv) = mock::new();
 
     let mut settings = frame::Settings::default();
-    settings.set_initial_window_size(Some(0));
+    settings.config.initial_window_size = Some(0);
 
     let srv = async move {
         let settings = srv.assert_client_handshake_with_settings(settings).await;
@@ -901,12 +982,12 @@ async fn recv_no_init_window_then_receive_some_init_window() {
         srv.recv_frame(frames::headers(1).request("POST", "https://http2.akamai.com/"))
             .await;
         idle_ms(100).await;
-        srv.send_frame(frames::settings().initial_window_size(10))
+        srv.send_frame(frames::settings().with_initial_window_size(10))
             .await;
         srv.recv_frame(frames::settings_ack()).await;
         srv.recv_frame(frames::data(1, "hello worl")).await;
         idle_ms(100).await;
-        srv.send_frame(frames::settings().initial_window_size(11))
+        srv.send_frame(frames::settings().with_initial_window_size(11))
             .await;
         srv.recv_frame(frames::settings_ack()).await;
         srv.recv_frame(frames::data(1, "d").eos()).await;
@@ -963,7 +1044,7 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
             .await;
         idle_ms(200).await;
         // Remove all capacity from streams
-        srv.send_frame(frames::settings().initial_window_size(0))
+        srv.send_frame(frames::settings().with_initial_window_size(0))
             .await;
         srv.recv_frame(frames::settings_ack()).await;
 
@@ -981,7 +1062,7 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
         idle_ms(500).await;
 
         // Reset initial window size
-        srv.send_frame(frames::settings().initial_window_size(window_size as u32))
+        srv.send_frame(frames::settings().with_initial_window_size(window_size as u32))
             .await;
         srv.recv_frame(frames::settings_ack()).await;
 
@@ -1061,7 +1142,7 @@ async fn client_increase_target_window_size() {
 
     let client = async move {
         let (_client, mut conn) = client::handshake(io).await.unwrap();
-        conn.set_target_window_size(2 << 20);
+        conn.try_set_target_window_size(2 << 20).unwrap();
         conn.await.unwrap();
     };
     join(srv, client).await;
@@ -1097,7 +1178,7 @@ async fn increase_target_window_size_after_using_some() {
         let res = client.send_request(request, true).unwrap().0;
 
         let res = conn.drive(res).await.unwrap();
-        conn.set_target_window_size(2 << 20);
+        conn.try_set_target_window_size(2 << 20).unwrap();
         // drive an empty future to allow the WINDOW_UPDATE
         // to go out while the response capacity is still in use.
         conn.drive(yield_once()).await;
@@ -1132,7 +1213,7 @@ async fn decrease_target_window_size() {
 
     let client = async move {
         let (mut client, mut conn) = client::handshake(io).await.unwrap();
-        conn.set_target_window_size(16_384 * 2);
+        conn.try_set_target_window_size(16_384 * 2).unwrap();
 
         let request = Request::builder()
             .uri("https://http2.akamai.com/")
@@ -1140,7 +1221,7 @@ async fn decrease_target_window_size() {
             .unwrap();
         let (resp, _) = client.send_request(request, true).unwrap();
         let res = conn.drive(resp).await.expect("response");
-        conn.set_target_window_size(16_384);
+        conn.try_set_target_window_size(16_384).unwrap();
         let mut body = res.into_parts().1;
         let mut cap = body.flow_control().clone();
 
@@ -1175,7 +1256,7 @@ async fn client_update_initial_window_size() {
         srv.send_frame(frames::data(1, vec![b'a'; 16_384])).await;
         srv.send_frame(frames::data(1, vec![b'b'; 16_384])).await;
         srv.send_frame(frames::data(1, vec![b'c'; 16_384])).await;
-        srv.recv_frame(frames::settings().initial_window_size(window_size))
+        srv.recv_frame(frames::settings().with_initial_window_size(window_size))
             .await;
         srv.send_frame(frames::settings_ack()).await;
         // we never got a WINDOW_UPDATE, but initial update allows more
@@ -1186,7 +1267,7 @@ async fn client_update_initial_window_size() {
 
     let client = async move {
         let (mut client, mut conn) = client::handshake(io).await.unwrap();
-        conn.set_target_window_size(window_size);
+        conn.try_set_target_window_size(window_size).unwrap();
 
         // We'll never release_capacity back...
         async fn data(body: &mut h2::RecvStream, expect: &str) {
@@ -1211,7 +1292,8 @@ async fn client_update_initial_window_size() {
             .await;
 
         // Update the initial window size to double
-        conn.set_initial_window_size(window_size).expect("update");
+        conn.try_set_initial_window_size(window_size)
+            .expect("update");
 
         // And then ensure we got the data normally "over" the smaller
         // initial_window_size...
@@ -1264,7 +1346,7 @@ async fn client_decrease_initial_window_size() {
         srv.send_frame(frames::headers(5).response(200)).await;
         srv.send_frame(frames::data(5, vec![b'a'; 100])).await;
 
-        srv.recv_frame(frames::settings().initial_window_size(0))
+        srv.recv_frame(frames::settings().with_initial_window_size(0))
             .await;
         // check settings haven't applied before ACK
         srv.send_frame(frames::data(1, vec![b'a'; 100]).eos()).await;
@@ -1277,7 +1359,7 @@ async fn client_decrease_initial_window_size() {
         // check stream 5 can release capacity
         srv.recv_frame(frames::window_update(5, 100)).await;
 
-        srv.recv_frame(frames::settings().initial_window_size(16_384))
+        srv.recv_frame(frames::settings().with_initial_window_size(16_384))
             .await;
         srv.send_frame(frames::settings_ack()).await;
 
@@ -1310,7 +1392,7 @@ async fn client_decrease_initial_window_size() {
         let mut body5 = conn.drive(req(&mut client)).await;
 
         // Remove *all* window size of streams
-        conn.set_initial_window_size(0).expect("update0");
+        conn.try_set_initial_window_size(0).expect("update0");
         conn.drive(yield_once()).await;
 
         // stream 1 received before settings ACK
@@ -1336,7 +1418,7 @@ async fn client_decrease_initial_window_size() {
         conn.drive(yield_once()).await;
 
         // open up again
-        conn.set_initial_window_size(16_384).expect("update16");
+        conn.try_set_initial_window_size(16_384).expect("update16");
         conn.drive(yield_once()).await;
 
         // get stream 5 data after opening up
@@ -1367,7 +1449,7 @@ async fn server_target_window_size() {
     };
     let srv = async move {
         let mut conn = server::handshake(io).await.unwrap();
-        conn.set_target_window_size(2 << 20);
+        conn.try_set_target_window_size(2 << 20).unwrap();
         conn.next().await;
     };
 
@@ -1390,7 +1472,7 @@ async fn recv_settings_increase_window_size_after_using_some() {
         srv.recv_frame(frames::data(1, vec![0; 16_384])).await;
         srv.recv_frame(frames::data(1, vec![0; 16_384])).await;
         srv.recv_frame(frames::data(1, vec![0; 16_383])).await;
-        srv.send_frame(frames::settings().initial_window_size(new_win_size as u32))
+        srv.send_frame(frames::settings().with_initial_window_size(new_win_size as u32))
             .await;
         srv.recv_frame(frames::settings_ack()).await;
         srv.send_frame(frames::window_update(0, 1)).await;
@@ -1572,7 +1654,7 @@ async fn poll_capacity_after_send_data_and_reserve() {
 
     let srv = async move {
         let settings = srv
-            .assert_client_handshake_with_settings(frames::settings().initial_window_size(5))
+            .assert_client_handshake_with_settings(frames::settings().with_initial_window_size(5))
             .await;
         assert_default_settings!(settings);
         srv.recv_frame(frames::headers(1).request("POST", "https://www.example.com/"))
@@ -1622,7 +1704,7 @@ async fn poll_capacity_after_send_data_and_reserve_with_max_send_buffer_size() {
 
     let srv = async move {
         let settings = srv
-            .assert_client_handshake_with_settings(frames::settings().initial_window_size(10))
+            .assert_client_handshake_with_settings(frames::settings().with_initial_window_size(10))
             .await;
         assert_default_settings!(settings);
         srv.recv_frame(frames::headers(1).request("POST", "https://www.example.com/"))
@@ -1635,7 +1717,7 @@ async fn poll_capacity_after_send_data_and_reserve_with_max_send_buffer_size() {
 
     let h2 = async move {
         let (mut client, mut h2) = client::Builder::new()
-            .max_send_buffer_size(5)
+            .with_max_send_buffer_size(5)
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
@@ -1687,7 +1769,7 @@ async fn max_send_buffer_size_overflow() {
 
     let client = async move {
         let (mut client, mut conn) = client::Builder::new()
-            .max_send_buffer_size(5)
+            .with_max_send_buffer_size(5)
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
@@ -1747,7 +1829,7 @@ async fn max_send_buffer_size_poll_capacity_wakes_task() {
 
     let client = async move {
         let (mut client, mut conn) = client::Builder::new()
-            .max_send_buffer_size(5)
+            .with_max_send_buffer_size(5)
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
@@ -1808,7 +1890,7 @@ async fn poll_capacity_wakeup_after_window_update() {
 
     let srv = async move {
         let settings = srv
-            .assert_client_handshake_with_settings(frames::settings().initial_window_size(10))
+            .assert_client_handshake_with_settings(frames::settings().with_initial_window_size(10))
             .await;
         assert_default_settings!(settings);
         srv.recv_frame(frames::headers(1).request("POST", "https://www.example.com/"))
@@ -1823,7 +1905,7 @@ async fn poll_capacity_wakeup_after_window_update() {
 
     let h2 = async move {
         let (mut client, mut h2) = client::Builder::new()
-            .max_send_buffer_size(5)
+            .with_max_send_buffer_size(5)
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
@@ -1875,19 +1957,19 @@ async fn window_size_does_not_underflow() {
         client.send_bytes(&[0, 0, 0, 1, 5, 0, 0, 0, 1]).await;
 
         client
-            .send_frame(frames::settings().initial_window_size(1329018135))
+            .send_frame(frames::settings().with_initial_window_size(1329018135))
             .await;
 
         client
-            .send_frame(frames::settings().initial_window_size(3809661))
+            .send_frame(frames::settings().with_initial_window_size(3809661))
             .await;
 
         client
-            .send_frame(frames::settings().initial_window_size(1467177332))
+            .send_frame(frames::settings().with_initial_window_size(1467177332))
             .await;
 
         client
-            .send_frame(frames::settings().initial_window_size(3844989))
+            .send_frame(frames::settings().with_initial_window_size(3844989))
             .await;
     };
 
@@ -2039,7 +2121,7 @@ async fn too_many_window_update_resets_causes_go_away() {
 
     let srv = async move {
         let mut conn = server::Builder::new()
-            .max_local_error_reset_streams(Some(10))
+            .with_max_local_error_reset_streams(10)
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();

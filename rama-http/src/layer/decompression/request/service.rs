@@ -1,5 +1,4 @@
-use std::fmt;
-
+use crate::StreamingBody;
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::{
     decompression::DecompressionBody,
@@ -7,13 +6,10 @@ use crate::layer::{
     util::compression::{CompressionLevel, WrapBody},
 };
 use crate::{HeaderValue, Request, Response, StatusCode, header};
-use crate::{
-    StreamingBody,
-    body::util::{BodyExt, Empty, combinators::UnsyncBoxBody},
-};
 use rama_core::Service;
-use rama_core::bytes::Buf;
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_http_types::Body;
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Decompresses request bodies and calls its underlying service.
@@ -27,47 +23,27 @@ use rama_utils::macros::define_inner_service_accessors;
 /// This is disabled by default.
 ///
 /// See the [module docs](crate::layer::decompression) for more details.
+#[derive(Debug, Clone)]
 pub struct RequestDecompression<S> {
     pub(super) inner: S,
     pub(super) accept: AcceptEncoding,
     pub(super) pass_through_unaccepted: bool,
 }
 
-impl<S: fmt::Debug> fmt::Debug for RequestDecompression<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RequestDecompression")
-            .field("inner", &self.inner)
-            .field("accept", &self.accept)
-            .field("pass_through_unaccepted", &self.pass_through_unaccepted)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for RequestDecompression<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            accept: self.accept,
-            pass_through_unaccepted: self.pass_through_unaccepted,
-        }
-    }
-}
-
-impl<S, ReqBody, ResBody, D> Service<Request<ReqBody>> for RequestDecompression<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for RequestDecompression<S>
 where
     S: Service<
             Request<DecompressionBody<ReqBody>>,
-            Response = Response<ResBody>,
+            Output = Response<ResBody>,
             Error: Into<BoxError>,
         >,
     ReqBody: StreamingBody + Send + 'static,
-    ResBody: StreamingBody<Data = D, Error: Into<BoxError>> + Send + 'static,
-    D: Buf + 'static,
+    ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response<UnsyncBoxBody<D, BoxError>>;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let (mut parts, body) = req.into_parts();
 
         let body =
@@ -95,7 +71,7 @@ where
                     }
                     b"identity" => BodyInner::identity(body),
                     _ if self.pass_through_unaccepted => BodyInner::identity(body),
-                    _ => return unsupported_encoding(self.accept).await,
+                    _ => return unsupported_encoding(self.accept),
                 }
             } else {
                 BodyInner::identity(body)
@@ -105,17 +81,12 @@ where
         self.inner
             .serve(req)
             .await
-            .map(|res| res.map(|body| body.map_err(Into::into).boxed_unsync()))
+            .map(|res| res.map(Body::new))
             .map_err(Into::into)
     }
 }
 
-async fn unsupported_encoding<D>(
-    accept: AcceptEncoding,
-) -> Result<Response<UnsyncBoxBody<D, BoxError>>, BoxError>
-where
-    D: Buf + 'static,
-{
+fn unsupported_encoding(accept: AcceptEncoding) -> Result<Response, BoxError> {
     let res = Response::builder()
         .header(
             header::ACCEPT_ENCODING,
@@ -124,8 +95,7 @@ where
                 .unwrap_or(HeaderValue::from_static("identity")),
         )
         .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-        .body(Empty::new().map_err(Into::into).boxed_unsync())
-        .unwrap();
+        .body(Body::empty())?;
     Ok(res)
 }
 
@@ -141,72 +111,45 @@ impl<S> RequestDecompression<S> {
 
     define_inner_service_accessors!();
 
-    /// Passes through the request even when the encoding is not supported.
-    ///
-    /// By default pass-through is disabled.
-    #[must_use]
-    pub fn pass_through_unaccepted(mut self, enabled: bool) -> Self {
-        self.pass_through_unaccepted = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Passes through the request even when the encoding is not supported.
+        ///
+        /// By default pass-through is disabled.
+        pub fn pass_through_unaccepted(mut self, enabled: bool) -> Self {
+            self.pass_through_unaccepted = enabled;
+            self
+        }
     }
 
-    /// Passes through the request even when the encoding is not supported.
-    ///
-    /// By default pass-through is disabled.
-    pub fn set_pass_through_unaccepted(&mut self, enabled: bool) -> &mut Self {
-        self.pass_through_unaccepted = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to support gzip encoding.
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.accept.set_gzip(enable);
+            self
+        }
     }
 
-    /// Sets whether to support gzip encoding.
-    #[must_use]
-    pub fn gzip(mut self, enable: bool) -> Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to support Deflate encoding.
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.accept.set_deflate(enable);
+            self
+        }
     }
 
-    /// Sets whether to support gzip encoding.
-    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to support Brotli encoding.
+        pub fn br(mut self, enable: bool) -> Self {
+            self.accept.set_br(enable);
+            self
+        }
     }
 
-    /// Sets whether to support Deflate encoding.
-    #[must_use]
-    pub fn deflate(mut self, enable: bool) -> Self {
-        self.accept.set_deflate(enable);
-        self
-    }
-
-    /// Sets whether to support Deflate encoding.
-    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_deflate(enable);
-        self
-    }
-
-    /// Sets whether to support Brotli encoding.
-    #[must_use]
-    pub fn br(mut self, enable: bool) -> Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to support Brotli encoding.
-    pub fn set_br(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to support Zstd encoding.
-    #[must_use]
-    pub fn zstd(mut self, enable: bool) -> Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets whether to support Zstd encoding.
-    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_zstd(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to support Zstd encoding.
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.accept.set_zstd(enable);
+            self
+        }
     }
 }

@@ -2,12 +2,13 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
+    rt::Executor,
     telemetry::tracing,
 };
 use rama_dns::{DnsResolver, GlobalDnsResolver};
 use rama_net::{
     address::ProxyAddress,
-    client::EstablishedClientConnection,
+    client::{ConnectorTarget, EstablishedClientConnection},
     stream::{ClientSocketInfo, Socket, SocketInfo},
     transport::{TransportProtocol, TryRefIntoTransportContext},
 };
@@ -18,29 +19,11 @@ use crate::client::connect::TcpStreamConnector;
 use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStreamConnectorFactory};
 
 /// A connector which can be used to establish a TCP connection to a server.
+#[derive(Debug, Clone)]
 pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
     dns: Dns,
     connector_factory: ConnectorFactory,
-}
-
-impl<Dns: std::fmt::Debug, ConnectorFactory: std::fmt::Debug> std::fmt::Debug
-    for TcpConnector<Dns, ConnectorFactory>
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TcpConnector")
-            .field("dns", &self.dns)
-            .field("connector_factory", &self.connector_factory)
-            .finish()
-    }
-}
-
-impl<Dns: Clone, ConnectorFactory: Clone> Clone for TcpConnector<Dns, ConnectorFactory> {
-    fn clone(&self) -> Self {
-        Self {
-            dns: self.dns.clone(),
-            connector_factory: self.connector_factory.clone(),
-        }
-    }
+    exec: Executor,
 }
 
 impl<Dns, Connector> TcpConnector<Dns, Connector> {}
@@ -51,10 +34,11 @@ impl TcpConnector {
     /// You can use middleware around the [`TcpConnector`]
     /// or add connection pools, retry logic and more.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(exec: Executor) -> Self {
         Self {
             dns: GlobalDnsResolver::new(),
             connector_factory: (),
+            exec,
         }
     }
 }
@@ -68,6 +52,7 @@ impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
         TcpConnector {
             dns,
             connector_factory: self.connector_factory,
+            exec: self.exec,
         }
     }
 }
@@ -82,6 +67,7 @@ where {
         TcpConnector {
             dns: self.dns,
             connector_factory: TcpStreamConnectorCloneFactory(connector),
+            exec: self.exec,
         }
     }
 
@@ -91,42 +77,44 @@ where {
         TcpConnector {
             dns: self.dns,
             connector_factory: factory,
+            exec: self.exec,
         }
     }
 }
 
 impl Default for TcpConnector {
     fn default() -> Self {
-        Self::new()
+        Self::new(Executor::default())
     }
 }
 
-impl<Request, Dns, ConnectorFactory> Service<Request> for TcpConnector<Dns, ConnectorFactory>
+impl<Input, Dns, ConnectorFactory> Service<Input> for TcpConnector<Dns, ConnectorFactory>
 where
-    Request: TryRefIntoTransportContext + Send + ExtensionsMut + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Input: TryRefIntoTransportContext + Send + ExtensionsMut + 'static,
+    Input::Error: Into<BoxError> + Send + Sync + 'static,
     Dns: DnsResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
             Error: Into<BoxError> + Send + 'static,
         > + Clone,
 {
-    type Response = EstablishedClientConnection<TcpStream, Request>;
+    type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let CreatedTcpStreamConnector { connector } = self
             .connector_factory
             .make_connector()
             .await
             .map_err(Into::into)?;
 
-        if let Some(proxy) = req.extensions().get::<ProxyAddress>() {
+        if let Some(proxy) = input.extensions().get::<ProxyAddress>() {
             let (mut conn, addr) = crate::client::tcp_connect(
-                req.extensions(),
-                proxy.authority.clone(),
+                input.extensions(),
+                proxy.address.clone(),
                 self.dns.clone(),
                 connector,
+                self.exec.clone(),
             )
             .await
             .context("tcp connector: conncept to proxy")?;
@@ -139,14 +127,41 @@ where
                         )
                     })
                     .ok(),
-                addr,
+                addr.into(),
             ));
             conn.extensions_mut().insert(socket_info);
 
-            return Ok(EstablishedClientConnection { req, conn });
+            return Ok(EstablishedClientConnection { input, conn });
         }
 
-        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+        if let Some(ConnectorTarget(target)) = input.extensions().get::<ConnectorTarget>().cloned()
+        {
+            let (mut conn, addr) = crate::client::tcp_connect(
+                input.extensions(),
+                target,
+                self.dns.clone(),
+                connector,
+                self.exec.clone(),
+            )
+            .await
+            .context("tcp connector: conncept to connector target (overwrite?)")?;
+
+            let socket_info= ClientSocketInfo(SocketInfo::new(
+                conn.local_addr()
+                    .inspect_err(|err| {
+                        tracing::debug!(
+                            "failed to receive local addr of established connection to target (overwrite?): {err:?}"
+                        )
+                    })
+                    .ok(),
+                addr.into(),
+            ));
+            conn.extensions_mut().insert(socket_info);
+
+            return Ok(EstablishedClientConnection { input, conn });
+        }
+
+        let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("tcp connecter: compute transport context to get authority")
         })?;
@@ -162,11 +177,18 @@ where
             }
         }
 
-        let authority = transport_ctx.authority.clone();
-        let (mut conn, addr) =
-            crate::client::tcp_connect(req.extensions(), authority, self.dns.clone(), connector)
-                .await
-                .context("tcp connector: connect to server")?;
+        let authority = transport_ctx
+            .host_with_port()
+            .context("get host:port from transport ctx")?;
+        let (mut conn, addr) = crate::client::tcp_connect(
+            input.extensions(),
+            authority,
+            self.dns.clone(),
+            connector,
+            self.exec.clone(),
+        )
+        .await
+        .context("tcp connector: connect to server")?;
 
         let socket_info = ClientSocketInfo(SocketInfo::new(
             conn.local_addr()
@@ -176,10 +198,10 @@ where
                     )
                 })
                 .ok(),
-            addr,
+            addr.into(),
         ));
         conn.extensions_mut().insert(socket_info);
 
-        Ok(EstablishedClientConnection { req, conn })
+        Ok(EstablishedClientConnection { input, conn })
     }
 }

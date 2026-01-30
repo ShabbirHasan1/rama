@@ -2,7 +2,6 @@ use crate::body::{Frame, StreamingBody};
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use std::{
-    future::Future,
     pin::Pin,
     task::{Context, Poll, ready},
     time::Duration,
@@ -89,7 +88,11 @@ where
             some
         } else {
             this.sleep.set(Some(sleep(*this.timeout)));
-            this.sleep.as_mut().as_pin_mut().unwrap()
+            #[allow(clippy::expect_used)]
+            this.sleep
+                .as_mut()
+                .as_pin_mut()
+                .expect("Some value to be set in previous statement (line)")
         };
 
         // Error if the timeout has expired.

@@ -14,6 +14,7 @@ use rama_core::Layer;
 pub struct CompressionLayer<P = DefaultPredicate> {
     accept: AcceptEncoding,
     predicate: P,
+    respect_content_encoding_if_possible: bool,
     quality: CompressionLevel,
 }
 
@@ -28,6 +29,7 @@ where
             inner,
             accept: self.accept,
             predicate: self.predicate.clone(),
+            respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
         }
     }
@@ -37,6 +39,7 @@ where
             inner,
             accept: self.accept,
             predicate: self.predicate,
+            respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
         }
     }
@@ -49,82 +52,70 @@ impl CompressionLayer {
         Self::default()
     }
 
-    /// Sets whether to enable the gzip encoding.
-    #[must_use]
-    pub fn gzip(mut self, enable: bool) -> Self {
-        self.accept.set_gzip(enable);
-        self
-    }
-
-    /// Sets whether to enable the gzip encoding.
-    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_gzip(enable);
-        self
-    }
-
-    /// Sets whether to enable the Deflate encoding.
-    #[must_use]
-    pub fn deflate(mut self, enable: bool) -> Self {
-        self.accept.set_deflate(enable);
-        self
-    }
-
-    /// Sets whether to enable the Deflate encoding.
-    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_deflate(enable);
-        self
-    }
-
-    /// Sets whether to enable the Brotli encoding.
-    #[must_use]
-    pub fn br(mut self, enable: bool) -> Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to enable the Brotli encoding.
-    pub fn set_br(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to enable the Zstd encoding.
-    #[must_use]
-    pub fn zstd(mut self, enable: bool) -> Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets whether to enable the Zstd encoding.
-    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets the compression quality.
-    #[must_use]
-    pub fn quality(mut self, quality: CompressionLevel) -> Self {
-        self.quality = quality;
-        self
-    }
-
-    /// Sets the compression quality.
-    pub fn set_quality(&mut self, quality: CompressionLevel) -> &mut Self {
-        self.quality = quality;
-        self
-    }
-
     /// Replace the current compression predicate.
-    ///
-    /// See [`Compression::compress_when`] for more details.
-    pub fn compress_when<C>(self, predicate: C) -> CompressionLayer<C>
+    pub fn with_compress_predicate<C>(self, predicate: C) -> CompressionLayer<C>
     where
         C: Predicate,
     {
         CompressionLayer {
             accept: self.accept,
             predicate,
+            respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
+        }
+    }
+}
+
+impl<P> CompressionLayer<P> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the gzip encoding.
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.accept.set_gzip(enable);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Deflate encoding.
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.accept.set_deflate(enable);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Brotli encoding.
+        pub fn br(mut self, enable: bool) -> Self {
+            self.accept.set_br(enable);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to enable the Zstd encoding.
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.accept.set_zstd(enable);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the compression quality.
+        pub fn quality(mut self, quality: CompressionLevel) -> Self {
+            self.quality = quality;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow responses with content-encoding.
+        ///
+        /// Useful in case your stack uses that response header as preference.
+        /// Not something you want for regular servers or proxies however,
+        /// or most use cases for that matter.
+        pub fn respect_content_encoding_if_possible(mut self) -> Self {
+            self.respect_content_encoding_if_possible = true;
+            self
         }
     }
 }
@@ -155,9 +146,9 @@ mod tests {
     #[tokio::test]
     async fn accept_encoding_configuration_works() -> Result<(), rama_core::error::BoxError> {
         let deflate_only_layer = CompressionLayer::new()
-            .quality(CompressionLevel::Best)
-            .br(false)
-            .gzip(false);
+            .with_quality(CompressionLevel::Best)
+            .with_br(false)
+            .with_gzip(false);
 
         // Compress responses based on the `Accept-Encoding` header.
         let service = deflate_only_layer.into_layer(service_fn(handle));
@@ -178,9 +169,9 @@ mod tests {
         let deflate_bytes_len = bytes.len();
 
         let br_only_layer = CompressionLayer::new()
-            .quality(CompressionLevel::Best)
-            .gzip(false)
-            .deflate(false);
+            .with_quality(CompressionLevel::Best)
+            .with_gzip(false)
+            .with_deflate(false);
 
         // Compress responses based on the `Accept-Encoding` header.
         let service = br_only_layer.into_layer(service_fn(handle));
@@ -220,10 +211,10 @@ mod tests {
         // >=16MiB window (though it might not be able to see the input size here).
 
         let zstd_layer = CompressionLayer::new()
-            .quality(CompressionLevel::Best)
-            .br(false)
-            .deflate(false)
-            .gzip(false);
+            .with_quality(CompressionLevel::Best)
+            .with_br(false)
+            .with_deflate(false)
+            .with_gzip(false);
 
         let service = zstd_layer.into_layer(service_fn(zeroes));
 

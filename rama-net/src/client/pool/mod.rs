@@ -1,19 +1,20 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
+use crate::address::SocketAddress;
+use crate::conn::{ConnectionHealth, ConnectionHealthStatus};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use std::{future::Future, net::SocketAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
@@ -23,7 +24,7 @@ pub mod http;
 #[cfg(feature = "opentelemetry")]
 pub mod metrics;
 
-/// [`PoolStorage`] implements the storage part of a connection pool. This storage
+/// [`Pool`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
 /// remove one, this results in the storage deciding which mode we use for connection
 /// reuse and dropping (eg FIFO for reuse and LRU for dropping conn when pool is full)
@@ -108,41 +109,35 @@ where
 /// take ownership of the connection `C` with [`LeasedConnection::into_connection()`].
 /// [`LeasedConnection`]s are considered active pool connections until dropped or
 /// ownership is taken of the internal connection.
-pub struct LeasedConnection<C, ID> {
-    pooled_conn: Option<PooledConnection<C, ID>>,
+pub struct LeasedConnection<C: ExtensionsMut, ID> {
+    pooled_conn: ManuallyDrop<PooledConnection<C, ID>>,
+    pooled_conn_taken: bool,
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
-    failed: AtomicBool,
 }
 
-impl<C, ID> LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
-        self.pooled_conn.take().expect("only None after drop").conn
-    }
-
-    pub fn mark_as_failed(&self) {
-        self.failed
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: value is only dropped in `Self::Drop`
+        // and value is only taken here if we move out of leased drop
+        //
+        // We cannot use ::into_inner as we still require
+        // a Drop impl as well, we assign pooled_conn_taken
+        // to tru so that we do not drop there again
+        self.pooled_conn_taken = true;
+        unsafe { ManuallyDrop::take(&mut self.pooled_conn) }.conn
     }
 }
 
-impl<C: ExtensionsRef, ID> ExtensionsRef for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> ExtensionsRef for LeasedConnection<C, ID> {
     fn extensions(&self) -> &Extensions {
-        self.pooled_conn
-            .as_ref()
-            .expect("only None after drop")
-            .conn
-            .extensions()
+        self.pooled_conn.extensions()
     }
 }
 
 impl<C: ExtensionsMut, ID> ExtensionsMut for LeasedConnection<C, ID> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        self.pooled_conn
-            .as_mut()
-            .expect("only None after drop")
-            .conn
-            .extensions_mut()
+        self.pooled_conn.extensions_mut()
     }
 }
 
@@ -155,6 +150,18 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
+}
+
+impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
+    fn extensions(&self) -> &Extensions {
+        self.conn.extensions()
+    }
+}
+
+impl<C: ExtensionsMut, ID> ExtensionsMut for PooledConnection<C, ID> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.conn.extensions_mut()
+    }
 }
 
 #[deprecated = "use LruDropPool instead"]
@@ -178,22 +185,6 @@ pub enum ReuseStrategy {
     #[default]
     FiFo,
     RoundRobin,
-}
-
-impl ReuseStrategy {
-    fn get_conn<C, ID: PartialEq>(
-        self,
-        storage: &mut VecDeque<PooledConnection<C, ID>>,
-        id: &ID,
-    ) -> Option<(usize, PooledConnection<C, ID>)> {
-        let idx = match self {
-            Self::FiFo => storage.iter().position(|stored| &stored.id == id)?,
-            Self::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
-        };
-
-        let pooled_conn = storage.remove(idx)?;
-        Some((idx, pooled_conn))
-    }
 }
 
 struct ConnReturner<C, ID> {
@@ -236,7 +227,7 @@ impl<C, ID> Clone for LruDropPool<C, ID> {
 }
 
 impl<C, ID> LruDropPool<C, ID> {
-    pub fn new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
+    pub fn try_new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
         if max_active == 0 || max_total == 0 {
             return Err(OpaqueError::from_display(
                 "max_active or max_total of 0 will make this pool unusable",
@@ -348,23 +339,38 @@ where
             }
         }
 
-        if let Some((idx, pooled_conn)) = self.reuse_strategy.get_conn(&mut storage, id) {
+        let mut get_conn = || loop {
+            let idx = match self.reuse_strategy {
+                ReuseStrategy::FiFo => storage.iter().position(|stored| &stored.id == id)?,
+                ReuseStrategy::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
+            };
+
+            let pooled_conn = storage.remove(idx)?;
+
+            // This will make sure we skip and drop broken connections
+            if let Some(health) = pooled_conn.extensions().get::<ConnectionHealth>()
+                && health.status() == ConnectionHealthStatus::Broken
+            {
+                continue;
+            }
+
+            return Some((idx, pooled_conn));
+        };
+
+        if let Some((idx, pooled_conn)) = get_conn() {
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
 
             #[cfg(feature = "opentelemetry")]
             if let Some((metrics, metric_attrs)) = &metrics {
                 metrics.total_connections.add(1, metric_attrs);
                 metrics.reused_connections.add(1, metric_attrs);
-                metrics
-                    .reused_connection_pos
-                    .record(idx as u64, metric_attrs);
             }
 
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
-                pooled_conn: Some(pooled_conn),
+                pooled_conn: ManuallyDrop::new(pooled_conn),
+                pooled_conn_taken: false,
                 returner: self.returner.clone(),
-                failed: AtomicBool::new(false),
             }));
         }
 
@@ -407,13 +413,13 @@ where
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
-            failed: false.into(),
-            pooled_conn: Some(PooledConnection {
+            pooled_conn: ManuallyDrop::new(PooledConnection {
                 id,
                 conn,
                 pool_slot,
                 last_used: Instant::now(),
             }),
+            pooled_conn_taken: false,
         }
     }
 }
@@ -443,58 +449,66 @@ impl<C: Debug, ID: Debug> Debug for PooledConnection<C, ID> {
 
 impl<C, ID> Debug for LeasedConnection<C, ID>
 where
-    C: Debug,
+    C: Debug + ExtensionsMut,
     ID: Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LeasedConnection")
-            .field("pooled_conn", &self.pooled_conn)
+            .field("pooled_conn", self.pooled_conn.deref())
             .field("active_slot", &self.active_slot)
             .finish()
     }
 }
 
-impl<C, ID> Deref for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> Deref for LeasedConnection<C, ID> {
     type Target = C;
 
     fn deref(&self) -> &Self::Target {
-        &self
-            .pooled_conn
-            .as_ref()
-            .expect("only None after drop")
-            .conn
+        &self.pooled_conn.conn
     }
 }
 
-impl<C, ID> DerefMut for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> DerefMut for LeasedConnection<C, ID> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self
-            .pooled_conn
-            .as_mut()
-            .expect("only None after drop")
-            .conn
+        &mut self.pooled_conn.conn
     }
 }
 
-impl<C, ID> AsRef<C> for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> AsRef<C> for LeasedConnection<C, ID> {
     fn as_ref(&self) -> &C {
         self
     }
 }
 
-impl<C, ID> AsMut<C> for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> AsMut<C> for LeasedConnection<C, ID> {
     fn as_mut(&mut self) -> &mut C {
         self
     }
 }
 
-impl<C, ID> Drop for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
-        if let Some(pooled_conn) = self.pooled_conn.take() {
-            if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
+        if !self.pooled_conn_taken {
+            if let Some(health) = self.extensions().get::<ConnectionHealth>()
+                && health.status() == ConnectionHealthStatus::Broken
+            {
                 trace!("LRU connection pool: dropping pooled connection that was marked as failed");
+
+                // SAFETY: pooled_conn_taken is false,
+                // indicating we didn't move ownership yet by
+                // using Self::into_inner, and we are neither
+                // returning it as is done in the other (else)
+                // branch only.
+                unsafe { ManuallyDrop::drop(&mut self.pooled_conn) };
             } else {
                 trace!("LRU connection pool: returning pooled connection back to pool");
+
+                // SAFETY: pooled_conn_taken is false,
+                // indicating we didn't move ownership yet by
+                // using Self::into_inner, and neither do we drop it as that is only
+                // done in the 'truth' variant of this if-else branching
+                // as can be seen above.
+                let pooled_conn = unsafe { ManuallyDrop::take(&mut self.pooled_conn) };
                 self.returner.return_conn(pooled_conn);
             }
         }
@@ -507,13 +521,13 @@ impl<C, ID> Drop for LeasedConnection<C, ID> {
 impl<C, ID> Socket for LeasedConnection<C, ID>
 where
     ID: Send + Sync + 'static,
-    C: Socket,
+    C: Socket + ExtensionsMut,
 {
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+    fn local_addr(&self) -> std::io::Result<SocketAddress> {
         self.as_ref().local_addr()
     }
 
-    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+    fn peer_addr(&self) -> std::io::Result<SocketAddress> {
         self.as_ref().peer_addr()
     }
 }
@@ -521,7 +535,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncWrite for LeasedConnection<C, ID>
 where
-    C: AsyncWrite + Unpin,
+    C: AsyncWrite + Unpin + ExtensionsMut,
     ID: Unpin,
 {
     fn poll_write(
@@ -562,7 +576,7 @@ where
 #[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncRead for LeasedConnection<C, ID>
 where
-    C: AsyncRead + Unpin,
+    C: AsyncRead + Unpin + ExtensionsMut,
     ID: Unpin,
 {
     fn poll_read(
@@ -574,23 +588,27 @@ where
     }
 }
 
-impl<Request, C, ID> Service<Request> for LeasedConnection<C, ID>
+impl<Input, C, ID> Service<Input> for LeasedConnection<C, ID>
 where
     ID: Send + Sync + Debug + 'static,
-    C: Service<Request>,
-    Request: Send + 'static,
+    C: Service<Input> + ExtensionsMut,
+    Input: Send + 'static,
 {
-    type Response = C::Response;
+    type Output = C::Output;
     type Error = C::Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let result = self.as_ref().serve(req).await;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let result = self.as_ref().serve(input).await;
+
         if result.is_err() {
-            let id = &self.pooled_conn.as_ref().expect("msg").id;
+            let id = &self.pooled_conn.id;
             trace!(
                 "LRU connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
-            self.mark_as_failed();
+
+            if let Some(health) = self.extensions().get::<ConnectionHealth>() {
+                health.set_status(ConnectionHealthStatus::Broken);
+            }
         }
         result
     }
@@ -636,20 +654,20 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
     }
 }
 
-/// [`ReqToConnID`] is used to convert a `Request` to a connection ID. These IDs
+/// [`ReqToConnID`] is used to convert a `Input` to a connection ID. These IDs
 /// are not unique and multiple connections can have the same ID. IDs are used
-/// to filter which connections can be used for a specific Request in a way that
-/// is independent of what a Request is.
-pub trait ReqToConnID<Request: ExtensionsRef>: Sized + Clone + Send + Sync + 'static {
+/// to filter which connections can be used for a specific input in a way that
+/// is independent of what an input is.
+pub trait ReqToConnID<Input: ExtensionsRef>: Sized + Clone + Send + Sync + 'static {
     type ID: ConnID;
 
-    fn id(&self, request: &Request) -> Result<Self::ID, OpaqueError>;
+    fn id(&self, input: &Input) -> Result<Self::ID, OpaqueError>;
 }
 
 /// [`ConnID`] is used to identify a connection in a connection pool. These IDs
 /// are not unique and multiple connections can have the same ID. IDs are used
-/// to filter which connections can be used for a specific Request in a way that
-/// is independent of what a Request is.
+/// to filter which connections can be used for a specific input in a way that
+/// is independent of what an input is.
 pub trait ConnID: Send + Sync + PartialEq + Clone + Debug + 'static {
     #[cfg(feature = "opentelemetry")]
     /// Returns a list of attributes to add to metrics generated by the
@@ -659,15 +677,15 @@ pub trait ConnID: Send + Sync + PartialEq + Clone + Debug + 'static {
     }
 }
 
-impl<Request, ID, F> ReqToConnID<Request> for F
+impl<Input, ID, F> ReqToConnID<Input> for F
 where
-    F: Fn(&Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
+    F: Fn(&Input) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
     ID: ConnID,
-    Request: ExtensionsRef,
+    Input: ExtensionsRef,
 {
     type ID = ID;
 
-    fn id(&self, request: &Request) -> Result<Self::ID, OpaqueError> {
+    fn id(&self, request: &Input) -> Result<Self::ID, OpaqueError> {
         self(request)
     }
 }
@@ -701,64 +719,64 @@ impl<S, P, R> PooledConnector<S, P, R> {
     );
 }
 
-impl<Request, S, P, R> Service<Request> for PooledConnector<S, P, R>
+impl<Input, S, P, R> Service<Input> for PooledConnector<S, P, R>
 where
-    S: ConnectorService<Request>,
-    Request: Send + ExtensionsRef + 'static,
-    P: Pool<S::Connection, R::ID>,
-    R: ReqToConnID<Request>,
+    S: ConnectorService<Input>,
+    Input: Send + ExtensionsRef + 'static,
+    P: Pool<S::Connection, R::ID> + Extension + Clone,
+    R: ReqToConnID<Input>,
 {
-    type Response = EstablishedClientConnection<P::Connection, Request>;
+    type Output = EstablishedClientConnection<P::Connection, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let conn_id = self.req_to_conn_id.id(&req)?;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let conn_id = self.req_to_conn_id.id(&input)?;
 
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
-        let create_permit = {
-            let pool = if let Some(pool) = req.extensions().get::<P>() {
-                trace!("pooled connector: using pool from ctx");
-                pool
-            } else {
-                trace!("pooled connector: using pool from connector");
-                &self.pool
-            };
 
-            let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-                timeout(duration, pool.get_conn(&conn_id))
+        let pool = if let Some(pool) = input.extensions().get::<P>() {
+            trace!("pooled connector: using pool from ctx");
+            pool
+        } else {
+            trace!("pooled connector: using pool from connector");
+            &self.pool
+        };
+
+        let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
+            timeout(duration, pool.get_conn(&conn_id))
                     .await
                     .map_err(|err|{
                         trace!("pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
                         OpaqueError::from_std(err)
                     })?
-            } else {
-                pool.get_conn(&conn_id).await
-            };
-
-            match pool_result? {
-                ConnectionResult::Connection(c) => {
-                    trace!(
-                        "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool, returning"
-                    );
-                    return Ok(EstablishedClientConnection { conn: c, req });
-                }
-                ConnectionResult::CreatePermit(permit) => {
-                    trace!(
-                        "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
-                    );
-                    permit
-                }
-            }
+        } else {
+            pool.get_conn(&conn_id).await
         };
 
-        let EstablishedClientConnection { req, conn } =
-            self.inner.connect(req).await.map_err(Into::into)?;
+        match pool_result? {
+            ConnectionResult::Connection(conn) => {
+                trace!(
+                    "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"
+                );
 
-        trace!("pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}");
-        let pool = req.extensions().get::<P>().unwrap_or(&self.pool);
-        let conn = pool.create(conn_id, conn, create_permit).await;
-        Ok(EstablishedClientConnection { req, conn })
+                Ok(EstablishedClientConnection { conn, input })
+            }
+            ConnectionResult::CreatePermit(permit) => {
+                trace!(
+                    "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
+                );
+                let EstablishedClientConnection { input, conn } =
+                    self.inner.connect(input).await.map_err(Into::into)?;
+
+                trace!(
+                    "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
+                );
+                let pool = input.extensions().get::<P>().unwrap_or(&self.pool);
+                let conn = pool.create(conn_id, conn, permit).await;
+                Ok(EstablishedClientConnection { input, conn })
+            }
+        }
     }
 }
 
@@ -810,6 +828,7 @@ mod tests {
     use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsMut;
     use rama_core::{Service, extensions::Extensions};
+    use std::sync::atomic::AtomicBool;
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
@@ -869,33 +888,33 @@ mod tests {
         }
     }
 
-    impl<Request> Service<Request> for TestService
+    impl<Input> Service<Input> for TestService
     where
-        Request: Send + 'static,
+        Input: Send + 'static,
     {
-        type Response = EstablishedClientConnection<Conn, Request>;
+        type Output = EstablishedClientConnection<Conn, Input>;
         type Error = Infallible;
 
-        async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
             self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection {
-                req,
+                input,
                 conn: Conn::new(),
             })
         }
     }
 
     #[derive(Clone)]
-    /// [`StringRequestLengthID`] will map Requests of type ServiceInput<String>, to usize id representing their
-    /// chars length. In practise this will mean that Requests of the same char length will be
+    /// [`StringInputLengthID`] will map inputs of type ServiceInput<String>, to usize id representing their
+    /// chars length. In practise this will mean that inputs of the same char length will be
     /// able to reuse the same connections
-    struct StringRequestLengthID;
+    struct StringInputLengthID;
 
-    impl ReqToConnID<ServiceInput<String>> for StringRequestLengthID {
+    impl ReqToConnID<ServiceInput<String>> for StringInputLengthID {
         type ID = usize;
 
-        fn id(&self, req: &ServiceInput<String>) -> Result<Self::ID, OpaqueError> {
-            Ok(req.input.chars().count())
+        fn id(&self, input: &ServiceInput<String>) -> Result<Self::ID, OpaqueError> {
+            Ok(input.input.chars().count())
         }
     }
 
@@ -904,7 +923,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
-        let pool = LruDropPool::new(5, 10).unwrap();
+        let pool = LruDropPool::try_new(5, 10).unwrap();
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
         let svc = PooledConnector::new(
@@ -924,8 +943,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_conn_id_to_separate() {
-        let pool = LruDropPool::new(5, 10).unwrap();
-        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
+        let pool = LruDropPool::try_new(5, 10).unwrap();
+        let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {});
 
         {
             let mut conn = svc
@@ -981,8 +1000,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_max_size() {
-        let pool = LruDropPool::new(1, 1).unwrap();
-        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {})
+        let pool = LruDropPool::try_new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {})
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
         let conn1 = svc
@@ -1005,23 +1024,26 @@ mod tests {
         pub created_connection: AtomicI16,
     }
 
-    impl<Request> Service<Request> for TestConnector
+    impl<Input> Service<Input> for TestConnector
     where
-        Request: Send + 'static,
+        Input: Send + 'static,
     {
-        type Response = EstablishedClientConnection<InnerService, Request>;
+        type Output = EstablishedClientConnection<InnerService, Input>;
         type Error = Infallible;
 
-        async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-            let conn = InnerService::default();
+        async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+            let mut conn = InnerService::default();
+
+            conn.extensions_mut().insert(ConnectionHealth::default());
+
             self.created_connection.fetch_add(1, Ordering::Relaxed);
-            Ok(EstablishedClientConnection { req, conn })
+            Ok(EstablishedClientConnection { input, conn })
         }
     }
 
     #[derive(Default, Debug)]
     struct InnerService {
-        should_error: AtomicBool,
+        should_error: Arc<AtomicBool>,
         extensions: Extensions,
     }
 
@@ -1038,12 +1060,16 @@ mod tests {
     }
 
     impl Service<bool> for InnerService {
-        type Response = ();
+        type Output = ();
         type Error = OpaqueError;
 
-        async fn serve(&self, should_error: bool) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, should_error: bool) -> Result<Self::Output, Self::Error> {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
             if should_error {
+                self.extensions
+                    .get::<ConnectionHealth>()
+                    .unwrap()
+                    .set_status(ConnectionHealthStatus::Broken);
                 self.should_error.store(true, Ordering::Relaxed);
             }
 
@@ -1057,8 +1083,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dont_return_broken_connections_to_pool() {
-        let pool = LruDropPool::new(1, 1).unwrap();
-        let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
+        let pool = LruDropPool::try_new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestConnector::default(), pool, StringInputLengthID {});
 
         let conn = svc
             .connect(ServiceInput::new(String::from("")))
@@ -1096,12 +1122,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_pool_drops_broken_connections_in_get_conn() {
+        let pool = LruDropPool::try_new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestConnector::default(), pool, StringInputLengthID {});
+
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(false).await;
+        assert_ok!(result);
+
+        // This dropped connection should return to the pool, since it's not broken yet
+        let conn_extensions = conn.conn.extensions().clone();
+        drop(conn);
+
+        // Break connection -> eg go-away / tcp connection dropped by remote...
+        // Normally the connection would edit this in extensions but since we dont have ownership here
+        // we just clone the extensions and edit it like this
+        conn_extensions
+            .get::<ConnectionHealth>()
+            .unwrap()
+            .set_status(ConnectionHealthStatus::Broken);
+
+        // We should get a new working connection here since health check has detect that the stored one was broken
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(false).await;
+        assert_ok!(result);
+
+        // This connection is not broken so it should return to the pool
+        drop(conn);
+
+        // And we should be able to reuse it
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(false).await;
+        assert_ok!(result);
+
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
     async fn drop_idle_connections() {
-        let pool = LruDropPool::new(5, 10)
+        let pool = LruDropPool::try_new(5, 10)
             .unwrap()
             .with_idle_timeout(Duration::from_micros(1));
 
-        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
+        let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {});
 
         let conn = svc
             .connect(ServiceInput::new(String::from("")))
@@ -1137,7 +1212,7 @@ mod tests {
     }
 
     async fn test_reuse(strategy: ReuseStrategy, expected: u32) {
-        let pool = LruDropPool::new(5, 10)
+        let pool = LruDropPool::try_new(5, 10)
             .unwrap()
             .with_reuse_strategy(strategy);
 
@@ -1147,7 +1222,7 @@ mod tests {
         let mut conns = Vec::new();
         for i in 0..2 {
             let mut conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
-            conn.pooled_conn.as_mut().unwrap().conn.push(i);
+            conn.pooled_conn.conn.push(i);
             conns.push(conn);
         }
 
@@ -1159,6 +1234,6 @@ mod tests {
         // the reuse policy.
         let conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
 
-        assert_eq!(conn.pooled_conn.as_ref().unwrap().conn[0], expected);
+        assert_eq!(conn.pooled_conn.conn[0], expected);
     }
 }

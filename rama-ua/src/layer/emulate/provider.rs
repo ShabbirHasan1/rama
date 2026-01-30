@@ -1,4 +1,5 @@
 use rama_core::extensions::Extensions;
+use rama_utils::str::arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use crate::{
 /// is already injected separately.
 pub struct SelectedUserAgentProfile {
     /// The user agent header of the selected profile.
-    pub user_agent_header: Option<Arc<str>>,
+    pub user_agent_header: Option<ArcStr>,
 
     /// The kind of [`crate::UserAgent`]
     pub ua_kind: UserAgentKind,
@@ -64,7 +65,7 @@ pub enum UserAgentSelectFallback {
 /// strategies for selecting which user agent profile to use for a request.
 ///
 /// Rama provides several built-in implementations:
-/// - [`()`]: Always returns `None`, effectively disabling user agent emulation
+/// - `()`: Always returns `None`, effectively disabling user agent emulation
 /// - [`UserAgentProfile`]: Always returns the same profile
 /// - [`UserAgentDatabase`]: Selects a profile based on the [`UserAgent`] in the context,
 ///   or falls back to a random profile if configured with [`UserAgentSelectFallback::Random`]
@@ -77,7 +78,7 @@ pub enum UserAgentSelectFallback {
 /// [`UserAgentDatabase`]: crate::profile::UserAgentDatabase
 /// [`UserAgent`]: crate::UserAgent
 /// [`UserAgentSelectFallback::Random`]: UserAgentSelectFallback::Random
-/// [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
+/// [`UserAgentEmulateService`]: crate::layer::emulate::UserAgentEmulateService
 pub trait UserAgentProvider: Send + Sync + 'static {
     /// Selects a user agent profile based on the current context.
     fn select_user_agent_profile(&self, extensions: &Extensions) -> Option<&UserAgentProfile>;

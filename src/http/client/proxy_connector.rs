@@ -19,7 +19,6 @@ use pin_project_lite::pin_project;
 use std::{
     fmt::Debug,
     pin::Pin,
-    sync::Arc,
     task::{self, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -28,6 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 ///
 /// Connector will look at [`ProxyAddress`] to determine which proxy
 /// connector to use if one is configured
+#[derive(Debug, Clone)]
 pub struct ProxyConnector<S> {
     inner: S,
     socks: Socks5ProxyConnector<S>,
@@ -35,16 +35,15 @@ pub struct ProxyConnector<S> {
     required: bool,
 }
 
-impl<S> ProxyConnector<S> {
+impl<S: Clone> ProxyConnector<S> {
     /// Creates a new [`ProxyConnector`].
     fn new(
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,
         required: bool,
-    ) -> ProxyConnector<Arc<S>> {
-        let inner = Arc::new(inner);
-        ProxyConnector {
+    ) -> Self {
+        Self {
             socks: socks_proxy_layer.into_layer(inner.clone()),
             http: http_proxy_layer.into_layer(inner.clone()),
             inner,
@@ -60,7 +59,7 @@ impl<S> ProxyConnector<S> {
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,
-    ) -> ProxyConnector<Arc<S>> {
+    ) -> Self {
         Self::new(inner, socks_proxy_layer, http_proxy_layer, true)
     }
 
@@ -72,25 +71,24 @@ impl<S> ProxyConnector<S> {
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,
-    ) -> ProxyConnector<Arc<S>> {
+    ) -> Self {
         Self::new(inner, socks_proxy_layer, http_proxy_layer, false)
     }
 }
 
-impl<Request, S> Service<Request> for ProxyConnector<S>
+impl<Input, S> Service<Input> for ProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+    S: ConnectorService<Input, Connection: Stream + Unpin>,
+    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
         + 'static,
 {
-    type Response = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Request>;
-
+    type Output = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let proxy = req.extensions().get::<ProxyAddress>();
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let proxy = input.extensions().get::<ProxyAddress>();
 
         match proxy {
             None => {
@@ -98,11 +96,11 @@ where
                     return Err("proxy required but none is defined".into());
                 }
                 tracing::trace!("no proxy detected in ctx, using inner connector");
-                let EstablishedClientConnection { req, conn } =
-                    self.inner.connect(req).await.map_err(Into::into)?;
+                let EstablishedClientConnection { input, conn } =
+                    self.inner.connect(input).await.map_err(Into::into)?;
 
                 let conn = MaybeProxiedConnection::direct(conn);
-                Ok(EstablishedClientConnection { req, conn })
+                Ok(EstablishedClientConnection { input, conn })
             }
             Some(proxy) => {
                 let protocol = proxy.protocol.as_ref();
@@ -115,16 +113,18 @@ where
 
                 if protocol.is_socks5() {
                     tracing::trace!("using socks proxy connector");
-                    let EstablishedClientConnection { req, conn } = self.socks.connect(req).await?;
+                    let EstablishedClientConnection { input, conn } =
+                        self.socks.connect(input).await?;
 
                     let conn = MaybeProxiedConnection::socks(conn);
-                    Ok(EstablishedClientConnection { req, conn })
+                    Ok(EstablishedClientConnection { input, conn })
                 } else if protocol.is_http() {
                     tracing::trace!("using http proxy connector");
-                    let EstablishedClientConnection { req, conn } = self.http.connect(req).await?;
+                    let EstablishedClientConnection { input, conn } =
+                        self.http.connect(input).await?;
 
                     let conn = MaybeProxiedConnection::http(conn);
-                    Ok(EstablishedClientConnection { req, conn })
+                    Ok(EstablishedClientConnection { input, conn })
                 } else {
                     Err(OpaqueError::from_display(format!(
                         "received unsupport proxy protocol {protocol:?}"
@@ -326,8 +326,8 @@ impl ProxyConnectorLayer {
     }
 }
 
-impl<S> Layer<S> for ProxyConnectorLayer {
-    type Service = ProxyConnector<Arc<S>>;
+impl<S: Clone> Layer<S> for ProxyConnectorLayer {
+    type Service = ProxyConnector<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
         ProxyConnector::new(

@@ -3,7 +3,7 @@ use crate::h2::proto::*;
 use crate::h2::{client, server};
 
 use rama_core::bytes::Bytes;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
@@ -80,7 +80,7 @@ struct DynConnection<'a, B: Buf = Bytes> {
 pub(crate) struct Config {
     pub next_stream_id: StreamId,
     pub initial_max_send_streams: usize,
-    pub max_send_buffer_size: usize,
+    pub max_send_buffer_size: u32,
     pub reset_stream_duration: Duration,
     pub reset_stream_max: usize,
     pub remote_reset_stream_max: usize,
@@ -108,24 +108,35 @@ where
     P: Peer,
     B: Buf,
 {
-    pub(crate) fn new(mut codec: Codec<T, Prioritized<B>>, config: Config) -> Self {
+    pub(crate) fn try_new(
+        codec: Codec<T, Prioritized<B>>,
+        config: Config,
+    ) -> Result<Self, crate::h2::proto::Error> {
         fn streams_config(config: &Config) -> streams::Config {
             streams::Config {
                 initial_max_send_streams: config.initial_max_send_streams,
                 local_max_buffer_size: config.max_send_buffer_size,
                 local_next_stream_id: config.next_stream_id,
-                local_push_enabled: config.settings.is_push_enabled().unwrap_or(true),
+                local_push_enabled: config
+                    .settings
+                    .config
+                    .enable_push
+                    .map(|v| v != 0)
+                    .unwrap_or(true),
                 extended_connect_protocol_enabled: config
                     .settings
-                    .is_extended_connect_protocol_enabled()
-                    .unwrap_or(false),
+                    .config
+                    .enable_connect_protocol
+                    .map(|v| v != 0)
+                    .unwrap_or_default(),
                 local_reset_duration: config.reset_stream_duration,
                 local_reset_max: config.reset_stream_max,
                 remote_reset_max: config.remote_reset_stream_max,
                 remote_init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
                 remote_max_initiated: config
                     .settings
-                    .max_concurrent_streams()
+                    .config
+                    .max_concurrent_streams
                     .map(|max| max as usize),
                 local_max_error_reset_streams: config.local_error_reset_streams_max,
                 headers_pseudo_order: config.headers_pseudo_order.clone(),
@@ -134,11 +145,12 @@ where
         }
         // Transfer ownership of extensions to Streams as at this point our connection is esthablished
         // and we only need these extensions as parents for our inner Stream's
-        let streams = Streams::new(
-            streams_config(&config),
-            std::mem::take(codec.extensions_mut()),
+        let streams = Streams::try_new(streams_config(&config), codec.extensions().clone())?;
+        let span = tracing::debug_root_span!(
+            "Connection",
+            peer = %P::NAME,
         );
-        Self {
+        Ok(Self {
             codec,
             inner: ConnectionInner {
                 state: State::Open,
@@ -147,33 +159,40 @@ where
                 ping_pong: PingPong::new(),
                 settings: Settings::new(config.settings),
                 streams,
-                span: tracing::debug_span!("Connection", peer = %P::NAME),
+                span,
                 _phantom: PhantomData,
             },
+        })
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// connection flow control
+        pub(crate) fn target_window_size(mut self, size: WindowSize) -> Result<Self, Reason> {
+            self.inner.streams.set_target_connection_window_size(size)?;
+            Ok(self)
         }
     }
 
-    /// connection flow control
-    pub(crate) fn set_target_window_size(&mut self, size: WindowSize) {
-        let _res = self.inner.streams.set_target_connection_window_size(size);
-        // TODO: proper error handling
-        debug_assert!(_res.is_ok());
+    rama_utils::macros::generate_set_and_with! {
+        /// Send a new SETTINGS frame with an updated initial window size.
+        pub(crate) fn initial_window_size(mut self, size: WindowSize) -> Result<Self, UserError> {
+            tracing::trace!("set_initial_window_size(%size)");
+            let mut settings = frame::Settings::default();
+            settings.config.initial_window_size = Some(size);
+            self.inner.settings.send_settings(settings)?;
+            Ok(self)
+        }
     }
 
-    /// Send a new SETTINGS frame with an updated initial window size.
-    pub(crate) fn set_initial_window_size(&mut self, size: WindowSize) -> Result<(), UserError> {
-        tracing::trace!("set_initial_window_size(%size)");
-        let mut settings = frame::Settings::default();
-        settings.set_initial_window_size(Some(size));
-        self.inner.settings.send_settings(settings)
-    }
-
-    /// Send a new SETTINGS frame with extended CONNECT protocol enabled.
-    pub(crate) fn set_enable_connect_protocol(&mut self) -> Result<(), UserError> {
-        tracing::trace!("set_enable_connect_protocol");
-        let mut settings = frame::Settings::default();
-        settings.set_enable_connect_protocol(Some(1));
-        self.inner.settings.send_settings(settings)
+    rama_utils::macros::generate_set_and_with! {
+        /// Send a new SETTINGS frame with extended CONNECT protocol enabled.
+        pub(crate) fn enable_connect_protocol(mut self) -> Result<Self, UserError> {
+            tracing::trace!("set_enable_connect_protocol");
+            let mut settings = frame::Settings::default();
+            settings.config.enable_connect_protocol = Some(1);
+            self.inner.settings.send_settings(settings)?;
+            Ok(self)
+        }
     }
 
     /// Returns the maximum number of concurrent streams that may be initiated
@@ -224,7 +243,7 @@ where
     ///
     /// This will return `Some(reason)` if the connection should be closed
     /// afterwards. If this is a graceful shutdown, this returns `None`.
-    fn poll_go_away(&mut self, cx: &mut Context) -> Poll<Option<io::Result<Reason>>> {
+    fn poll_go_away(&mut self, cx: &mut Context) -> Poll<Option<Result<Reason, Error>>> {
         self.inner.go_away.send_pending_go_away(cx, &mut self.codec)
     }
 
@@ -591,7 +610,7 @@ where
             }
             None => {
                 tracing::trace!("codec closed");
-                self.streams.recv_eof(false).expect("mutex poisoned");
+                self.streams.recv_eof(false);
                 return Ok(ReceivedFrame::Done);
             }
         }
@@ -656,7 +675,6 @@ where
     B: Buf,
 {
     fn drop(&mut self) {
-        // Ignore errors as this indicates that the mutex is poisoned.
-        let _ = self.inner.streams.recv_eof(true);
+        self.inner.streams.recv_eof(true);
     }
 }

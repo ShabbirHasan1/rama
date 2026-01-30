@@ -35,15 +35,19 @@ use rama::{
     error::{ErrorContext as _, OpaqueError},
     futures::SinkExt,
     net::address::SocketAddress,
+    rt::Executor,
     service::service_fn,
     stream::{codec::FramedWrite, json::JsonEncoder},
     tcp::{TcpStream, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use serde::Serialize;
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn serve_stream(stream: TcpStream) -> Result<(), OpaqueError> {
     let mut writer = FramedWrite::new(stream, JsonEncoder::new());
@@ -80,7 +84,7 @@ async fn serve_stream(stream: TcpStream) -> Result<(), OpaqueError> {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -90,8 +94,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62042))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62042), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -105,11 +110,7 @@ async fn main() {
         "establish a (client) tcp connection to {bind_address} to see the service in action"
     );
 
-    graceful.spawn_task_fn(async |guard| {
-        listener
-            .serve_graceful(guard, service_fn(serve_stream))
-            .await;
-    });
+    graceful.spawn_task(listener.serve(service_fn(serve_stream)));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))

@@ -2,7 +2,7 @@ use rama::error::{ErrorContext, OpaqueError};
 
 use super::{data::DataSource, storage::Storage};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub(super) struct State {
     pub(super) data_source: DataSource,
@@ -17,7 +17,7 @@ impl State {
         storage_auth: Option<&str>,
     ) -> Result<Self, OpaqueError> {
         let storage = match pg_url {
-            Some(pg_url) => Some(Storage::new(pg_url).await.context("create storage")?),
+            Some(pg_url) => Some(Storage::try_new(pg_url).await.context("create storage")?),
             None => None,
         };
 

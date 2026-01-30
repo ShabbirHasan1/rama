@@ -3,8 +3,8 @@
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
 use rama_core::error::OpaqueError;
+use std::fmt;
 use std::net::IpAddr;
-use std::{fmt, net::SocketAddr};
 
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
@@ -29,17 +29,19 @@ mod version;
 #[doc(inline)]
 pub use version::ForwardedVersion;
 
+use crate::address::SocketAddress;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Forwarding information stored as a chain.
 ///
-/// This extension (which can be stored and modified via the [`Context`])
+/// This extension (which can be stored and modified via the [`Extensions`])
 /// allows to keep track of the forward information. E.g. what was the original
 /// host used by the user, by which proxy it was forwarded, what was the intended
 /// protocol (e.g. https), etc...
 ///
 /// RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 ///
-/// [`Context`]: rama_core::Context
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct Forwarded {
     first: ForwardedElement,
     others: Vec<ForwardedElement>,
@@ -63,18 +65,18 @@ impl Forwarded {
     /// described as client information.
     #[must_use]
     pub fn client_host(&self) -> Option<&ForwardedAuthority> {
-        self.first.ref_forwarded_host()
+        self.first.forwarded_host()
     }
 
-    /// Return the client [`SocketAddr`] of this [`Forwarded`] context,
+    /// Return the client [`SocketAddress`] of this [`Forwarded`] context,
     /// if both an Ip and a port are defined.
     ///
     /// You can try to fallback to [`Self::client_ip`],
     /// in case this method returns `None`.
     #[must_use]
-    pub fn client_socket_addr(&self) -> Option<SocketAddr> {
+    pub fn client_socket_addr(&self) -> Option<SocketAddress> {
         self.first
-            .ref_forwarded_for()
+            .forwarded_for()
             .and_then(|node| match (node.ip(), node.port()) {
                 (Some(ip), Some(port)) => Some((ip, port).into()),
                 _ => None,
@@ -85,7 +87,7 @@ impl Forwarded {
     /// if there is one defined.
     #[must_use]
     pub fn client_port(&self) -> Option<u16> {
-        self.first.ref_forwarded_for().and_then(|node| node.port())
+        self.first.forwarded_for().and_then(|node| node.port())
     }
 
     /// Return the client Ip of this [`Forwarded`] context,
@@ -98,21 +100,21 @@ impl Forwarded {
     /// described as client information.
     #[must_use]
     pub fn client_ip(&self) -> Option<IpAddr> {
-        self.first.ref_forwarded_for().and_then(|node| node.ip())
+        self.first.forwarded_for().and_then(|node| node.ip())
     }
 
     /// Return the client protocol of this [`Forwarded`] context,
     /// if there is one defined.
     #[must_use]
     pub fn client_proto(&self) -> Option<ForwardedProtocol> {
-        self.first.ref_forwarded_proto()
+        self.first.forwarded_proto()
     }
 
     /// Return the client protocol version of this [`Forwarded`] context,
     /// if there is one defined.
     #[must_use]
     pub fn client_version(&self) -> Option<ForwardedVersion> {
-        self.first.ref_forwarded_version()
+        self.first.forwarded_version()
     }
 
     /// Append a [`ForwardedElement`] to this [`Forwarded`] context.
@@ -229,7 +231,7 @@ impl TryFrom<&[u8]> for Forwarded {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::address::Host;
+    use crate::address::HostWithOptPort;
 
     #[test]
     fn test_forwarded_parse_invalid() {
@@ -262,15 +264,19 @@ mod tests {
             (
                 r##"for="_gazonk""##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("_gazonk").unwrap()),
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("_gazonk").unwrap(),
+                    ),
                     others: Vec::new(),
                 },
             ),
             (
                 r##"for=192.0.2.43, for=198.51.100.17"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
-                    others: vec![ForwardedElement::forwarded_for(
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("192.0.2.43").unwrap(),
+                    ),
+                    others: vec![ForwardedElement::new_forwarded_for(
                         NodeId::try_from("198.51.100.17").unwrap(),
                     )],
                 },
@@ -278,8 +284,10 @@ mod tests {
             (
                 r##"for=192.0.2.43,for=198.51.100.17"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
-                    others: vec![ForwardedElement::forwarded_for(
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("192.0.2.43").unwrap(),
+                    ),
+                    others: vec![ForwardedElement::new_forwarded_for(
                         NodeId::try_from("198.51.100.17").unwrap(),
                     )],
                 },
@@ -287,63 +295,79 @@ mod tests {
             (
                 r##"for=192.0.2.43,for=198.51.100.17,for=127.0.0.1"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("192.0.2.43").unwrap(),
+                    ),
                     others: vec![
-                        ForwardedElement::forwarded_for(NodeId::try_from("198.51.100.17").unwrap()),
-                        ForwardedElement::forwarded_for(NodeId::try_from("127.0.0.1").unwrap()),
+                        ForwardedElement::new_forwarded_for(
+                            NodeId::try_from("198.51.100.17").unwrap(),
+                        ),
+                        ForwardedElement::new_forwarded_for(NodeId::try_from("127.0.0.1").unwrap()),
                     ],
                 },
             ),
             (
                 r##"for=192.0.2.43,for=198.51.100.17,for=unknown"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("192.0.2.43").unwrap(),
+                    ),
                     others: vec![
-                        ForwardedElement::forwarded_for(NodeId::try_from("198.51.100.17").unwrap()),
-                        ForwardedElement::forwarded_for(NodeId::try_from("unknown").unwrap()),
+                        ForwardedElement::new_forwarded_for(
+                            NodeId::try_from("198.51.100.17").unwrap(),
+                        ),
+                        ForwardedElement::new_forwarded_for(NodeId::try_from("unknown").unwrap()),
                     ],
                 },
             ),
             (
                 r##"for=192.0.2.43,for="[2001:db8:cafe::17]",for=unknown"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("192.0.2.43").unwrap(),
+                    ),
                     others: vec![
-                        ForwardedElement::forwarded_for(
+                        ForwardedElement::new_forwarded_for(
                             NodeId::try_from("[2001:db8:cafe::17]").unwrap(),
                         ),
-                        ForwardedElement::forwarded_for(NodeId::try_from("unknown").unwrap()),
+                        ForwardedElement::new_forwarded_for(NodeId::try_from("unknown").unwrap()),
                     ],
                 },
             ),
             (
                 r##"for=192.0.2.43, for="[2001:db8:cafe::17]", for=unknown"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("192.0.2.43").unwrap(),
+                    ),
                     others: vec![
-                        ForwardedElement::forwarded_for(
+                        ForwardedElement::new_forwarded_for(
                             NodeId::try_from("[2001:db8:cafe::17]").unwrap(),
                         ),
-                        ForwardedElement::forwarded_for(NodeId::try_from("unknown").unwrap()),
+                        ForwardedElement::new_forwarded_for(NodeId::try_from("unknown").unwrap()),
                     ],
                 },
             ),
             (
                 r##"for=192.0.2.43, for="[2001:db8:cafe::17]:4000", for=unknown"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("192.0.2.43").unwrap(),
+                    ),
                     others: vec![
-                        ForwardedElement::forwarded_for(
+                        ForwardedElement::new_forwarded_for(
                             NodeId::try_from("[2001:db8:cafe::17]:4000").unwrap(),
                         ),
-                        ForwardedElement::forwarded_for(NodeId::try_from("unknown").unwrap()),
+                        ForwardedElement::new_forwarded_for(NodeId::try_from("unknown").unwrap()),
                     ],
                 },
             ),
             (
                 r##"for=192.0.2.43,for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
+                    first: ForwardedElement::new_forwarded_for(
+                        NodeId::try_from("192.0.2.43").unwrap(),
+                    ),
                     others: vec![
                         ForwardedElement::try_from(
                             "for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com",
@@ -355,7 +379,7 @@ mod tests {
             (
                 r##"for="192.0.2.43:4000",for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com"##,
                 Forwarded {
-                    first: ForwardedElement::forwarded_for(
+                    first: ForwardedElement::new_forwarded_for(
                         NodeId::try_from("192.0.2.43:4000").unwrap(),
                     ),
                     others: vec![
@@ -384,11 +408,11 @@ mod tests {
             ),
             (
                 r##"host=example.com,for=195.2.34.12"##,
-                Some((Host::try_from("example.com").unwrap(), None)),
+                Some(HostWithOptPort::example_domain()),
             ),
             (
                 r##"host="example.com:443",for=195.2.34.12"##,
-                Some((Host::try_from("example.com").unwrap(), Some(443))),
+                Some(HostWithOptPort::example_domain_https()),
             ),
         ] {
             let forwarded = Forwarded::try_from(s).unwrap();
@@ -396,8 +420,8 @@ mod tests {
                 forwarded
                     .iter()
                     .next()
-                    .and_then(|el| el.ref_forwarded_host())
-                    .map(|host| host.clone().into_parts()),
+                    .and_then(|el| el.forwarded_host())
+                    .map(|authority| authority.0.clone()),
                 expected
             );
         }
@@ -417,10 +441,7 @@ mod tests {
         ] {
             let forwarded = Forwarded::try_from(s).unwrap();
             assert_eq!(
-                forwarded
-                    .iter()
-                    .next()
-                    .and_then(|el| el.ref_forwarded_proto()),
+                forwarded.iter().next().and_then(|el| el.forwarded_proto()),
                 expected
             );
         }

@@ -124,20 +124,20 @@ where
     }
 }
 
-impl<S, L, Request> Service<Request> for MaybeLayeredService<S, L>
+impl<S, L, Input> Service<Input> for MaybeLayeredService<S, L>
 where
-    S: Service<Request>,
+    S: Service<Input>,
     L: Layer<S> + 'static,
-    L::Service: Service<Request, Response = S::Response, Error: Into<S::Error>>,
-    Request: Send + 'static,
+    L::Service: Service<Input, Output = S::Output, Error: Into<S::Error>>,
+    Input: Send + 'static,
 {
     type Error = S::Error;
-    type Response = S::Response;
+    type Output = S::Output;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         match &self.0 {
-            MaybeLayeredSvc::Enabled(svc) => svc.serve(req).await.map_err(Into::into),
-            MaybeLayeredSvc::Disabled(inner) => inner.serve(req).await,
+            MaybeLayeredSvc::Enabled(svc) => svc.serve(input).await.map_err(Into::into),
+            MaybeLayeredSvc::Disabled(inner) => inner.serve(input).await,
         }
     }
 }
@@ -914,13 +914,13 @@ mod layer_fn;
 #[doc(inline)]
 pub use layer_fn::{LayerFn, layer_fn};
 
-mod map_request;
+mod map_input;
 #[doc(inline)]
-pub use map_request::{MapRequest, MapRequestLayer};
+pub use map_input::{MapInput, MapInputLayer};
 
-mod map_response;
+mod map_output;
 #[doc(inline)]
-pub use map_response::{MapResponse, MapResponseLayer};
+pub use map_output::{MapOutput, MapOutputLayer};
 
 mod map_err;
 #[doc(inline)]
@@ -941,14 +941,21 @@ pub use map_result::{MapResult, MapResultLayer};
 pub mod timeout;
 pub use timeout::{Timeout, TimeoutLayer};
 
+pub mod abort;
+pub use abort::{Abortable, AbortableLayer};
+
 pub mod limit;
 pub use limit::{Limit, LimitLayer};
 
 pub mod add_extension;
-pub use add_extension::{AddExtension, AddExtensionLayer};
+pub use add_extension::{
+    AddInputExtension, AddInputExtensionLayer, AddOutputExtension, AddOutputExtensionLayer,
+};
 
 pub mod get_extension;
-pub use get_extension::{GetExtension, GetExtensionLayer};
+pub use get_extension::{
+    GetInputExtension, GetInputExtensionLayer, GetOutputExtension, GetOutputExtensionLayer,
+};
 
 use crate::Service;
 
@@ -990,18 +997,38 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn simple_layer() {
-        let svc = (GetExtensionLayer::new(async |_: String| {}))
+    async fn simple_input_layer() {
+        let svc = (GetInputExtensionLayer::new(async |_: String| {}))
             .into_layer(service_fn(async || Ok::<_, OpaqueError>(())));
 
         svc.serve(ServiceInput::new(())).await.unwrap();
     }
 
     #[tokio::test]
-    async fn simple_optional_layer() {
-        let maybe_layer = Some(GetExtensionLayer::new(async |_: String| {}));
+    async fn simple_optional_input_layer() {
+        let maybe_layer = Some(GetInputExtensionLayer::new(async |_: String| {}));
 
         let svc = (maybe_layer).into_layer(service_fn(async || Ok::<_, OpaqueError>(())));
+
+        svc.serve(ServiceInput::new(())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn simple_output_layer() {
+        let svc = (GetOutputExtensionLayer::new(async |_: String| {})).into_layer(service_fn(
+            async || Ok::<_, OpaqueError>(ServiceInput::new(())),
+        ));
+
+        svc.serve(ServiceInput::new(())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn simple_optional_output_layer() {
+        let maybe_layer = Some(GetOutputExtensionLayer::new(async |_: String| {}));
+
+        let svc = (maybe_layer).into_layer(service_fn(async || {
+            Ok::<_, OpaqueError>(ServiceInput::new(()))
+        }));
 
         svc.serve(ServiceInput::new(())).await.unwrap();
     }

@@ -1,12 +1,12 @@
-//! Middleware that applies a timeout to requests.
+//! Middleware that applies a timeout to inputs.
 //!
-//! If the response does not complete within the specified timeout, the response
+//! If the inner service does not complete within the specified timeout, the output
 //! will be aborted.
 
 use super::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
 use crate::Service;
 use rama_utils::macros::define_inner_service_accessors;
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 mod error;
 #[doc(inline)]
@@ -16,7 +16,8 @@ mod layer;
 #[doc(inline)]
 pub use layer::TimeoutLayer;
 
-/// Applies a timeout to requests.
+/// Applies a timeout to inputs.
+#[derive(Debug, Clone)]
 pub struct Timeout<S, F> {
     inner: S,
     into_error: F,
@@ -25,30 +26,6 @@ pub struct Timeout<S, F> {
 
 impl<S, F> Timeout<S, F> {
     define_inner_service_accessors!();
-}
-
-impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for Timeout<S, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Timeout")
-            .field("inner", &self.inner)
-            .field("into_error", &self.into_error)
-            .field("timeout", &self.timeout)
-            .finish()
-    }
-}
-
-impl<S, F> Clone for Timeout<S, F>
-where
-    S: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            into_error: self.into_error.clone(),
-            timeout: self.timeout,
-        }
-    }
 }
 
 /// default [`Timeout`]
@@ -118,23 +95,23 @@ where
     }
 }
 
-impl<T, F, Request, E> Service<Request> for Timeout<T, F>
+impl<T, F, Input, E> Service<Input> for Timeout<T, F>
 where
-    Request: Send + 'static,
+    Input: Send + 'static,
     F: MakeLayerError<Error = E>,
     E: Into<T::Error> + Send + 'static,
-    T: Service<Request>,
+    T: Service<Input>,
 {
-    type Response = T::Response;
+    type Output = T::Output;
     type Error = T::Error;
 
-    async fn serve(&self, request: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         match self.timeout {
             Some(duration) => tokio::select! {
-                res = self.inner.serve(request) => res,
+                res = self.inner.serve(input) => res,
                 _ = tokio::time::sleep(duration) => Err(self.into_error.make_layer_error().into()),
             },
-            None => self.inner.serve(request).await,
+            None => self.inner.serve(input).await,
         }
     }
 }

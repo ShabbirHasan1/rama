@@ -1,11 +1,10 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
-    inspect::RequestInspector,
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef, InputExtensions},
     telemetry::tracing,
 };
-use rama_http::{StreamingBody, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY};
+use rama_http::{StreamingBody, header::SEC_WEBSOCKET_KEY};
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
     Method, Request, Response, Version,
@@ -13,7 +12,7 @@ use rama_http_types::{
     uri::PathAndQuery,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
-use std::{fmt, sync::Arc};
+use std::fmt;
 use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
@@ -32,46 +31,32 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
 }
 
 /// Internal http sender used to send the actual requests.
-pub struct HttpClientService<Body, I = ()> {
+pub struct HttpClientService<Body> {
     pub(super) sender: SendRequest<Body>,
-    pub(super) http_req_inspector: I,
     pub(super) extensions: Extensions,
 }
 
-impl<BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut, I>
+impl<Body> Service<Request<Body>> for HttpClientService<Body>
 where
-    BodyIn: Send + 'static,
-    BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>,
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
-        req.extensions_mut()
-            .set_parent_extensions(Arc::new(self.extensions.clone()));
-
-        // Check if this http connection can actually be used for TargetHttpVersion
-        if let Some(target_version) = req.extensions().get::<TargetHttpVersion>() {
-            match (&self.sender, target_version.0) {
-                (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
-                | (SendRequest::Http2(_), Version::HTTP_2) => (),
-                (SendRequest::Http1(_), version) => Err(OpaqueError::from_display(format!(
-                    "Http1 connector cannot send TargetHttpVersion {version:?}"
-                ))
-                .into_boxed())?,
-                (SendRequest::Http2(_), version) => Err(OpaqueError::from_display(format!(
-                    "Http2 connector cannot send TargetHttpVersion {version:?}"
-                ))
-                .into_boxed())?,
-            }
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        // Check if this http connection can actually be used for this request version
+        match (&self.sender, req.version()) {
+            (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
+            | (SendRequest::Http2(_), Version::HTTP_2) => (),
+            (SendRequest::Http1(_), version) => Err(OpaqueError::from_display(format!(
+                "Http1 connector cannot send request with version {version:?}"
+            ))
+            .into_boxed())?,
+            (SendRequest::Http2(_), version) => Err(OpaqueError::from_display(format!(
+                "Http2 connector cannot send request with version {version:?}"
+            ))
+            .into_boxed())?,
         }
-
-        let req = self
-            .http_req_inspector
-            .inspect_request(req)
-            .await
-            .map_err(Into::into)?;
 
         // sanitize subject line request uri
         // because Hyper (http) writes the URI as-is
@@ -99,19 +84,19 @@ where
         }?;
 
         resp.extensions_mut()
-            .insert(RequestContextExt::from(req_extensions));
+            .insert(InputExtensions(req_extensions));
 
         Ok(resp.map(rama_http_types::Body::new))
     }
 }
 
-impl<B, I> ExtensionsRef for HttpClientService<B, I> {
+impl<B> ExtensionsRef for HttpClientService<B> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
 
-impl<B, I> ExtensionsMut for HttpClientService<B, I> {
+impl<B> ExtensionsMut for HttpClientService<B> {
     fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
     }
@@ -169,7 +154,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 // add required host header if not defined
                 if !parts.headers.contains_key(HOST) {
                     if request_ctx.authority_has_default_port() {
-                        let host = request_ctx.authority.host().clone();
+                        let host = request_ctx.authority.host;
                         tracing::trace!("add missing host {host} from authority as host header");
                         parts.headers.typed_insert(Host::from(host));
                     } else {
@@ -188,13 +173,13 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     let authority = request_ctx.authority;
                     tracing::trace!(
                         url.full = %req.uri(),
-                        server.address = %authority.host(),
-                        server.port = %authority.port(),
+                        server.address = %authority.host,
+                        server.port = authority.port,
                         "add host from authority as HOST header to req (was missing it)",
                     );
                     req.headers_mut().typed_insert(Host::from(authority));
                 } else {
-                    let host = request_ctx.authority.host().clone();
+                    let host = request_ctx.authority.host;
                     tracing::trace!(
                         url.full = %req.uri(),
                         "add {host} as HOST header to req (was missing it)",
@@ -236,7 +221,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 // Default port is stripped in browsers. It's important that we also do this
                 // as some reverse proxies such as nginx respond 404 if authority is not an exact match
                 let authority = if request_ctx.authority_has_default_port() {
-                    request_ctx.authority.host().to_string()
+                    request_ctx.authority.host.to_string()
                 } else {
                     request_ctx.authority.to_string()
                 };
@@ -297,10 +282,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
 mod tests {
     use super::*;
     use rama_http::{Scheme, Uri, uri::Authority};
-    use rama_net::{
-        Protocol,
-        address::{Domain, Host},
-    };
+    use rama_net::Protocol;
 
     #[test]
     fn should_sanitize_http1_except_connect() {
@@ -369,7 +351,7 @@ mod tests {
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
         req.extensions_mut().insert(ProxyAddress {
-            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
         });
@@ -395,7 +377,7 @@ mod tests {
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
         req.extensions_mut().insert(ProxyAddress {
-            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
         });
@@ -421,7 +403,7 @@ mod tests {
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
         req.extensions_mut().insert(ProxyAddress {
-            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            address: rama_net::address::HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::SOCKS5),
         });

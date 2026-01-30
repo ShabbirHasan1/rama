@@ -1,6 +1,6 @@
 use rama_error::{ErrorContext, OpaqueError};
-use rama_utils::macros::impl_deref;
-use std::{fmt, marker::PhantomData, sync::Arc};
+use rama_utils::{macros::impl_deref, str::arcstr::ArcStr};
+use std::{fmt, marker::PhantomData};
 
 use crate::sse::parser::is_lf;
 
@@ -37,7 +37,7 @@ impl EventDataWrite for &str {
     write_str_data!();
 }
 
-impl EventDataWrite for Arc<str> {
+impl EventDataWrite for ArcStr {
     write_str_data!();
 }
 
@@ -158,28 +158,8 @@ impl<T: EventDataRead> EventDataRead for Vec<T> {
 }
 
 /// Wrapper used to create Json event data.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsonEventData<T>(pub T);
-
-impl<T: fmt::Debug> fmt::Debug for JsonEventData<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("JsonEventData").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for JsonEventData<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T: PartialEq> PartialEq for JsonEventData<T> {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.0.eq(&other.0)
-    }
-}
-
-impl<T: Eq> Eq for JsonEventData<T> {}
 
 impl_deref!(JsonEventData);
 

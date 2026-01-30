@@ -10,9 +10,8 @@ use rama_utils::macros::match_ignore_ascii_case_str;
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A parser which parses [`ProxyFilter`]s from username labels
-/// and adds it to the [`Context`]'s [`Extensions`].
+/// and adds it to the input [`Extensions`].
 ///
-/// [`Context`]: rama_core::Context
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,
@@ -181,7 +180,7 @@ impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for ProxyFilter {
     ) -> Result<(), rama_core::username::ComposeError> {
         if let Some(id) = &self.id {
             composer.write_label("id")?;
-            composer.write_label(id.as_str())?;
+            composer.write_label(id)?;
         }
 
         if let Some(pool_id_vec) = &self.pool_id {
@@ -267,7 +266,7 @@ mod tests {
     use crate::StringFilter;
     use rama_core::username::{compose_username, parse_username};
     use rama_net::asn::Asn;
-    use rama_utils::str::NonEmptyString;
+    use rama_utils::str::non_empty_str;
 
     #[test]
     fn test_username_config() {
@@ -369,7 +368,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-residential-mobile-id-1",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
                     datacenter: Some(true),
@@ -382,7 +381,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-residential-mobile-carrier-bar-id-1",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
                     datacenter: Some(true),
@@ -396,7 +395,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                     datacenter: Some(true),
@@ -409,7 +408,7 @@ mod tests {
                 "john-country-us-!datacenter-pool-1-residential-mobile-id-1-country-uk",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                     datacenter: Some(false),
@@ -422,7 +421,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                     datacenter: Some(true),
@@ -435,7 +434,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-!residential-mobile-id-1-country-uk-pool-2",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                     datacenter: Some(true),
@@ -448,7 +447,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-datacenter",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                     datacenter: Some(true),
@@ -461,7 +460,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-datacenter-residential",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                     datacenter: Some(true),
@@ -474,7 +473,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-datacenter-residential-mobile",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                     datacenter: Some(true),
@@ -510,7 +509,7 @@ mod tests {
                 "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-!datacenter-!residential-!mobile",
                 String::from("john"),
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1")),
+                    id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                     datacenter: Some(false),
@@ -587,11 +586,11 @@ mod tests {
         let test_cases = [
             ProxyFilter::default(),
             ProxyFilter {
-                id: Some(NonEmptyString::from_static("p42")),
+                id: Some(non_empty_str!("p42")),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some(NonEmptyString::from_static("1")),
+                id: Some(non_empty_str!("1")),
                 pool_id: Some(vec![StringFilter::from("1")]),
                 country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                 datacenter: Some(false),
@@ -600,7 +599,7 @@ mod tests {
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some(NonEmptyString::from_static("1")),
+                id: Some(non_empty_str!("1")),
                 pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                 country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
                 datacenter: Some(false),
@@ -609,7 +608,7 @@ mod tests {
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some(NonEmptyString::from_static("a")),
+                id: Some(non_empty_str!("a")),
                 pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                 continent: Some(vec![StringFilter::from("na"), StringFilter::from("eu")]),
                 country: Some(vec![StringFilter::from("us"), StringFilter::from("be")]),

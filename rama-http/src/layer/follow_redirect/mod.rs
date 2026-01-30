@@ -8,7 +8,7 @@
 //! The middleware tries to clone the original [`Request`] when making a redirected request.
 //! However, since [`Extensions`][http::Extensions] are `!Clone`, any extensions set by outer
 //! middleware will be discarded. Also, the request body cannot always be cloned. When the
-//! original body is known to be empty by [`Body::size_hint`], the middleware uses `Default`
+//! original body is known to be empty by [`StreamingBody::size_hint`], the middleware uses `Default`
 //! implementation of the body type to create a new request body. If you know that the body can be
 //! cloned in some way, you can tell the middleware to clone it by configuring a [`policy`].
 //!
@@ -177,6 +177,7 @@ where
 /// Middleware that retries requests with a [`Service`] to follow redirection responses.
 ///
 /// See the [module docs](self) for more details.
+#[derive(Debug, Clone)]
 pub struct FollowRedirect<S, P = Standard> {
     inner: S,
     policy: P,
@@ -186,32 +187,6 @@ impl<S> FollowRedirect<S> {
     /// Create a new [`FollowRedirect`] with a [`Standard`] redirection policy.
     pub fn new(inner: S) -> Self {
         Self::with_policy(inner, Standard::default())
-    }
-}
-
-impl<S, P> fmt::Debug for FollowRedirect<S, P>
-where
-    S: fmt::Debug,
-    P: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FollowRedirect")
-            .field("inner", &self.inner)
-            .field("policy", &self.policy)
-            .finish()
-    }
-}
-
-impl<S, P> Clone for FollowRedirect<S, P>
-where
-    S: Clone,
-    P: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            policy: self.policy.clone(),
-        }
     }
 }
 
@@ -226,19 +201,19 @@ impl<S, P> FollowRedirect<S, P> {
 
 impl<ReqBody, ResBody, S, P> Service<Request<ReqBody>> for FollowRedirect<S, P>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: StreamingBody + Default + Send + 'static,
     ResBody: Send + 'static,
     P: Policy<ReqBody, S::Error> + Clone,
 {
-    type Response = Response<ResBody>;
+    type Output = Response<ResBody>;
     type Error = S::Error;
 
     fn serve(
         &self,
 
         mut req: Request<ReqBody>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> {
         let mut method = req.method().clone();
         let mut uri = req.uri().clone();
         let version = req.version();

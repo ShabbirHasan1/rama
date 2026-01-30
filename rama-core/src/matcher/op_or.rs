@@ -3,19 +3,8 @@ use crate::extensions::Extensions;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 /// A matcher that matches if any of the inner matchers match.
+#[derive(Debug, Clone)]
 pub struct Or<T>(T);
-
-impl<T: std::fmt::Debug> std::fmt::Debug for Or<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Or").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Or<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<T> Or<T> {
     /// Create a new `Or` matcher.
@@ -31,13 +20,12 @@ macro_rules! impl_or_matches {
             let ($($ty),+,) = &self.0;
             match ext {
                 Some(ext) => {
-                    let mut inner_ext = Extensions::new();
                     $(
+                        let mut inner_ext = Extensions::new();
                         if $ty.matches(Some(&mut inner_ext), req) {
                             ext.extend(inner_ext);
                             return true;
                         }
-                        inner_ext.clear();
                     )+
                     false
                 }

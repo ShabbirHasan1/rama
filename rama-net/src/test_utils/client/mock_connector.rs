@@ -1,26 +1,22 @@
-use std::{convert::Infallible, fmt, net::Ipv4Addr};
+use std::convert::Infallible;
 
 use rama_core::{
     Service,
+    error::BoxError,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    rt::Executor,
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
-use crate::{client::EstablishedClientConnection, stream::Socket};
+use crate::{address::SocketAddress, client::EstablishedClientConnection, stream::Socket};
 
+#[derive(Debug, Clone)]
 /// Mock connector can be used in tests to simulate connectors so we can test client and servers
 /// without opening actuall connections
 pub struct MockConnectorService<S> {
     create_server: S,
     max_buffer_size: usize,
-}
-
-impl<S: fmt::Debug> fmt::Debug for MockConnectorService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MockConnectorService")
-            .field("create_server", &self.create_server)
-            .finish()
-    }
+    executor: Option<Executor>,
 }
 
 impl<S> MockConnectorService<S> {
@@ -28,48 +24,54 @@ impl<S> MockConnectorService<S> {
         Self {
             create_server,
             max_buffer_size: 1024,
+            executor: None,
         }
     }
 
-    /// Set `max_buffer_size` that will be used when creating DuplexStream
-    pub fn set_max_buffer_size(&mut self, size: usize) -> &mut Self {
-        self.max_buffer_size = size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set `max_buffer_size` that will be used when creating DuplexStream
+        pub fn max_buffer_size(mut self, size: usize) -> Self {
+            self.max_buffer_size = size;
+            self
+        }
     }
 
-    /// [`MockConnectorService`] with `max_buffer_size` that will be used when creating DuplexStream
-    #[must_use]
-    pub fn with_max_buffer_size(self, size: usize) -> Self {
-        Self {
-            max_buffer_size: size,
-            ..self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set `Executor` used for child tasks.
+        pub fn executor(mut self, executor: Option<Executor>) -> Self {
+            self.executor = executor;
+            self
         }
     }
 }
 
-impl<S, Request, Error, Server> Service<Request> for MockConnectorService<S>
+impl<S, Input, Server> Service<Input> for MockConnectorService<S>
 where
     S: Fn() -> Server + Send + Sync + 'static,
-    Server: Service<MockSocket, Error = Error>,
-    Request: Send + 'static,
-    Error: std::fmt::Debug + 'static,
+    Server: Service<MockSocket, Error: Into<BoxError>>,
+    Input: Send + 'static,
 {
     type Error = Infallible;
-    type Response = EstablishedClientConnection<MockSocket, Request>;
+    type Output = EstablishedClientConnection<MockSocket, Input>;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let (client, server) = duplex(self.max_buffer_size);
         let client_socket = MockSocket::new(client);
         let server_socket = MockSocket::new(server);
 
         let server = (self.create_server)();
 
-        tokio::spawn(async move {
-            server.serve(server_socket).await.unwrap();
-        });
+        self.executor
+            .clone()
+            .unwrap_or_default()
+            .into_spawn_task(async move {
+                if let Err(err) = server.serve(server_socket).await {
+                    panic!("created mock server failed: {}", err.into())
+                }
+            });
 
         Ok(EstablishedClientConnection {
-            req,
+            input,
             conn: client_socket,
         })
     }
@@ -152,17 +154,11 @@ impl AsyncWrite for MockSocket {
 }
 
 impl Socket for MockSocket {
-    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
-        Ok(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-            Ipv4Addr::LOCALHOST,
-            0,
-        )))
+    fn local_addr(&self) -> std::io::Result<SocketAddress> {
+        Ok(SocketAddress::local_ipv4(0))
     }
 
-    fn peer_addr(&self) -> std::io::Result<std::net::SocketAddr> {
-        Ok(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-            Ipv4Addr::LOCALHOST,
-            0,
-        )))
+    fn peer_addr(&self) -> std::io::Result<SocketAddress> {
+        Ok(SocketAddress::local_ipv4(0))
     }
 }

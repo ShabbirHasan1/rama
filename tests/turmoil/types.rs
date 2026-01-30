@@ -1,29 +1,32 @@
 use super::stream::TcpStream;
-use rama::net::{
-    client::EstablishedClientConnection,
-    stream::{ClientSocketInfo, SocketInfo},
-    transport::TryRefIntoTransportContext,
-};
 use rama::{Service, error::BoxError, extensions::ExtensionsMut, telemetry::tracing};
+use rama::{
+    error::ErrorContext as _,
+    net::{
+        client::EstablishedClientConnection,
+        stream::{ClientSocketInfo, SocketInfo},
+        transport::TryRefIntoTransportContext,
+    },
+};
 
 /// A newtype for managing a `[turmoil::net::TcpStream]` 'connector' implementing `[rama::Service]`
 #[derive(Debug, Clone)]
 pub struct TurmoilTcpConnector;
 
-impl<Request> Service<Request> for TurmoilTcpConnector
+impl<Input> Service<Input> for TurmoilTcpConnector
 where
-    Request: TryRefIntoTransportContext + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Input: TryRefIntoTransportContext + Send + 'static,
+    Input::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<TcpStream, Request>;
+    type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let transport_context = req.try_ref_into_transport_ctx().map_err(Into::into)?;
-        let authority = &transport_context.authority;
-        let host = authority.host();
-        let port = authority.port();
-        let address = format!("{host}:{port}");
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let transport_context = input.try_ref_into_transport_ctx().map_err(Into::into)?;
+        let address = transport_context
+            .host_with_port()
+            .context("convert to host with port")?
+            .to_string();
 
         // TODO: proxy support
 
@@ -39,15 +42,16 @@ where
                         "failed to receive local addr of established connection: {err:?}"
                     )
                 })
-                .ok(),
-            addr,
+                .ok()
+                .map(Into::into),
+            addr.into(),
         ));
 
         let mut conn = TcpStream::new(conn);
         conn.extensions_mut().insert(info);
 
         Ok(EstablishedClientConnection {
-            req,
+            input,
             conn, // Raw turmoil::net::TcpStream
         })
     }

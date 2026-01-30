@@ -17,6 +17,7 @@ pub fn layer_fn<T>(f: T) -> LayerFn<T> {
 }
 
 /// A `Layer` implemented by a closure. See the docs for [`layer_fn`] for more details.
+#[derive(Clone)]
 pub struct LayerFn<F> {
     f: F,
 }
@@ -33,15 +34,6 @@ where
 
     fn into_layer(self, inner: S) -> Self::Service {
         (self.f)(inner)
-    }
-}
-
-impl<F> Clone for LayerFn<F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self { f: self.f.clone() }
     }
 }
 
@@ -70,36 +62,19 @@ mod tests {
         use crate::{Service, service::service_fn};
         use std::convert::Infallible;
 
+        #[derive(Debug, Clone)]
         struct ToUpper<S>(S);
 
-        impl<S> fmt::Debug for ToUpper<S>
+        impl<S, Input> Service<Input> for ToUpper<S>
         where
-            S: fmt::Debug,
+            Input: Send + 'static,
+            S: Service<Input, Output = &'static str>,
         {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.debug_tuple("ToUpper").field(&self.0).finish()
-            }
-        }
-
-        impl<S> Clone for ToUpper<S>
-        where
-            S: Clone,
-        {
-            fn clone(&self) -> Self {
-                Self(self.0.clone())
-            }
-        }
-
-        impl<S, Request> Service<Request> for ToUpper<S>
-        where
-            Request: Send + 'static,
-            S: Service<Request, Response = &'static str>,
-        {
-            type Response = String;
+            type Output = String;
             type Error = S::Error;
 
-            async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-                let res = self.0.serve(req).await;
+            async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+                let res = self.0.serve(input).await;
                 res.map(|msg| msg.to_uppercase())
             }
         }

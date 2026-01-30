@@ -17,18 +17,18 @@ use rama::{
     },
     layer::{HijackLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
-        address::ProxyAddress,
         tls::client::ServerVerifyMode,
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
+    rt::Executor,
     tls::boring::{
         client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
         core::ssl::SslVersion,
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer, UserAgentSelectFallback,
         },
         profile::UserAgentDatabase,
@@ -37,6 +37,8 @@ use rama::{
 
 use std::{str::FromStr as _, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
+
+use crate::cmd::send::layer::resolve::OptDnsOverwriteLayer;
 
 use super::{SendCommand, arg::HttpHeader};
 
@@ -51,8 +53,8 @@ mod writer;
 
 pub(super) async fn new(
     cfg: &SendCommand,
-) -> Result<impl Service<Request, Response = Response, Error = BoxError>, BoxError> {
-    let writer = writer::new(cfg).await?;
+) -> Result<impl Service<Request, Output = Response, Error = BoxError>, BoxError> {
+    let writer = writer::try_new(cfg).await?;
 
     let inner_client = new_inner_client(cfg)?;
 
@@ -66,48 +68,46 @@ pub(super) async fn new(
                 writer: writer.clone(),
             }
         }),
-        cfg.emulate.then(|| {
-            (
-                UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::embedded()))
-                    .try_auto_detect_user_agent(true)
-                    .select_fallback(UserAgentSelectFallback::Random),
-                EmulateTlsProfileLayer::new(),
-            )
-        }),
+        cfg.emulate
+            .then(|| {
+                Ok::<_, OpaqueError>((
+                    UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded()?))
+                        .with_try_auto_detect_user_agent(true)
+                        .with_select_fallback(UserAgentSelectFallback::Random),
+                    EmulateTlsProfileLayer::new(),
+                ))
+            })
+            .transpose()?,
         FollowRedirectLayer::with_policy(Limited::new(if cfg.location && cfg.max_redirs > 0 {
             cfg.max_redirs as usize
         } else {
             0
         })),
+        OptDnsOverwriteLayer::new(cfg.resolve.clone()),
         cfg.user
             .as_deref()
             .map(|auth| {
                 let mut basic = Basic::from_str(auth).context("parse basic str")?;
-                if auth.ends_with(':') && basic.password().is_empty() {
+                if auth.ends_with(':') && basic.password().is_none() {
                     let mut terminal =
                         Terminal::open().context("open terminal for password prompting")?;
                     let password = terminal
                         .prompt_sensitive("password: ")
-                        .context("prompt password from terminal")?;
+                        .context("prompt password from terminal")?
+                        .parse()
+                        .context("parse password as non-empty-str")?;
                     basic.set_password(password);
                 }
-                Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).as_sensitive(true))
+                Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).with_sensitive(true))
             })
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
         AddRequiredRequestHeadersLayer::default(),
-        match cfg.proxy.as_ref() {
+        match cfg.proxy.clone() {
             None => HttpProxyAddressLayer::try_from_env_default()?,
-            Some(proxy) => {
-                let mut proxy_address: ProxyAddress =
-                    proxy.parse().context("parse proxy address")?;
-                if let Some(proxy_user) = cfg.proxy_user.as_ref() {
-                    let credential = ProxyCredential::Basic(
-                        proxy_user
-                            .parse()
-                            .context("parse basic proxy credentials")?,
-                    );
-                    proxy_address.credential = Some(credential);
+            Some(mut proxy_address) => {
+                if let Some(credentials) = cfg.proxy_user.clone() {
+                    proxy_address.credential = Some(ProxyCredential::Basic(credentials));
                 }
                 HttpProxyAddressLayer::maybe(Some(proxy_address))
             }
@@ -125,7 +125,7 @@ pub(super) async fn new(
 
 fn new_inner_client(
     cfg: &SendCommand,
-) -> Result<impl Service<Request, Response = Response, Error = OpaqueError> + Clone, BoxError> {
+) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate {
         TlsConnectorDataBuilder::new()
     } else {
@@ -177,7 +177,7 @@ fn new_inner_client(
     let proxy_connector =
         ProxyConnectorLayer::optional(Socks5ProxyConnectorLayer::required(), http_proxy_connector);
 
-    Ok(EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config.into_shared_builder())
@@ -185,11 +185,7 @@ fn new_inner_client(
         .with_tls_support_using_boringssl(Some(tls_config.into_shared_builder()))
         .with_custom_connector(layer_fn(logger_tls::TlsInfoLogger))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector()
-        .with_svc_req_inspector((
-            UserAgentEmulateHttpRequestModifier::default(),
-            logger_headers_req::RequestHeaderLogger,
-        ))
+        .with_default_http_connector(Executor::default())
         .with_custom_connector(
             if let Some(timeout) = cfg.connect_timeout
                 && timeout > 0.
@@ -199,7 +195,13 @@ fn new_inner_client(
                 TimeoutLayer::never()
             },
         )
-        .build())
+        .build_client()
+        .with_jit_layer((
+            UserAgentEmulateHttpRequestModifierLayer::default(),
+            logger_headers_req::RequestHeaderLoggerLayer::default(),
+        ));
+
+    Ok(client)
 }
 
 #[derive(Debug, Clone, Copy)]

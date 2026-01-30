@@ -41,8 +41,6 @@
 
 use rama::{
     Layer, Service,
-    error::OpaqueError,
-    extensions::ExtensionsRef,
     futures::async_stream::stream_fn,
     graceful::ShutdownGuard,
     http::{
@@ -60,12 +58,19 @@ use rama::{
             server::{KeepAlive, KeepAliveStream},
         },
     },
-    layer::AddExtensionLayer,
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
+    utils::str::non_empty_str,
 };
+
+#[cfg(debug_assertions)]
+use rama::http::service::web::response::DatastarSourceMap;
 
 use std::{
     convert::Infallible,
@@ -76,11 +81,10 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{broadcast, mpsc};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -90,8 +94,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62031))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62031), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -105,29 +110,23 @@ async fn main() {
 
     let controller = Controller::new(graceful.guard());
 
-    graceful.spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard.clone());
-
-        let app = Router::new()
-            .get("/", handlers::index)
-            .post("/start", handlers::start)
-            .get("/hello-world", handlers::hello_world)
-            .get("/assets/datastar.js", DatastarScript::default());
+    graceful.spawn_task(async {
+        let app = Router::new_with_state(controller.clone())
+            .with_get("/", handlers::index)
+            .with_post("/start", handlers::start)
+            .with_get("/hello-world", handlers::hello_world)
+            .with_get("/assets/datastar.js", DatastarScript::default());
 
         #[cfg(debug_assertions)]
-        let app = app.get("/hotreload", handlers::hotreload);
+        let app = app
+            .with_get("/assets/datastar.js.map", DatastarSourceMap::default())
+            .with_get("/hotreload", handlers::hotreload);
 
         let router = Arc::new(app);
-        let graceful_router = GracefulRouter(router);
+        let graceful_router = GracefulRouter { router, controller };
 
-        let app = (
-            AddExtensionLayer::new(controller),
-            TraceLayer::new_for_http(),
-        )
-            .into_layer(graceful_router);
-        listener
-            .serve_graceful(guard, HttpServer::auto(exec).service(app))
-            .await;
+        let app = TraceLayer::new_for_http().into_layer(graceful_router);
+        listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
     graceful
@@ -137,29 +136,35 @@ async fn main() {
 }
 
 #[derive(Debug, Clone)]
-struct GracefulRouter(Arc<Router>);
+struct GracefulRouter {
+    router: Arc<Router<Controller>>,
+    controller: Controller,
+}
 
 impl Service<Request> for GracefulRouter {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        if req.extensions().get::<Controller>().unwrap().is_closed() {
+    async fn serve(&self, input: Request) -> Result<Self::Output, Self::Error> {
+        if self.controller.is_closed() {
             tracing::debug!("router received request while shutting down: returning 401");
             return Ok(StatusCode::GONE.into_response());
         }
-        self.0.serve(req).await
+        self.router.serve(input).await
     }
 }
 
 pub mod handlers {
-    use rama::{extensions::Extensions, futures::StreamExt};
+    use rama::{
+        error::{ErrorExt as _, OpaqueError},
+        futures::StreamExt,
+        http::service::web::extract::State,
+    };
 
     use super::*;
 
-    pub async fn index(req: Request) -> Html<String> {
-        let content = req.extensions().get::<Controller>().unwrap().render_index();
-        Html(content)
+    pub async fn index(State(controller): State<Controller>) -> impl IntoResponse {
+        Html(controller.render_index())
     }
 
     #[cfg(debug_assertions)]
@@ -180,10 +185,8 @@ pub mod handlers {
             KeepAlive::new(),
             stream_fn(move |mut yielder| async move {
                 if !ONCE.swap(true, atomic::Ordering::SeqCst) {
-                    let script = ExecuteScript::new("window.location.reload()");
-                    yielder
-                        .yield_item(Ok::<_, Infallible>(script.into_sse_event()))
-                        .await;
+                    let script = ExecuteScript::new(non_empty_str!("window.location.reload()"));
+                    yielder.yield_item(script.try_into_sse_event()).await;
                 }
                 std::future::pending().await
             }),
@@ -191,28 +194,36 @@ pub mod handlers {
     }
 
     pub async fn start(
-        ext: Extensions,
+        State(controller): State<Controller>,
         ReadSignals(Signals { delay }): ReadSignals<Signals>,
     ) -> impl IntoResponse {
-        ext.get::<Controller>().unwrap().reset(delay).await;
+        controller.reset(delay).await;
         StatusCode::OK
     }
 
-    pub async fn hello_world(ext: Extensions) -> impl IntoResponse {
-        let mut stream = ext.get::<Controller>().unwrap().subscribe();
+    pub async fn hello_world(State(controller): State<Controller>) -> impl IntoResponse {
+        let mut stream = controller.subscribe();
 
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),
             stream_fn(move |mut yielder| async move {
                 while let Some(msg) = stream.next().await {
                     match msg {
-                        Message::Event(event) => {
+                        Ok(Message::Event(event)) => {
                             tracing::trace!("send next event data");
-                            yielder.yield_item(Ok::<_, OpaqueError>(event)).await;
+                            yielder.yield_item(Ok(event)).await;
                         }
-                        Message::Exit => {
+                        Ok(Message::Exit) => {
                             tracing::debug!("exit message received, bye now!");
                             break;
+                        }
+                        Err(err) => {
+                            tracing::trace!("send recv error");
+                            yielder
+                                .yield_item(Err(
+                                    OpaqueError::from_boxed(err).context("stream recv error")
+                                ))
+                                .await;
                         }
                     };
                 }
@@ -225,9 +236,11 @@ pub mod handlers {
 pub mod controller {
     use super::*;
 
+    use rama::error::{BoxError, ErrorContext as _, OpaqueError};
     use rama::futures::Stream;
     use rama::http::sse::datastar::ExecuteScript;
     use rama::http::sse::datastar::{ElementPatchMode, PatchElements};
+    use rama::telemetry::tracing::Instrument as _;
     use serde::{Deserialize, Serialize};
     use std::pin::Pin;
 
@@ -324,7 +337,7 @@ pub mod controller {
         }
 
         #[must_use]
-        pub fn subscribe(&self) -> Pin<Box<impl Stream<Item = Message> + use<>>> {
+        pub fn subscribe(&self) -> Pin<Box<impl Stream<Item = Result<Message, BoxError>> + use<>>> {
             let mut subscriber = self.msg_tx.subscribe();
 
             let delay = self.delay.load(Ordering::Acquire);
@@ -334,13 +347,15 @@ pub mod controller {
 
             Box::pin(stream_fn(move |mut yielder| async move {
                 tracing::debug!("subscriber: fresh connect: send current signal/dom state");
-                yielder.yield_item(sse_status_element_message(0f64)).await;
-                yielder.yield_item(remove_server_warning()).await;
                 yielder
-                    .yield_item(data_animation_element_message(text, progress))
+                    .yield_item(try_sse_status_element_message(0f64))
+                    .await;
+                yielder.yield_item(try_remove_server_warning()).await;
+                yielder
+                    .yield_item(try_data_animation_element_message(text, progress))
                     .await;
                 yielder
-                    .yield_item(update_signal_element_message(UpdateSignals {
+                    .yield_item(try_update_signal_element_message(UpdateSignals {
                         delay: Some(delay),
                     }))
                     .await;
@@ -357,14 +372,14 @@ pub mod controller {
                             instant = sse_status_interval.tick() => {
                                 tracing::debug!(
                                     interval.elapsed_ms = %instant.elapsed().as_millis(),
-                                    "subscriber: SSE status interval tick",
+                                  "subscriber: SSE status interval tick",
                                 );
-                                sse_status_element_message(instant.elapsed().as_secs_f64())
+                                try_sse_status_element_message(instant.elapsed().as_secs_f64())
                             }
 
                             result = subscriber.recv() => {
                                 match result {
-                                    Ok(msg) => msg,
+                                    Ok(msg) => Ok(msg),
                                     Err(err) => {
                                         tracing::debug!(%err, "subscriber: exit");
                                         return;
@@ -602,10 +617,14 @@ pub mod controller {
                     Command::Reset(delay) => {
                         self.delay.store(delay, Ordering::Release);
                         if let Err(err) =
-                            self.msg_tx
-                                .send(update_signal_element_message(UpdateSignals {
-                                    delay: Some(delay),
-                                }))
+                            try_update_signal_element_message(UpdateSignals { delay: Some(delay) })
+                                .map_err(OpaqueError::from_boxed)
+                                .context("turn update signal element msg into datastar event")
+                                .and_then(|msg| {
+                                    self.msg_tx
+                                        .send(msg)
+                                        .context("send datastar event over msg channel")
+                                })
                         {
                             tracing::error!("failed to update delay signal via broadcast: {err:?}");
                         }
@@ -615,18 +634,24 @@ pub mod controller {
                         tracing::debug!("exit command received: exit controller");
 
                         let exit_events = [
-                            sse_status_failure_element_message(),
-                            sse_failure_alert(
+                            try_sse_status_failure_element_message(),
+                            try_sse_failure_alert(
                                 // mostly just here to showcase the execute script sugar
                                 "Connection with server was lost. Wait or refresh the page.",
                             ),
-                            critical_error_banner(
+                            try_critical_error_banner(
                                 "Server was shutdown. Please wait a bit or refresh page to retry immediately.",
                             ),
-                            Message::Exit,
+                            Ok(Message::Exit),
                         ];
-                        for event in exit_events {
-                            if let Err(err) = self.msg_tx.send(event) {
+                        for result in exit_events {
+                            if let Err(err) = result
+                                .map_err(OpaqueError::from_boxed)
+                                .context("build datastar event")
+                                .and_then(|event| {
+                                    self.msg_tx.send(event).context("send datastar event")
+                                })
+                            {
                                 tracing::error!(
                                     "failed to send exit message to subscribers: {err:?}"
                                 );
@@ -661,10 +686,12 @@ pub mod controller {
                         let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
                         tracing::debug!(?delay, %anim_index, %progress, %text, "animation: play frame");
 
-                        match self
-                            .msg_tx
-                            .send(data_animation_element_message(text, progress))
-                        {
+                        match try_data_animation_element_message(text, progress)
+                            .map_err(OpaqueError::from_boxed)
+                            .context("convert data animion element into Datastar event")
+                            .and_then(|msg| {
+                                self.msg_tx.send(msg).context("send msg over msg channel")
+                            }) {
                             Err(err) => {
                                 tracing::error!("failed to merge fragment via broadcast: {err:?}")
                             }
@@ -688,41 +715,49 @@ pub mod controller {
         }
     }
 
-    fn remove_server_warning() -> Message {
-        Message::Event(PatchElements::new_remove("#server-warning").into())
+    fn try_remove_server_warning() -> Result<Message, BoxError> {
+        Ok(Message::Event(
+            PatchElements::new_remove(non_empty_str!("#server-warning")).try_into()?,
+        ))
     }
 
-    fn data_animation_element_message(text: &str, progress: f64) -> Message {
-        Message::Event(
-            PatchElements::new(format!(
-                r##"
+    fn try_data_animation_element_message(text: &str, progress: f64) -> Result<Message, BoxError> {
+        Ok(Message::Event(
+            PatchElements::new(
+                format!(
+                    r##"
 <div id='message'>{text}</div>
 <div id="progress-bar" style="width: {progress}%"></div>
 "##,
-            ))
-            .into(),
-        )
+                )
+                .try_into()?,
+            )
+            .try_into()?,
+        ))
     }
 
-    fn sse_failure_alert(msg: &str) -> Message {
-        Message::Event(ExecuteScript::new(format!(r##"window.alert("{msg}");"##)).into())
+    fn try_sse_failure_alert(msg: &str) -> Result<Message, BoxError> {
+        Ok(Message::Event(
+            ExecuteScript::new(format!(r##"window.alert("{msg}");"##).try_into()?).try_into()?,
+        ))
     }
 
-    fn sse_status_failure_element_message() -> Message {
-        Message::Event(
-            PatchElements::new(
+    fn try_sse_status_failure_element_message() -> Result<Message, BoxError> {
+        Ok(Message::Event(
+            PatchElements::new(non_empty_str!(
                 r##"
 <div id="sse-status">🔴</div>
 "##,
-            )
-            .into(),
-        )
+            ))
+            .try_into()?,
+        ))
     }
 
-    fn sse_status_element_message(elapsed: f64) -> Message {
-        Message::Event(
-            PatchElements::new(format!(
-                r##"
+    fn try_sse_status_element_message(elapsed: f64) -> Result<Message, BoxError> {
+        Ok(Message::Event(
+            PatchElements::new(
+                format!(
+                    r##"
 <div id="sse-status">
     <span
         class="status-ack"
@@ -731,15 +766,18 @@ pub mod controller {
     >🟢</span>
 </div>
 "##,
-            ))
-            .into(),
-        )
+                )
+                .try_into()?,
+            )
+            .try_into()?,
+        ))
     }
 
-    fn critical_error_banner(msg: &'static str) -> Message {
-        Message::Event(
-            PatchElements::new(format!(
-                r##"
+    fn try_critical_error_banner(msg: &'static str) -> Result<Message, BoxError> {
+        Ok(Message::Event(
+            PatchElements::new(
+                format!(
+                    r##"
 <div id="server-warning" style="
     background-color: #ff4d4f;
     color: white;
@@ -757,15 +795,19 @@ pub mod controller {
     ⚠️ {msg}.
 </div>
 "##
-            ))
-            .with_selector("body")
+                )
+                .try_into()?,
+            )
+            .with_selector(non_empty_str!("body"))
             .with_mode(ElementPatchMode::Prepend)
-            .into(),
-        )
+            .try_into()?,
+        ))
     }
 
-    fn update_signal_element_message(update: UpdateSignals) -> Message {
-        Message::Event(PatchSignals::new(JsonEventData(update)).into())
+    fn try_update_signal_element_message(update: UpdateSignals) -> Result<Message, BoxError> {
+        Ok(Message::Event(
+            PatchSignals::new(JsonEventData(update)).try_into()?,
+        ))
     }
 }
 use controller::{Controller, Message, Signals};

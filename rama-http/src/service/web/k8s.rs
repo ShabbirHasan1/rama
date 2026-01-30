@@ -8,7 +8,7 @@ use rama_core::{
     Service,
     service::{BoxService, service_fn},
 };
-use std::{convert::Infallible, fmt, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
 use super::match_service;
 
@@ -20,7 +20,7 @@ pub fn k8s_health_builder() -> K8sHealthServiceBuilder<(), ()> {
 
 /// create a default k8s web health service
 #[must_use]
-pub fn k8s_health() -> impl Service<Request, Response = Response, Error = Infallible> + Clone {
+pub fn k8s_health() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
     k8s_health_builder().build()
 }
 
@@ -33,27 +33,10 @@ pub fn k8s_health() -> impl Service<Request, Response = Response, Error = Infall
 ///
 /// In case a conditional is provided and it returns `false`,
 /// a 503 (Service Unavailable) will be returned instead.
+#[derive(Debug, Clone)]
 pub struct K8sHealthServiceBuilder<A, R> {
     alive: A,
     ready: R,
-}
-
-impl<A: fmt::Debug, R: fmt::Debug> std::fmt::Debug for K8sHealthServiceBuilder<A, R> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("K8sHealthServiceBuilder")
-            .field("alive", &self.alive)
-            .field("ready", &self.ready)
-            .finish()
-    }
-}
-
-impl<A: Clone, R: Clone> Clone for K8sHealthServiceBuilder<A, R> {
-    fn clone(&self) -> Self {
-        Self {
-            alive: self.alive.clone(),
-            ready: self.ready.clone(),
-        }
-    }
 }
 
 impl K8sHealthServiceBuilder<(), ()> {
@@ -91,7 +74,7 @@ where
     R: ToK8sService,
 {
     /// build the k8s health web server
-    pub fn build(self) -> impl Service<Request, Response = Response, Error = Infallible> + Clone {
+    pub fn build(self) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
         Arc::new(match_service! {
             HttpMatcher::get("/k8s/alive") => self.alive.to_k8s_service(),
             HttpMatcher::get("/k8s/ready") => self.ready.to_k8s_service(),
@@ -107,20 +90,9 @@ impl ToK8sService for () {}
 
 impl<F> ToK8sService for F where F: Fn() -> bool + Clone + Send + Sync + 'static {}
 
+#[derive(Debug, Clone)]
 struct K8sService<F> {
     f: F,
-}
-
-impl<F: fmt::Debug> std::fmt::Debug for K8sService<F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("K8sService").field("f", &self.f).finish()
-    }
-}
-
-impl<F: Clone> Clone for K8sService<F> {
-    fn clone(&self) -> Self {
-        Self { f: self.f.clone() }
-    }
 }
 
 impl<F> K8sService<F> {
@@ -133,10 +105,10 @@ impl<F> Service<Request> for K8sService<F>
 where
     F: Fn() -> bool + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, _: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _: Request) -> Result<Self::Output, Self::Error> {
         Ok(if (self.f)() {
             StatusCode::OK
         } else {

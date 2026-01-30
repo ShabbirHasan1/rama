@@ -6,7 +6,7 @@ use std::task::{Context, Poll, ready};
 
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, OpaqueError};
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
@@ -91,10 +91,19 @@ where
     /// Prevent shutdown of the underlying IO object at the end of service the request,
     /// instead run `into_parts`. This is a convenience wrapper over `poll_without_shutdown`.
     pub async fn without_shutdown(self) -> crate::Result<Parts<T>> {
-        let mut conn = Some(self);
+        let mut this = Some(self);
         std::future::poll_fn(move |cx| -> Poll<crate::Result<Parts<T>>> {
-            ready!(conn.as_mut().unwrap().poll_without_shutdown(cx))?;
-            Poll::Ready(Ok(conn.take().unwrap().into_parts()))
+            if let Some(conn) = this.as_mut() {
+                ready!(conn.poll_without_shutdown(cx))?;
+                #[allow(clippy::expect_used, reason = "memory cannot move in between polls")]
+                let conn = this.take().expect("inner h1 connection for without shutdown was Some above");
+                Poll::Ready(Ok(conn.into_parts()))
+            } else {
+                Poll::Ready(Err(
+                    crate::Error::new_parse_internal().with_display(
+                        "h1 client connection w/o shutdown: poll: inner connection already taken: poll after ready?",
+                    )))
+            }
         })
         .await
     }
@@ -253,8 +262,6 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Enable this connection to support higher-level HTTP upgrades.
-    ///
-    /// See [the `upgrade` module](crate::upgrade) for more.
     pub fn with_upgrades(self) -> upgrades::UpgradeableConnection<T, B> {
         upgrades::UpgradeableConnection { inner: Some(self) }
     }
@@ -316,161 +323,181 @@ impl Builder {
         }
     }
 
-    /// Set whether HTTP/0.9 responses should be tolerated.
-    ///
-    /// Default is `false`.
-    pub fn http09_responses(&mut self, enabled: bool) -> &mut Self {
-        self.h09_responses = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/0.9 responses should be tolerated.
+        ///
+        /// Default is `false`.
+        pub fn http09_responses(mut self, enabled: bool) -> Self {
+            self.h09_responses = enabled;
+            self
+        }
     }
 
-    /// Set whether HTTP/1 connections will accept spaces between header names
-    /// and the colon that follow them in responses.
-    ///
-    /// You probably don't need this, here is what [RFC 7230 Section 3.2.4.] has
-    /// to say about it:
-    ///
-    /// > No whitespace is allowed between the header field-name and colon. In
-    /// > the past, differences in the handling of such whitespace have led to
-    /// > security vulnerabilities in request routing and response handling. A
-    /// > server MUST reject any received request message that contains
-    /// > whitespace between a header field-name and colon with a response code
-    /// > of 400 (Bad Request). A proxy MUST remove any such whitespace from a
-    /// > response message before forwarding the message downstream.
-    ///
-    /// Default is `false`.
-    ///
-    /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
-    pub fn allow_spaces_after_header_name_in_responses(&mut self, enabled: bool) -> &mut Self {
-        self.h1_parser_config
-            .allow_spaces_after_header_name_in_responses(enabled);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections will accept spaces between header names
+        /// and the colon that follow them in responses.
+        ///
+        /// You probably don't need this, here is what [RFC 7230 Section 3.2.4.] has
+        /// to say about it:
+        ///
+        /// > No whitespace is allowed between the header field-name and colon. In
+        /// > the past, differences in the handling of such whitespace have led to
+        /// > security vulnerabilities in request routing and response handling. A
+        /// > server MUST reject any received request message that contains
+        /// > whitespace between a header field-name and colon with a response code
+        /// > of 400 (Bad Request). A proxy MUST remove any such whitespace from a
+        /// > response message before forwarding the message downstream.
+        ///
+        /// Default is `false`.
+        ///
+        /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
+        pub fn allow_spaces_after_header_name_in_responses(mut self, enabled: bool) -> Self {
+            self.h1_parser_config
+                .allow_spaces_after_header_name_in_responses(enabled);
+            self
+        }
     }
 
-    /// Set whether HTTP/1 connections will accept obsolete line folding for
-    /// header values.
-    ///
-    /// Newline codepoints (`\r` and `\n`) will be transformed to spaces when
-    /// parsing.
-    ///
-    /// You probably don't need this, here is what [RFC 7230 Section 3.2.4.] has
-    /// to say about it:
-    ///
-    /// > A server that receives an obs-fold in a request message that is not
-    /// > within a message/http container MUST either reject the message by
-    /// > sending a 400 (Bad Request), preferably with a representation
-    /// > explaining that obsolete line folding is unacceptable, or replace
-    /// > each received obs-fold with one or more SP octets prior to
-    /// > interpreting the field value or forwarding the message downstream.
-    ///
-    /// > A proxy or gateway that receives an obs-fold in a response message
-    /// > that is not within a message/http container MUST either discard the
-    /// > message and replace it with a 502 (Bad Gateway) response, preferably
-    /// > with a representation explaining that unacceptable line folding was
-    /// > received, or replace each received obs-fold with one or more SP
-    /// > octets prior to interpreting the field value or forwarding the
-    /// > message downstream.
-    ///
-    /// > A user agent that receives an obs-fold in a response message that is
-    /// > not within a message/http container MUST replace each received
-    /// > obs-fold with one or more SP octets prior to interpreting the field
-    /// > value.
-    ///
-    /// Default is `false`.
-    ///
-    /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
-    pub fn allow_obsolete_multiline_headers_in_responses(&mut self, enabled: bool) -> &mut Self {
-        self.h1_parser_config
-            .allow_obsolete_multiline_headers_in_responses(enabled);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections will accept obsolete line folding for
+        /// header values.
+        ///
+        /// Newline codepoints (`\r` and `\n`) will be transformed to spaces when
+        /// parsing.
+        ///
+        /// You probably don't need this, here is what [RFC 7230 Section 3.2.4.] has
+        /// to say about it:
+        ///
+        /// > A server that receives an obs-fold in a request message that is not
+        /// > within a message/http container MUST either reject the message by
+        /// > sending a 400 (Bad Request), preferably with a representation
+        /// > explaining that obsolete line folding is unacceptable, or replace
+        /// > each received obs-fold with one or more SP octets prior to
+        /// > interpreting the field value or forwarding the message downstream.
+        ///
+        /// > A proxy or gateway that receives an obs-fold in a response message
+        /// > that is not within a message/http container MUST either discard the
+        /// > message and replace it with a 502 (Bad Gateway) response, preferably
+        /// > with a representation explaining that unacceptable line folding was
+        /// > received, or replace each received obs-fold with one or more SP
+        /// > octets prior to interpreting the field value or forwarding the
+        /// > message downstream.
+        ///
+        /// > A user agent that receives an obs-fold in a response message that is
+        /// > not within a message/http container MUST replace each received
+        /// > obs-fold with one or more SP octets prior to interpreting the field
+        /// > value.
+        ///
+        /// Default is `false`.
+        ///
+        /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
+        pub fn allow_obsolete_multiline_headers_in_responses(mut self, enabled: bool) -> Self {
+            self.h1_parser_config
+                .allow_obsolete_multiline_headers_in_responses(enabled);
+            self
+        }
     }
 
-    /// Set whether HTTP/1 connections will silently ignored malformed header lines.
-    ///
-    /// If this is enabled and a header line does not start with a valid header
-    /// name, or does not include a colon at all, the line will be silently ignored
-    /// and no error will be reported.
-    ///
-    /// Default is `false`.
-    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
-        self.h1_parser_config
-            .ignore_invalid_headers_in_responses(enabled);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections will silently ignored malformed header lines.
+        ///
+        /// If this is enabled and a header line does not start with a valid header
+        /// name, or does not include a colon at all, the line will be silently ignored
+        /// and no error will be reported.
+        ///
+        /// Default is `false`.
+        pub fn ignore_invalid_headers(mut self, enabled: bool) -> Self {
+            self.h1_parser_config
+                .ignore_invalid_headers_in_responses(enabled);
+            self
+        }
     }
 
-    /// Set whether HTTP/1 connections should try to use vectored writes,
-    /// or always flatten into a single buffer.
-    ///
-    /// Note that setting this to false may mean more copies of body data,
-    /// but may also improve performance when an IO transport doesn't
-    /// support vectored writes well, such as most TLS implementations.
-    ///
-    /// Setting this to true will force rama_http_core to use queued strategy
-    /// which may eliminate unnecessary cloning on some TLS backends
-    ///
-    /// Default is `auto`. In this mode rama_http_core will try to guess which
-    /// mode to use
-    pub fn writev(&mut self, enabled: bool) -> &mut Self {
-        self.h1_writev = Some(enabled);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections should try to use vectored writes,
+        /// or always flatten into a single buffer.
+        ///
+        /// Note that setting this to false may mean more copies of body data,
+        /// but may also improve performance when an IO transport doesn't
+        /// support vectored writes well, such as most TLS implementations.
+        ///
+        /// Setting this to true will force rama_http_core to use queued strategy
+        /// which may eliminate unnecessary cloning on some TLS backends
+        ///
+        /// Default is `auto`. In this mode rama_http_core will try to guess which
+        /// mode to use
+        pub fn writev(mut self, enabled: bool) -> Self {
+            self.h1_writev = Some(enabled);
+            self
+        }
     }
 
-    /// Set whether HTTP/1 connections will write header names as title case at
-    /// the socket level.
-    ///
-    /// Default is `false`.
-    pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
-        self.h1_title_case_headers = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether HTTP/1 connections will write header names as title case at
+        /// the socket level.
+        ///
+        /// Default is `false`.
+        pub fn title_case_headers(mut self, enabled: bool) -> Self {
+            self.h1_title_case_headers = enabled;
+            self
+        }
     }
 
-    /// Set the maximum number of headers.
-    ///
-    /// When a response is received, the parser will reserve a buffer to store headers for optimal
-    /// performance.
-    ///
-    /// If client receives more headers than the buffer size, the error "message header too large"
-    /// is returned.
-    ///
-    /// Note that headers is allocated on the stack by default, which has higher performance. After
-    /// setting this value, headers will be allocated in heap memory, that is, heap memory
-    /// allocation will occur for each response, and there will be a performance drop of about 5%.
-    ///
-    /// Default is 100.
-    pub fn max_headers(&mut self, val: usize) -> &mut Self {
-        self.h1_max_headers = Some(val);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum number of headers.
+        ///
+        /// When a response is received, the parser will reserve a buffer to store headers for optimal
+        /// performance.
+        ///
+        /// If client receives more headers than the buffer size, the error "message header too large"
+        /// is returned.
+        ///
+        /// Note that headers is allocated on the stack by default, which has higher performance. After
+        /// setting this value, headers will be allocated in heap memory, that is, heap memory
+        /// allocation will occur for each response, and there will be a performance drop of about 5%.
+        ///
+        /// Default is 100.
+        pub fn max_headers(mut self, val: usize) -> Self {
+            self.h1_max_headers = Some(val);
+            self
+        }
     }
 
-    /// Sets the exact size of the read buffer to *always* use.
-    ///
-    /// Note that setting this option unsets the `max_buf_size` option.
-    ///
-    /// Default is an adaptive read buffer.
-    pub fn read_buf_exact_size(&mut self, sz: Option<usize>) -> &mut Self {
-        self.h1_read_buf_exact_size = sz;
-        self.h1_max_buf_size = None;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the exact size of the read buffer to *always* use.
+        ///
+        /// Note that setting this option unsets the `max_buf_size` option.
+        ///
+        /// Default is an adaptive read buffer.
+        pub fn read_buf_exact_size(mut self, sz: Option<usize>) -> Self {
+            self.h1_read_buf_exact_size = sz;
+            self.h1_max_buf_size = None;
+            self
+        }
     }
 
-    /// Set the maximum buffer size for the connection.
-    ///
-    /// Default is ~400kb.
-    ///
-    /// Note that setting this option unsets the `read_exact_buf_size` option.
-    ///
-    /// # Panics
-    ///
-    /// The minimum value allowed is 8192. This method panics if the passed `max` is less than the minimum.
-    pub fn max_buf_size(&mut self, max: usize) -> &mut Self {
-        assert!(
-            max >= proto::h1::MINIMUM_MAX_BUFFER_SIZE,
-            "the max_buf_size cannot be smaller than the minimum that h1 specifies."
-        );
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum buffer size for the connection.
+        ///
+        /// Default is ~400kb.
+        ///
+        /// Note that setting this option unsets the `read_exact_buf_size` option.
+        ///
+        /// # Error
+        ///
+        /// The minimum value allowed is 8192. This method errors if the passed `max` is less than the minimum.
+        pub fn max_buf_size(mut self, max: usize) -> Result<Self, OpaqueError> {
+            if max < proto::h1::MINIMUM_MAX_BUFFER_SIZE {
+                return Err(OpaqueError::from_display(
+                    "the max_buf_size cannot be smaller than the minimum that h1 specifies."
+                ));
+            }
 
-        self.h1_max_buf_size = Some(max);
-        self.h1_read_buf_exact_size = None;
-        self
+            self.h1_max_buf_size = Some(max);
+            self.h1_read_buf_exact_size = None;
+
+            Ok(self)
+        }
     }
 
     /// Constructs a connection with the configured options and IO.
@@ -552,15 +579,29 @@ mod upgrades {
         type Output = crate::Result<()>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            match ready!(Pin::new(&mut self.inner.as_mut().unwrap().inner).poll(cx)) {
-                Ok(proto::Dispatched::Shutdown) => Poll::Ready(Ok(())),
-                Ok(proto::Dispatched::Upgrade(pending)) => {
-                    let Parts { io, read_buf } = self.inner.take().unwrap().into_parts();
-                    pending.fulfill(Upgraded::new(io, read_buf));
-                    Poll::Ready(Ok(()))
+            Poll::Ready(if let Some(inner) = self.inner.as_mut() {
+                match ready!(Pin::new(&mut inner.inner).poll(cx)) {
+                    Ok(proto::Dispatched::Shutdown) => Ok(()),
+                    Ok(proto::Dispatched::Upgrade(pending)) => {
+                        #[allow(
+                            clippy::expect_used,
+                            reason = "memory cannot move in between polls"
+                        )]
+                        let inner = self.inner.take().expect(
+                            "inner h1 connection for upgradeable connection was Some above",
+                        );
+                        let Parts { io, read_buf } = inner.into_parts();
+                        pending.fulfill(Upgraded::new(io, read_buf));
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
                 }
-                Err(e) => Poll::Ready(Err(e)),
-            }
+            } else {
+                Err(
+                    crate::Error::new_parse_internal().with_display(
+                        "h1 client upgradeable connection: poll: inner connection already taken: poll after ready?",
+                    ))
+            })
         }
     }
 }

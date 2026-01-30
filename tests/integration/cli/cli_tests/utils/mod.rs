@@ -9,13 +9,30 @@ use std::{
 };
 
 use base64::Engine;
-use rama::telemetry::tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+use rama::telemetry::tracing::{
+    level_filters::LevelFilter,
+    subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+};
 
 #[derive(Debug)]
 /// A wrapper around a rama service process.
 pub(super) struct RamaService {
     process: Child,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum EchoMode {
+    Tcp,
+    Udp,
+    Tls,
+    Http,
+    Https,
+    HttpsWithCertIssuer {
+        remote_addr: String,
+        remote_ca: Option<Vec<u8>>,
+        remote_auth: Option<String>,
+    },
 }
 
 impl RamaService {
@@ -82,7 +99,8 @@ impl RamaService {
     }
 
     /// Start the rama echo service with the given port.
-    pub(super) fn serve_echo(port: u16, mode: &'static str) -> Self {
+    #[allow(clippy::needless_pass_by_value)]
+    pub(super) fn serve_echo(port: u16, mode: EchoMode) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -91,10 +109,9 @@ impl RamaService {
             .unwrap()
             .command();
 
-        if mode.eq_ignore_ascii_case("tls") || mode.eq_ignore_ascii_case("https") {
-            const BASE64: base64::engine::GeneralPurpose =
-                base64::engine::general_purpose::STANDARD;
+        const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
+        if matches!(mode, EchoMode::Tls | EchoMode::Https) {
             builder.env(
                 "RAMA_TLS_CRT",
                 BASE64.encode(include_bytes!("./example_tls.crt")),
@@ -103,6 +120,19 @@ impl RamaService {
                 "RAMA_TLS_KEY",
                 BASE64.encode(include_bytes!("./example_tls.key")),
             );
+        } else if let EchoMode::HttpsWithCertIssuer {
+            remote_addr,
+            remote_ca,
+            remote_auth,
+        } = &mode
+        {
+            builder.env("RAMA_TLS_REMOTE", remote_addr);
+            if let Some(remote_ca) = remote_ca {
+                builder.env("RAMA_TLS_REMOTE_CA", BASE64.encode(remote_ca));
+            }
+            if let Some(remote_auth) = remote_auth {
+                builder.env("RAMA_TLS_REMOTE_AUTH", remote_auth);
+            }
         }
 
         builder
@@ -112,13 +142,22 @@ impl RamaService {
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
             .arg("--mode")
-            .arg(mode)
+            .arg(match &mode {
+                EchoMode::Tcp => "tcp",
+                EchoMode::Udp => "udp",
+                EchoMode::Tls => "tls",
+                EchoMode::Http => "http",
+                EchoMode::Https | EchoMode::HttpsWithCertIssuer { .. } => "https",
+            })
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
 
-        if mode.eq_ignore_ascii_case("http") || mode.eq_ignore_ascii_case("https") {
+        if matches!(
+            &mode,
+            EchoMode::Http | EchoMode::Https | EchoMode::HttpsWithCertIssuer { .. }
+        ) {
             builder.arg("--ws");
         }
 
@@ -301,6 +340,67 @@ impl RamaService {
             for line in stdout {
                 let line = line.unwrap();
                 println!("rama discard >> {line}");
+            }
+        });
+
+        Self { process }
+    }
+
+    // Start the rama http-test service with the given port.
+    pub(super) fn serve_http_test(port: u16, secure: bool) -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        if secure {
+            const BASE64: base64::engine::GeneralPurpose =
+                base64::engine::general_purpose::STANDARD;
+
+            builder.env(
+                "RAMA_TLS_CRT",
+                BASE64.encode(include_bytes!("./example_tls.crt")),
+            );
+            builder.env(
+                "RAMA_TLS_KEY",
+                BASE64.encode(include_bytes!("./example_tls.key")),
+            );
+        }
+
+        builder
+            .stdout(std::process::Stdio::piped())
+            .arg("serve")
+            .arg("http-test")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        if secure {
+            builder.arg("--secure");
+        }
+
+        let mut process = builder.spawn().unwrap();
+
+        let stdout = process.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout).lines();
+
+        for line in &mut stdout {
+            let line = line.unwrap();
+            if line.contains("HTTP Test Service (auto) listening") {
+                break;
+            }
+        }
+
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                println!("rama http-test >> {line}");
             }
         });
 
@@ -531,7 +631,7 @@ static INIT_TRACING_ONCE: Once = Once::new();
 /// Initialize tracing for example tests
 pub(super) fn init_tracing() {
     INIT_TRACING_ONCE.call_once(|| {
-        let _ = tracing_subscriber::registry()
+        let _ = subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()

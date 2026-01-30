@@ -21,10 +21,10 @@
 //! that goes through Tls, with the power of rama. Be empowered, be brave, go forward.
 
 use rama::{
-    Service,
-    extensions::ExtensionsMut,
+    Layer as _, Service,
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
-        Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
+        Body, BodyExtractExt, Request, client::HttpConnectorLayer, server::HttpServer,
         service::web::Router,
     },
     net::{
@@ -35,12 +35,16 @@ use rama::{
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
-        user::{Basic, ProxyCredential},
+        user::{ProxyCredential, credentials::basic},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
     rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::{
         client::{TlsConnector, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorService},
@@ -48,11 +52,10 @@ use rama::{
 };
 
 use std::sync::Arc;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -65,10 +68,10 @@ async fn main() {
     let http_socket_addr = spawn_http_server().await;
 
     tracing::info!(
-        network.peer.address = %proxy_socket_addr.ip_addr(),
-        network.peer.port = %proxy_socket_addr.port(),
-        server.address = %http_socket_addr.ip_addr(),
-        server.port = %http_socket_addr.port(),
+        network.peer.address = %proxy_socket_addr.ip_addr,
+        network.peer.port = %proxy_socket_addr.port,
+        server.address = %http_socket_addr.ip_addr,
+        server.port = %http_socket_addr.port,
         "local servers up and running",
     );
 
@@ -76,8 +79,9 @@ async fn main() {
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .into_shared_builder();
 
-    let client = HttpConnector::new(Socks5ProxyConnector::required(
-        TlsConnector::secure(TcpConnector::new()).with_connector_data(tls_conn_data),
+    let client = HttpConnectorLayer::default().into_layer(Socks5ProxyConnector::required(
+        TlsConnector::secure(TcpConnector::new(Executor::default()))
+            .with_connector_data(tls_conn_data),
     ));
 
     let uri = format!("http://{http_socket_addr}/ping");
@@ -93,17 +97,20 @@ async fn main() {
 
     request.extensions_mut().insert(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
-        authority: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
+        address: proxy_socket_addr.into(),
+        credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
     });
 
     let EstablishedClientConnection {
-        req,
+        input: mut req,
         conn: http_service,
     } = client
         .connect(request)
         .await
         .expect("establish a proxied connection ready to make http requests");
+
+    req.extensions_mut()
+        .extend(http_service.extensions().clone());
 
     tracing::info!(
         url.full = %uri,
@@ -123,7 +130,7 @@ async fn main() {
 }
 
 async fn spawn_socks5_over_tls_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63011))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63011), Executor::default())
         .await
         .expect("bind socks5-over-tls CONNECT proxy on open port");
 
@@ -132,8 +139,8 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
         .expect("get bind address of socks5-over-tls proxy server")
         .into();
 
-    let socks5_acceptor = Socks5Acceptor::default()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
+    let socks5_acceptor =
+        Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
     let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
     let acceptor_data =
@@ -147,7 +154,7 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
 }
 
 async fn spawn_http_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63012))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63012), Executor::default())
         .await
         .expect("bind HTTP server on open port");
 
@@ -156,8 +163,8 @@ async fn spawn_http_server() -> SocketAddress {
         .expect("get bind address of http server")
         .into();
 
-    let app = Router::new().get("/ping", "pong");
-    let server = HttpServer::auto(Executor::default()).service(Arc::new(app));
+    let app = Router::new().with_get("/ping", "pong");
+    let server = HttpServer::default().service(Arc::new(app));
 
     tokio::spawn(tcp_service.serve(server));
 

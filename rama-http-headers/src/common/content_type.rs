@@ -1,5 +1,6 @@
 use std::{fmt, str::FromStr};
 
+use rama_core::telemetry::tracing;
 use rama_http_types::{
     HeaderName, HeaderValue,
     mime::{self, Mime},
@@ -61,7 +62,14 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn ndjson() -> Self {
-        Self(Mime::from_str("application/x-ndjson").unwrap())
+        #[allow(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(
+            Mime::from_str("application/x-ndjson")
+                .expect("application/x-ndjson to be a valid mime"),
+        )
     }
 
     /// A constructor to easily create a `Content-Type: text/plain` header.
@@ -168,6 +176,20 @@ impl ContentType {
         Self(mime::APPLICATION_JAVASCRIPT)
     }
 
+    /// A constructor to easily create a `Content-Type: application/grpc` header.
+    #[inline]
+    #[must_use]
+    pub fn grpc() -> Self {
+        // TOOD: we need to invest in mime, either contribute,
+        // or fork it, to support all our mime needs better...
+        // e.g. we also have similar issues for ndjson and more
+        #[allow(
+            clippy::expect_used,
+            reason = "valid mim,e in future this should be better"
+        )]
+        Self(Mime::from_str("application/grpc").expect("application/grpc to be a valid mime"))
+    }
+
     /// A constructor to easily create a `Content-Type: application/javascript; charset=utf-8` header.
     #[inline]
     #[must_use]
@@ -179,7 +201,14 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn jose_json() -> Self {
-        Self(Mime::from_str("application/jose+json").unwrap())
+        #[allow(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(
+            Mime::from_str("application/jose+json")
+                .expect("application/jose+json to be a valid mime"),
+        )
     }
 
     /// Reference to the internal [`Mime`].
@@ -213,12 +242,12 @@ impl HeaderDecode for ContentType {
 
 impl HeaderEncode for ContentType {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        let value = self
-            .0
-            .as_ref()
-            .parse()
-            .expect("Mime is always a valid HeaderValue");
-        values.extend(::std::iter::once(value));
+        match self.0.as_ref().parse() {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode content-type's mime as header value: {err}");
+            }
+        }
     }
 }
 
@@ -254,6 +283,16 @@ impl std::str::FromStr for ContentType {
 mod tests {
     use super::super::test_decode;
     use super::ContentType;
+
+    #[test]
+    fn jose_json_is_valid() {
+        let _ = ContentType::jose_json();
+    }
+
+    #[test]
+    fn ndjson_is_valid() {
+        let _ = ContentType::ndjson();
+    }
 
     #[test]
     fn json() {

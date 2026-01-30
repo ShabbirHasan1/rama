@@ -1,21 +1,24 @@
 //! dns using the [`hickory_resolver`] crate
 
-use crate::DnsResolver;
-use hickory_resolver::{
-    Name, TokioResolver,
-    config::ResolverConfig,
-    name_server::TokioConnectionProvider,
-    proto::rr::rdata::{A, AAAA},
-};
-use rama_core::error::{ErrorContext, OpaqueError};
-use rama_core::telemetry::tracing;
-use rama_net::address::Domain;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
 };
 
 pub use hickory_resolver as resolver;
+use hickory_resolver::{
+    Name, TokioResolver,
+    config::ResolverConfig,
+    name_server::TokioConnectionProvider,
+    proto::rr::rdata::{A, AAAA},
+};
+
+use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing;
+use rama_net::address::Domain;
+use rama_utils::macros::generate_set_and_with;
+
+use crate::DnsResolver;
 
 #[derive(Debug, Clone)]
 /// [`DnsResolver`] using the [`hickory_resolver`] crate
@@ -64,7 +67,7 @@ impl HickoryDns {
     /// statement](https://developers.google.com/speed/public-dns/privacy) for important information
     /// about what they track, many ISP's track similar information in DNS.
     ///
-    /// To use the system configuration see: [`Self::new_system`].
+    /// To use the system configuration see: [`Self::try_new_system`].
     pub fn new_google() -> Self {
         tracing::trace!("create HickoryDns resolver using default google config");
         Self::builder()
@@ -79,7 +82,7 @@ impl HickoryDns {
     ///
     /// Please see: <https://www.cloudflare.com/dns/>
     ///
-    /// To use the system configuration see: [`Self::new_system`].
+    /// To use the system configuration see: [`Self::try_new_system`].
     pub fn new_cloudflare() -> Self {
         tracing::trace!("create HickoryDns resolver using default cloudflare config");
         Self::builder()
@@ -95,7 +98,7 @@ impl HickoryDns {
     ///
     /// Please see: <https://www.quad9.net/faq/>
     ///
-    /// To use the system configuration see: [`Self::new_system`].
+    /// To use the system configuration see: [`Self::try_new_system`].
     pub fn new_quad9() -> Self {
         tracing::trace!("create HickoryDns resolver using default quad9 config");
         Self::builder().with_config(ResolverConfig::quad9()).build()
@@ -124,57 +127,28 @@ impl From<TokioResolver> for HickoryDns {
 }
 
 #[derive(Debug, Clone, Default)]
-/// A [`Builder`] to [`build`][`Self::build`] a [`HickoryDns`] instance.
+/// Used to [`build`][`Self::build`] a [`HickoryDns`] instance.
 pub struct HickoryDnsBuilder {
     config: Option<self::resolver::config::ResolverConfig>,
     options: Option<self::resolver::config::ResolverOpts>,
 }
 
 impl HickoryDnsBuilder {
-    /// Replace `self` with a hickory [`ResolverConfig`][`config::ResolverConfig`] defined.
-    #[must_use]
-    pub fn with_config(mut self, config: self::resolver::config::ResolverConfig) -> Self {
-        self.config = Some(config);
-        self
+    generate_set_and_with! {
+        /// Define the [`ResolverConfig`][`config::ResolverConfig`] used.
+        pub fn config(mut self, config: Option<self::resolver::config::ResolverConfig>) -> Self {
+            self.config = config;
+            self
+        }
     }
 
-    /// Replace `self` with an [`Option`]al hickory [`ResolverConfig`][`config::ResolverConfig`] defined.
-    #[must_use]
-    pub fn maybe_with_config(
-        mut self,
-        config: Option<self::resolver::config::ResolverConfig>,
-    ) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Set a hickory [`ResolverConfig`][`config::ResolverConfig`].
-    pub fn set_config(&mut self, config: self::resolver::config::ResolverConfig) -> &mut Self {
-        self.config = Some(config);
-        self
-    }
-
-    /// Replace `self` with a hickory [`ResolverOpts`][`config::ResolverOpts`] defined.
-    #[must_use]
-    pub fn with_options(mut self, options: self::resolver::config::ResolverOpts) -> Self {
-        self.options = Some(options);
-        self
-    }
-
-    /// Replace `self` with an [`Option`]al hickory [`ResolverOpts`][`config::ResolverOpts`] defined.
-    #[must_use]
-    pub fn maybe_with_options(
-        mut self,
-        options: Option<self::resolver::config::ResolverOpts>,
-    ) -> Self {
-        self.options = options;
-        self
-    }
-
-    /// Set a hickory [`ResolverOpts`][`config::ResolverOpts`].
-    pub fn set_options(&mut self, options: self::resolver::config::ResolverOpts) -> &mut Self {
-        self.options = Some(options);
-        self
+    generate_set_and_with! {
+        /// Define the [`ResolverOpts`][`config::ResolverOpts`] used.
+        #[must_use]
+        pub fn options(mut self, options: Option<self::resolver::config::ResolverOpts>) -> Self {
+            self.options = options;
+            self
+        }
     }
 
     /// Build a [`HickoryDns`] instance, consuming [`self`].
@@ -198,7 +172,7 @@ impl DnsResolver for HickoryDns {
     type Error = OpaqueError;
 
     async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
-        let name = fqdn_from_domain(domain)?;
+        let name = name_from_domain(domain)?;
 
         let mut results = vec![];
         for txt in self
@@ -216,7 +190,7 @@ impl DnsResolver for HickoryDns {
     }
 
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
-        let name = fqdn_from_domain(domain)?;
+        let name = name_from_domain(domain)?;
         Ok(self
             .0
             .ipv4_lookup(name)
@@ -228,7 +202,7 @@ impl DnsResolver for HickoryDns {
     }
 
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
-        let name = fqdn_from_domain(domain)?;
+        let name = name_from_domain(domain)?;
         Ok(self
             .0
             .ipv6_lookup(name)
@@ -240,8 +214,9 @@ impl DnsResolver for HickoryDns {
     }
 }
 
-fn fqdn_from_domain(domain: Domain) -> Result<Name, OpaqueError> {
+fn name_from_domain(domain: Domain) -> Result<Name, OpaqueError> {
+    let is_fqdn = domain.is_fqdn();
     let mut name = Name::from_utf8(domain).context("try to consume a Domain as a Dns Name")?;
-    name.set_fqdn(true);
+    name.set_fqdn(is_fqdn);
     Ok(name)
 }

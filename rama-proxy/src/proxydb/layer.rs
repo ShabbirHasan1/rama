@@ -8,12 +8,12 @@ use rama_net::{
     Protocol,
     address::ProxyAddress,
     transport::{TransportProtocol, TryRefIntoTransportContext},
-    user::{Basic, ProxyCredential},
+    user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
-/// A [`Service`] which selects a [`Proxy`] based on the given [`Context`].
+/// A [`Service`] which selects a [`Proxy`] based on the given input `Extensions`.
 ///
 /// Depending on the [`ProxyFilterMode`] the selection proxies might be optional,
 /// or use the default [`ProxyFilter`] in case none is defined.
@@ -24,6 +24,7 @@ use std::fmt;
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
 ///
 /// [`Proxy`]: crate::Proxy
+#[derive(Debug, Clone)]
 pub struct ProxyDBService<S, D, P, F> {
     inner: S,
     db: D,
@@ -34,7 +35,7 @@ pub struct ProxyDBService<S, D, P, F> {
 }
 
 #[derive(Debug, Clone, Default)]
-/// The modus operandi to decide how to deal with a missing [`ProxyFilter`] in the [`Context`]
+/// The modus operandi to decide how to deal with a missing [`ProxyFilter`] in the input `Extensions`
 /// when selecting a [`Proxy`] from the [`ProxyDB`].
 ///
 /// More advanced behaviour can be achieved by combining one of these modi
@@ -49,44 +50,6 @@ pub enum ProxyFilterMode {
     Required,
     /// The [`ProxyFilter`] is optional, and if not present, the provided fallback [`ProxyFilter`] is used.
     Fallback(ProxyFilter),
-}
-
-impl<S, D, P, F> fmt::Debug for ProxyDBService<S, D, P, F>
-where
-    S: fmt::Debug,
-    D: fmt::Debug,
-    P: fmt::Debug,
-    F: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProxyDBService")
-            .field("inner", &self.inner)
-            .field("db", &self.db)
-            .field("mode", &self.mode)
-            .field("predicate", &self.predicate)
-            .field("username_formatter", &self.username_formatter)
-            .field("preserve", &self.preserve)
-            .finish()
-    }
-}
-
-impl<S, D, P, F> Clone for ProxyDBService<S, D, P, F>
-where
-    S: Clone,
-    D: Clone,
-    P: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            db: self.db.clone(),
-            mode: self.mode.clone(),
-            predicate: self.predicate.clone(),
-            username_formatter: self.username_formatter.clone(),
-            preserve: self.preserve,
-        }
-    }
 }
 
 impl<S, D> ProxyDBService<S, D, bool, ()> {
@@ -104,50 +67,36 @@ impl<S, D> ProxyDBService<S, D, bool, ()> {
 }
 
 impl<S, D, P, F> ProxyDBService<S, D, P, F> {
-    /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
-    /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
-    /// or what to do if it is optional and not available.
-    #[must_use]
-    pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
-        self.mode = mode;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
+        /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
+        /// or what to do if it is optional and not available.
+        pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
+            self.mode = mode;
+            self
+        }
     }
 
-    /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
-    /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
-    /// or what to do if it is optional and not available.
-    pub fn set_filter_mode(&mut self, mode: ProxyFilterMode) -> &mut Self {
-        self.mode = mode;
-        self
-    }
-
-    /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
-    /// should be overwritten or not. By default `preserve=false`,
-    /// meaning we will overwrite the proxy address in case we selected one now.
-    ///
-    /// NOTE even when `preserve=false` it might still be that there's
-    /// a [`ProxyAddress`] in case it was set by a previous layer.
-    #[must_use]
-    pub const fn preserve_proxy(mut self, preserve: bool) -> Self {
-        self.preserve = preserve;
-        self
-    }
-
-    /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
-    /// should be overwritten or not. By default `preserve=false`,
-    /// meaning we will overwrite the proxy address in case we selected one now.
-    ///
-    /// NOTE even when `preserve=false` it might still be that there's
-    /// a [`ProxyAddress`] in case it was set by a previous layer.
-    pub fn set_preserve_proxy(&mut self, preserve: bool) -> &mut Self {
-        self.preserve = preserve;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define whether or not an existing [`ProxyAddress`] (in the input `Extensions`)
+        /// should be overwritten or not. By default `preserve=false`,
+        /// meaning we will overwrite the proxy address in case we selected one now.
+        ///
+        /// NOTE even when `preserve=false` it might still be that there's
+        /// a [`ProxyAddress`] in case it was set by a previous layer.
+        pub fn preserve_proxy(mut self, preserve: bool) -> Self {
+            self.preserve = preserve;
+            self
+        }
     }
 
     /// Set a [`ProxyQueryPredicate`] that will be used
     /// to possibly filter out proxies that according to the filters are correct,
     /// but not according to the predicate.
-    pub fn select_predicate<Predicate>(self, p: Predicate) -> ProxyDBService<S, D, Predicate, F> {
+    pub fn with_select_predicate<Predicate>(
+        self,
+        p: Predicate,
+    ) -> ProxyDBService<S, D, Predicate, F> {
         ProxyDBService {
             inner: self.inner,
             db: self.db,
@@ -162,7 +111,10 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     /// the username based on the selected [`Proxy`]. This is required
     /// in case the proxy is a router that accepts or maybe even requires
     /// username labels to configure proxies further down/up stream.
-    pub fn username_formatter<Formatter>(self, f: Formatter) -> ProxyDBService<S, D, P, Formatter> {
+    pub fn with_username_formatter<Formatter>(
+        self,
+        f: Formatter,
+    ) -> ProxyDBService<S, D, P, Formatter> {
         ProxyDBService {
             inner: self.inner,
             db: self.db,
@@ -176,55 +128,56 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     define_inner_service_accessors!();
 }
 
-impl<S, D, P, F, Request> Service<Request> for ProxyDBService<S, D, P, F>
+impl<S, D, P, F, Input> Service<Input> for ProxyDBService<S, D, P, F>
 where
-    S: Service<Request, Error: Into<BoxError> + Send + Sync + 'static>,
+    S: Service<Input, Error: Into<BoxError> + Send + Sync + 'static>,
     D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + ExtensionsMut
         + Send
         + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        if self.preserve && req.extensions().contains::<ProxyAddress>() {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+        if self.preserve && input.extensions().contains::<ProxyAddress>() {
             // shortcut in case a proxy address is already set,
             // and we wish to preserve it
-            return self.inner.serve(req).await.map_err(Into::into);
+            return self.inner.serve(input).await.map_err(Into::into);
         }
 
         let maybe_filter = match self.mode {
-            ProxyFilterMode::Optional => req.extensions().get::<ProxyFilter>().cloned(),
+            ProxyFilterMode::Optional => input.extensions().get::<ProxyFilter>().cloned(),
             ProxyFilterMode::Default => Some(
-                if let Some(stored) = req.extensions().get::<ProxyFilter>() {
+                if let Some(stored) = input.extensions().get::<ProxyFilter>() {
                     stored.clone()
                 } else {
-                    req.extensions_mut().insert(ProxyFilter::default());
+                    input.extensions_mut().insert(ProxyFilter::default());
                     ProxyFilter::default()
                 },
             ),
             ProxyFilterMode::Required => Some(
-                req.extensions()
+                input
+                    .extensions()
                     .get::<ProxyFilter>()
                     .cloned()
                     .context("missing proxy filter")?,
             ),
             ProxyFilterMode::Fallback(ref filter) => Some(
-                if let Some(stored) = req.extensions().get::<ProxyFilter>() {
+                if let Some(stored) = input.extensions().get::<ProxyFilter>() {
                     stored.clone()
                 } else {
-                    req.extensions_mut().insert(filter.clone());
+                    input.extensions_mut().insert(filter.clone());
                     filter.clone()
                 },
             ),
         };
 
         if let Some(filter) = maybe_filter {
-            let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+            let transport_ctx = input.try_ref_into_transport_ctx().map_err(|err| {
                 OpaqueError::from_boxed(err.into())
                     .context("proxydb: select proxy: get transport context")
             })?;
@@ -247,24 +200,31 @@ where
             let mut proxy_address = proxy.address.clone();
 
             // prepare the credential with labels in username if desired
-            proxy_address.credential = proxy_address.credential.take().map(|credential| {
-                match credential {
-                    ProxyCredential::Basic(ref basic) => {
-                        match self.username_formatter.fmt_username(
-                            &proxy,
-                            &filter,
-                            basic.username(),
-                        ) {
-                            Some(username) => ProxyCredential::Basic(Basic::new(
-                                username,
-                                basic.password().to_owned(),
-                            )),
-                            None => credential, // nothing to do
+            proxy_address.credential = proxy_address
+                .credential
+                .take()
+                .map(|credential| {
+                    Ok::<_, OpaqueError>(match credential {
+                        ProxyCredential::Basic(ref basic) => {
+                            match self.username_formatter.fmt_username(
+                                &proxy,
+                                &filter,
+                                basic.username(),
+                            ) {
+                                Some(username) => ProxyCredential::Basic(
+                                    basic.clone_with_new_username(
+                                        username
+                                            .try_into()
+                                            .context("returned formatted username is invalid")?,
+                                    ),
+                                ),
+                                None => credential, // nothing to do
+                            }
                         }
-                    }
-                    ProxyCredential::Bearer(_) => credential, // Remark: we can support this in future too if needed
-                }
-            });
+                        ProxyCredential::Bearer(_) => credential, // Remark: we can support this in future too if needed
+                    })
+                })
+                .transpose()?;
 
             // overwrite the proxy protocol if not set yet
             if proxy_address.protocol.is_none() {
@@ -281,7 +241,7 @@ where
                             .into());
                         }
                     }
-                    TransportProtocol::Tcp => match proxy_address.authority.port() {
+                    TransportProtocol::Tcp => match proxy_address.address.port {
                         80 | 8080 if proxy.http => Some(Protocol::HTTP),
                         443 | 8443 if proxy.https => Some(Protocol::HTTPS),
                         1080 if proxy.socks5 => Some(Protocol::SOCKS5),
@@ -308,17 +268,18 @@ where
             }
 
             // insert proxy address in context so it will be used
-            req.extensions_mut().insert(proxy_address);
+            input.extensions_mut().insert(proxy_address);
 
             // insert the id of the selected proxy
-            req.extensions_mut()
+            input
+                .extensions_mut()
                 .insert(super::ProxyID::from(proxy.id.clone()));
 
             // insert the entire proxy also in there, for full "Context"
-            req.extensions_mut().insert(proxy);
+            input.extensions_mut().insert(proxy);
         }
 
-        self.inner.serve(req).await.map_err(Into::into)
+        self.inner.serve(input).await.map_err(Into::into)
     }
 }
 
@@ -344,50 +305,17 @@ impl std::error::Error for ProxySelectError {
     }
 }
 
-/// A [`Layer`] which wraps an inner [`Service`] to select a [`Proxy`] based on the given [`Context`],
-/// and insert, if a [`Proxy`] is selected, it in the [`Context`] for further processing.
+/// A [`Layer`] which wraps an inner [`Service`] to select a [`Proxy`] based on the given input `Extensions`,
+/// and insert, if a [`Proxy`] is selected, it in the input `Extensions` for further processing.
 ///
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
+#[derive(Debug, Clone)]
 pub struct ProxyDBLayer<D, P, F> {
     db: D,
     mode: ProxyFilterMode,
     predicate: P,
     username_formatter: F,
     preserve: bool,
-}
-
-impl<D, P, F> fmt::Debug for ProxyDBLayer<D, P, F>
-where
-    D: fmt::Debug,
-    P: fmt::Debug,
-    F: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProxyDBLayer")
-            .field("db", &self.db)
-            .field("mode", &self.mode)
-            .field("predicate", &self.predicate)
-            .field("username_formatter", &self.username_formatter)
-            .field("preserve", &self.preserve)
-            .finish()
-    }
-}
-
-impl<D, P, F> Clone for ProxyDBLayer<D, P, F>
-where
-    D: Clone,
-    P: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            db: self.db.clone(),
-            mode: self.mode.clone(),
-            predicate: self.predicate.clone(),
-            username_formatter: self.username_formatter.clone(),
-            preserve: self.preserve,
-        }
-    }
 }
 
 impl<D> ProxyDBLayer<D, bool, ()> {
@@ -404,32 +332,34 @@ impl<D> ProxyDBLayer<D, bool, ()> {
 }
 
 impl<D, P, F> ProxyDBLayer<D, P, F> {
-    /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
-    /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
-    /// or what to do if it is optional and not available.
-    #[must_use]
-    pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
-        self.mode = mode;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
+        /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
+        /// or what to do if it is optional and not available.
+        pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
+            self.mode = mode;
+            self
+        }
     }
 
-    /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
-    /// should be overwritten or not. By default `preserve=false`,
-    /// meaning we will overwrite the proxy address in case we selected one now.
-    ///
-    /// NOTE even when `preserve=false` it might still be that there's
-    /// a [`ProxyAddress`] in case it was set by a previous layer.
-    #[must_use]
-    pub fn preserve_proxy(mut self, preserve: bool) -> Self {
-        self.preserve = preserve;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define whether or not an existing [`ProxyAddress`] (in the input `Extensions`)
+        /// should be overwritten or not. By default `preserve=false`,
+        /// meaning we will overwrite the proxy address in case we selected one now.
+        ///
+        /// NOTE even when `preserve=false` it might still be that there's
+        /// a [`ProxyAddress`] in case it was set by a previous layer.
+        pub fn preserve_proxy(mut self, preserve: bool) -> Self {
+            self.preserve = preserve;
+            self
+        }
     }
 
     /// Set a [`ProxyQueryPredicate`] that will be used
     /// to possibly filter out proxies that according to the filters are correct,
     /// but not according to the predicate.
     #[must_use]
-    pub fn select_predicate<Predicate>(self, p: Predicate) -> ProxyDBLayer<D, Predicate, F> {
+    pub fn with_select_predicate<Predicate>(self, p: Predicate) -> ProxyDBLayer<D, Predicate, F> {
         ProxyDBLayer {
             db: self.db,
             mode: self.mode,
@@ -444,7 +374,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     /// in case the proxy is a router that accepts or maybe even requires
     /// username labels to configure proxies further down/up stream.
     #[must_use]
-    pub fn username_formatter<Formatter>(self, f: Formatter) -> ProxyDBLayer<D, P, Formatter> {
+    pub fn with_username_formatter<Formatter>(self, f: Formatter) -> ProxyDBLayer<D, P, Formatter> {
         ProxyDBLayer {
             db: self.db,
             mode: self.mode,
@@ -518,24 +448,21 @@ mod tests {
     use super::*;
     use crate::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter};
     use itertools::Itertools;
-    use rama_core::{
-        extensions::{Extensions, ExtensionsRef},
-        service::service_fn,
-    };
+    use rama_core::{extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::{Body, Request, Version};
     use rama_net::{
         Protocol,
-        address::{Authority, ProxyAddress},
+        address::{HostWithPort, ProxyAddress},
         asn::Asn,
     };
-    use rama_utils::str::NonEmptyString;
+    use rama_utils::str::non_empty_str;
     use std::{convert::Infallible, str::FromStr, sync::Arc};
 
     #[tokio::test]
     async fn test_proxy_db_default_happy_path_example() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
-                id: NonEmptyString::from_static("42"),
+                id: non_empty_str!("42"),
                 address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
                 tcp: true,
                 udp: true,
@@ -555,7 +482,7 @@ mod tests {
                 asn: Some(Asn::unspecified()),
             },
             Proxy {
-                id: NonEmptyString::from_static("100"),
+                id: non_empty_str!("100"),
                 address: ProxyAddress::from_str("12.34.12.35:8080").unwrap(),
                 tcp: true,
                 udp: false,
@@ -578,7 +505,7 @@ mod tests {
         .unwrap();
 
         let service = ProxyDBLayer::new(Arc::new(db))
-            .filter_mode(ProxyFilterMode::Default)
+            .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
@@ -599,15 +526,15 @@ mod tests {
 
         let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
-            proxy_address.authority,
-            Authority::try_from("12.34.12.34:8080").unwrap()
+            proxy_address.address,
+            HostWithPort::from(([12, 34, 12, 34], 8080))
         );
     }
 
     #[tokio::test]
     async fn test_proxy_db_single_proxy_example() {
         let proxy = Proxy {
-            id: NonEmptyString::from_static("42"),
+            id: non_empty_str!("42"),
             address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
             tcp: true,
             udp: true,
@@ -628,7 +555,7 @@ mod tests {
         };
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
-            .filter_mode(ProxyFilterMode::Default)
+            .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
@@ -649,15 +576,15 @@ mod tests {
 
         let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
-            proxy_address.authority,
-            Authority::try_from("12.34.12.34:8080").unwrap()
+            proxy_address.address,
+            HostWithPort::from(([12, 34, 12, 34], 8080))
         );
     }
 
     #[tokio::test]
     async fn test_proxy_db_single_proxy_with_username_formatter() {
         let proxy = Proxy {
-            id: NonEmptyString::from_static("42"),
+            id: non_empty_str!("42"),
             address: ProxyAddress::from_str("john:secret@12.34.12.34:8080").unwrap(),
             tcp: true,
             udp: true,
@@ -678,8 +605,8 @@ mod tests {
         };
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
-            .filter_mode(ProxyFilterMode::Default)
-            .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+            .with_filter_mode(ProxyFilterMode::Default)
+            .with_username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
                 if proxy
                     .pool_id
                     .as_ref()
@@ -731,7 +658,7 @@ mod tests {
     async fn test_proxy_db_default_happy_path_example_transport_layer() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
-                id: NonEmptyString::from_static("42"),
+                id: non_empty_str!("42"),
                 address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
                 tcp: true,
                 udp: true,
@@ -751,7 +678,7 @@ mod tests {
                 asn: Some(Asn::unspecified()),
             },
             Proxy {
-                id: NonEmptyString::from_static("100"),
+                id: non_empty_str!("100"),
                 address: ProxyAddress::from_str("12.34.12.35:8080").unwrap(),
                 tcp: true,
                 udp: false,
@@ -774,16 +701,13 @@ mod tests {
         .unwrap();
 
         let service = ProxyDBLayer::new(Arc::new(db))
-            .filter_mode(ProxyFilterMode::Default)
+            .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: rama_tcp::client::Request| {
                 Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut req = rama_tcp::client::Request::new(
-            "www.example.com:443".parse().unwrap(),
-            Extensions::new(),
-        )
-        .with_protocol(Protocol::HTTPS);
+        let mut req = rama_tcp::client::Request::new("www.example.com:443".parse().unwrap())
+            .with_protocol(Protocol::HTTPS);
 
         req.extensions_mut().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
@@ -794,8 +718,8 @@ mod tests {
 
         let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
-            proxy_address.authority,
-            Authority::try_from("12.34.12.34:8080").unwrap()
+            proxy_address.address,
+            HostWithPort::from(([12, 34, 12, 34], 8080))
         );
     }
 
@@ -815,8 +739,8 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db))
-            .preserve_proxy(true)
-            .filter_mode(ProxyFilterMode::Default)
+            .with_preserve_proxy(true)
+            .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
@@ -833,7 +757,7 @@ mod tests {
 
         let proxy_address = service.serve(req).await.unwrap();
 
-        assert_eq!(proxy_address.authority.to_string(), "1.2.3.4:1234");
+        assert_eq!(proxy_address.address.to_string(), "1.2.3.4:1234");
     }
 
     #[tokio::test]
@@ -858,7 +782,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("3031533634")),
+                    id: Some(non_empty_str!("3031533634")),
                     ..Default::default()
                 }),
                 Some("105.150.55.60:4898"),
@@ -885,13 +809,15 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            req.extensions_mut().maybe_insert(filter);
+            if let Some(filter) = filter {
+                req.extensions_mut().insert(filter);
+            }
 
             let maybe_proxy_address = service.serve(req).await.unwrap();
 
             assert_eq!(
-                maybe_proxy_address.map(|p| p.authority),
-                expected_authority.map(|s| Authority::try_from(s).unwrap())
+                maybe_proxy_address.map(|p| p.address),
+                expected_authority.map(|s| HostWithPort::try_from(s).unwrap())
             );
         }
     }
@@ -901,7 +827,7 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db))
-            .filter_mode(ProxyFilterMode::Default)
+            .with_filter_mode(ProxyFilterMode::Default)
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
@@ -932,9 +858,11 @@ mod tests {
                     .body(Body::empty())
                     .unwrap();
 
-                req.extensions_mut().maybe_insert(filter.clone());
+                if let Some(filter) = filter.clone() {
+                    req.extensions_mut().insert(filter);
+                }
 
-                let proxy_address = service.serve(req).await.unwrap().authority.to_string();
+                let proxy_address = service.serve(req).await.unwrap().address.to_string();
 
                 if !seen_addresses.contains(&proxy_address) {
                     seen_addresses.push(proxy_address);
@@ -951,7 +879,7 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db))
-            .filter_mode(ProxyFilterMode::Fallback(ProxyFilter {
+            .with_filter_mode(ProxyFilterMode::Fallback(ProxyFilter {
                 datacenter: Some(true),
                 residential: Some(false),
                 mobile: Some(false),
@@ -987,9 +915,11 @@ mod tests {
                     .body(Body::empty())
                     .unwrap();
 
-                req.extensions_mut().maybe_insert(filter.clone());
+                if let Some(filter) = filter.clone() {
+                    req.extensions_mut().insert(filter);
+                }
 
-                let proxy_address = service.serve(req).await.unwrap().authority.to_string();
+                let proxy_address = service.serve(req).await.unwrap().address.to_string();
 
                 if !seen_addresses.contains(&proxy_address) {
                     seen_addresses.push(proxy_address);
@@ -1006,7 +936,7 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db))
-            .filter_mode(ProxyFilterMode::Required)
+            .with_filter_mode(ProxyFilterMode::Required)
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
@@ -1039,7 +969,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("FooBar")),
+                    id: Some(non_empty_str!("FooBar")),
                     ..Default::default()
                 }),
                 None,
@@ -1052,7 +982,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1316455915")),
+                    id: Some(non_empty_str!("1316455915")),
                     country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
@@ -1067,14 +997,16 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            req.extensions_mut().maybe_insert(filter.clone());
+            if let Some(filter) = filter.clone() {
+                req.extensions_mut().insert(filter);
+            }
 
             let proxy_address_result = service.serve(req).await;
             match expected_address {
                 Some(expected_address) => {
                     assert_eq!(
-                        proxy_address_result.unwrap().authority,
-                        Authority::try_from(expected_address).unwrap()
+                        proxy_address_result.unwrap().address,
+                        HostWithPort::try_from(expected_address).unwrap()
                     );
                 }
                 None => {
@@ -1089,8 +1021,8 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db))
-            .filter_mode(ProxyFilterMode::Required)
-            .select_predicate(|proxy: &Proxy| proxy.mobile)
+            .with_filter_mode(ProxyFilterMode::Required)
+            .with_select_predicate(|proxy: &Proxy| proxy.mobile)
             .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
@@ -1123,7 +1055,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("FooBar")),
+                    id: Some(non_empty_str!("FooBar")),
                     ..Default::default()
                 }),
                 None,
@@ -1136,7 +1068,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1316455915")),
+                    id: Some(non_empty_str!("1316455915")),
                     country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
@@ -1153,7 +1085,7 @@ mod tests {
             // match found, but due to custom predicate it won't check, given it is not mobile
             (
                 Some(ProxyFilter {
-                    id: Some(NonEmptyString::from_static("1316455915")),
+                    id: Some(non_empty_str!("1316455915")),
                     ..Default::default()
                 }),
                 None,
@@ -1165,14 +1097,16 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            req.extensions_mut().maybe_insert(filter);
+            if let Some(filter) = filter {
+                req.extensions_mut().insert(filter);
+            }
 
             let proxy_result = service.serve(req).await;
             match expected {
                 Some(expected_address) => {
                     assert_eq!(
-                        proxy_result.unwrap().authority,
-                        Authority::try_from(expected_address).unwrap()
+                        proxy_result.unwrap().address,
+                        HostWithPort::try_from(expected_address).unwrap()
                     );
                 }
                 None => {

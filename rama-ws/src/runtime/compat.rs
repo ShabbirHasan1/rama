@@ -1,3 +1,4 @@
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::futures::task;
 use rama_core::telemetry::tracing::trace;
 use std::sync::Arc;
@@ -60,6 +61,11 @@ impl<S> AllowStd<S> {
         res.read_waker_proxy.read_waker.register(waker);
 
         res
+    }
+
+    /// Returns the underlying stream.
+    pub(crate) fn into_inner(self) -> S {
+        self.inner
     }
 
     // Set the read or write waker for our proxies.
@@ -169,6 +175,18 @@ where
             Poll::Ready(r) => r,
             Poll::Pending => Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
         }
+    }
+}
+
+impl<S: ExtensionsRef> ExtensionsRef for AllowStd<S> {
+    fn extensions(&self) -> &Extensions {
+        self.inner.extensions()
+    }
+}
+
+impl<S: ExtensionsMut> ExtensionsMut for AllowStd<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.inner.extensions_mut()
     }
 }
 

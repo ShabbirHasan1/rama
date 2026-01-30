@@ -1,17 +1,17 @@
-use std::time::Duration;
-
-use clap::{Args, Subcommand};
 use rama::{
     error::{BoxError, OpaqueError},
     graceful,
-    telemetry::tracing,
+    telemetry::tracing::{self, subscriber::filter::LevelFilter},
 };
-use tracing_subscriber::filter::LevelFilter;
+
+use clap::{Args, Subcommand};
+use std::time::Duration;
 
 pub mod discard;
 pub mod echo;
 pub mod fp;
 pub mod fs;
+pub mod httptest;
 pub mod ip;
 pub mod proxy;
 pub mod stunnel;
@@ -21,7 +21,7 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
         LevelFilter::DEBUG
     } else {
         LevelFilter::INFO
-    });
+    })?;
 
     let graceful_timeout = (cfg.graceful > 0.).then(|| Duration::from_secs_f64(cfg.graceful));
 
@@ -47,6 +47,7 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
         ServeSubcommand::Discard(cfg) => discard::run(graceful.guard(), cfg).await?,
         ServeSubcommand::Echo(cfg) => echo::run(graceful.guard(), etx, cfg).await?,
         ServeSubcommand::Fp(cfg) => fp::run(graceful.guard(), cfg).await?,
+        ServeSubcommand::HttpTest(cfg) => httptest::run(graceful.guard(), cfg).await?,
         ServeSubcommand::Fs(cfg) => fs::run(graceful.guard(), cfg).await?,
         ServeSubcommand::Ip(cfg) => ip::run(graceful.guard(), cfg).await?,
         ServeSubcommand::Proxy(cfg) => proxy::run(graceful.guard(), cfg).await?,
@@ -83,6 +84,7 @@ pub enum ServeSubcommand {
     Discard(discard::CliCommandDiscard),
     Echo(echo::CliCommandEcho),
     Fp(fp::CliCommandFingerprint),
+    HttpTest(httptest::CliCommandHttpTest),
     Fs(fs::CliCommandFs),
     Ip(ip::CliCommandIp),
     Proxy(proxy::CliCommandProxy),

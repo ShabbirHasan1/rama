@@ -36,12 +36,15 @@ use rama::{
     rt::Executor,
     stream::json::JsonWriteStream,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use serde::Serialize;
 use std::{borrow::Cow, convert::Infallible, sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn api_json_events_endpoint() -> impl IntoResponse {
     (
@@ -72,7 +75,7 @@ async fn api_json_events_endpoint() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -82,8 +85,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62041))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62041), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -97,14 +101,11 @@ async fn main() {
         "open http://{bind_address}/orders in your browser to see the service in action"
     );
 
-    graceful.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard.clone());
+    graceful.spawn_task(async {
         let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
-            Router::new().get("/orders", api_json_events_endpoint),
+            Router::new().with_get("/orders", api_json_events_endpoint),
         ));
-        listener
-            .serve_graceful(guard, HttpServer::auto(exec).service(app))
-            .await;
+        listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
     graceful

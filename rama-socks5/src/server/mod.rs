@@ -14,7 +14,11 @@ use crate::proto::{
     server::{Header, Reply, UsernamePasswordResponse},
 };
 use rama_core::{
-    Service, error::BoxError, extensions::Extensions, extensions::ExtensionsMut, stream::Stream,
+    Service,
+    error::BoxError,
+    extensions::{Extensions, ExtensionsMut},
+    rt::Executor,
+    stream::Stream,
     telemetry::tracing,
 };
 use rama_net::{
@@ -22,7 +26,7 @@ use rama_net::{
     user::{self, authority::Authorizer},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 mod peek;
 #[doc(inline)]
@@ -51,6 +55,7 @@ pub use udp::{DefaultUdpRelay, Socks5UdpAssociator, UdpRelay};
 /// supports the [`Command::Connect`] method using the [`DefaultConnector`],
 /// but custom connectors as well as binders and udp associators
 /// are optionally possible.
+#[derive(Debug, Clone)]
 pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = (), A = ()> {
     connector: C,
     binder: B,
@@ -64,29 +69,14 @@ pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = (), A = ()> {
     //
     // This can be useful in case you also wish to support guest users.
     auth_opt: bool,
+
+    exec: Executor,
 }
 
+#[derive(Debug, Clone)]
 enum AuthKind<A> {
     NoAuth(A),
     WithAuth(A),
-}
-
-impl<A: fmt::Debug> fmt::Debug for AuthKind<A> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoAuth(auth) => write!(f, "AuthKind::NoAuth({auth:?})"),
-            Self::WithAuth(auth) => write!(f, "AuthKind::WithAuth({auth:?})"),
-        }
-    }
-}
-
-impl<A: Clone> Clone for AuthKind<A> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::NoAuth(auth) => Self::NoAuth(auth.clone()),
-            Self::WithAuth(auth) => Self::WithAuth(auth.clone()),
-        }
-    }
 }
 
 impl Socks5Acceptor<(), (), (), ()> {
@@ -95,13 +85,14 @@ impl Socks5Acceptor<(), (), (), ()> {
     /// Use [`Socks5Acceptor::default`] instead if you wish to create a default
     /// [`Socks5Acceptor`] which can be used as a simple and honest byte-byte proxy.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(exec: Executor) -> Self {
         Self {
             connector: (),
             binder: (),
             udp_associator: (),
             auth: AuthKind::NoAuth(()),
             auth_opt: false,
+            exec,
         }
     }
 }
@@ -114,6 +105,7 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
             udp_associator: self.udp_associator,
             auth: AuthKind::WithAuth(authorizer),
             auth_opt: self.auth_opt,
+            exec: self.exec,
         }
     }
 
@@ -143,6 +135,7 @@ impl<B, U, A> Socks5Acceptor<(), B, U, A> {
             udp_associator: self.udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            exec: self.exec,
         }
     }
 
@@ -170,6 +163,7 @@ impl<C, U, A> Socks5Acceptor<C, (), U, A> {
             udp_associator: self.udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            exec: self.exec,
         }
     }
 
@@ -197,6 +191,7 @@ impl<C, B, A> Socks5Acceptor<C, B, (), A> {
             udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            exec: self.exec,
         }
     }
 
@@ -211,36 +206,17 @@ impl<C, B, A> Socks5Acceptor<C, B, (), A> {
     }
 }
 
+impl Socks5Acceptor {
+    #[inline]
+    pub fn default_with_executor(exec: Executor) -> Self {
+        Socks5Acceptor::new(exec).with_default_connector()
+    }
+}
+
 impl Default for Socks5Acceptor {
     #[inline]
     fn default() -> Self {
-        Socks5Acceptor::new().with_default_connector()
-    }
-}
-
-impl<C: fmt::Debug, B: fmt::Debug, U: fmt::Debug, A: fmt::Debug> fmt::Debug
-    for Socks5Acceptor<C, B, U, A>
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Socks5Acceptor")
-            .field("connector", &self.connector)
-            .field("binder", &self.binder)
-            .field("udp_associator", &self.udp_associator)
-            .field("auth", &self.auth)
-            .field("auth_opt", &self.auth_opt)
-            .finish()
-    }
-}
-
-impl<C: Clone, B: Clone, U: Clone, A: Clone> Clone for Socks5Acceptor<C, B, U, A> {
-    fn clone(&self) -> Self {
-        Self {
-            connector: self.connector.clone(),
-            binder: self.binder.clone(),
-            udp_associator: self.udp_associator.clone(),
-            auth: self.auth.clone(),
-            auth_opt: self.auth_opt,
-        }
+        Self::default_with_executor(Executor::default())
     }
 }
 
@@ -550,14 +526,14 @@ where
     B: Socks5Binder<S>,
     S: Stream + Unpin + ExtensionsMut,
 {
-    type Response = ();
+    type Output = ();
     type Error = Error;
 
     #[inline]
     fn serve(
         &self,
         stream: S,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         self.accept(stream)
     }
 }
@@ -576,8 +552,8 @@ where
     where
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(interface).await?;
-        tcp.serve(self).await;
+        let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
+        tcp.serve(Arc::new(self)).await;
         Ok(())
     }
 }

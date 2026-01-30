@@ -40,19 +40,21 @@ use rama::{
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
+    utils::str::arcstr::ArcStr,
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde::Deserialize;
-use std::time::Duration;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -64,23 +66,26 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     let router = Router::new()
-        .get("/", Html(r##"<h1>Rates Catalogue</h1><ul><li><a href="/api/rates/2024.csv">rates for 2024</a></li></ul>"##.to_owned()))
-        .get("/api/rates/{year}.csv", api_rates_csv);
+        .with_get("/", Html(r##"<h1>Rates Catalogue</h1><ul><li><a href="/api/rates/2024.csv">rates for 2024</a></li></ul>"##.to_owned()))
+        .with_get("/api/rates/{year}.csv", api_rates_csv);
 
     let exec = Executor::graceful(graceful.guard());
-    let app = HttpServer::auto(exec).service(
+    let app = HttpServer::auto(exec).service(Arc::new(
         (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
         )
             .into_layer(router),
-    );
+    ));
 
     let address = SocketAddress::local_ipv4(62036);
     tracing::info!("running service at: {address}");
-    let tcp_server = TcpListener::bind(address).await.expect("bind tcp server");
+    let exec = Executor::graceful(graceful.guard());
+    let tcp_server = TcpListener::bind(address, exec)
+        .await
+        .expect("bind tcp server");
 
-    graceful.spawn_task_fn(|guard| tcp_server.serve_graceful(guard, app));
+    graceful.spawn_task(tcp_server.serve(app));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(8))
@@ -109,7 +114,7 @@ async fn api_rates_csv(
         // at least when generating them on the fly like this... You could of course
         // cache them based on input, so adding a caching layer in front of this endpoint
         // service specific would do a lot already
-        ZipBomb::new(format!("rates_{year}.csv")).into_response()
+        ZipBomb::new(ArcStr::from(format!("rates_{year}.csv"))).into_response()
     } else {
         // assume real user
         if year == 2024 {

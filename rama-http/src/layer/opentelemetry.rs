@@ -15,12 +15,9 @@ use rama_core::telemetry::opentelemetry::semantic_conventions::metric::{
     HTTP_SERVER_ACTIVE_REQUESTS, HTTP_SERVER_REQUEST_BODY_SIZE,
 };
 use rama_core::telemetry::opentelemetry::{
-    AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, ServiceInfo, global,
+    AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, global,
     metrics::{Counter, Histogram, Meter},
-    semantic_conventions::{
-        self,
-        resource::{SERVICE_NAME, SERVICE_VERSION},
-    },
+    semantic_conventions,
 };
 use rama_core::{Layer, Service};
 use rama_error::BoxError;
@@ -127,30 +124,11 @@ impl Metrics {
 }
 
 /// A layer that records http server metrics using OpenTelemetry.
+#[derive(Debug, Clone)]
 pub struct RequestMetricsLayer<F = ()> {
     metrics: Arc<Metrics>,
     base_attributes: Vec<KeyValue>,
     attributes_factory: F,
-}
-
-impl<F: fmt::Debug> fmt::Debug for RequestMetricsLayer<F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("RequestMetricsLayer")
-            .field("metrics", &self.metrics)
-            .field("base_attributes", &self.base_attributes)
-            .field("attributes_factory", &self.attributes_factory)
-            .finish()
-    }
-}
-
-impl<F: Clone> Clone for RequestMetricsLayer<F> {
-    fn clone(&self) -> Self {
-        Self {
-            metrics: self.metrics.clone(),
-            base_attributes: self.base_attributes.clone(),
-            attributes_factory: self.attributes_factory.clone(),
-        }
-    }
 }
 
 impl RequestMetricsLayer<()> {
@@ -165,15 +143,7 @@ impl RequestMetricsLayer<()> {
     /// with a custom name and version.
     #[must_use]
     pub fn custom(opts: MeterOptions) -> Self {
-        let service_info = opts.service.unwrap_or_else(|| ServiceInfo {
-            name: rama_utils::info::NAME.to_owned(),
-            version: rama_utils::info::VERSION.to_owned(),
-        });
-
-        let mut attributes = opts.attributes.unwrap_or_else(|| Vec::with_capacity(2));
-        attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
-        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version));
-
+        let attributes = opts.attributes.unwrap_or_default();
         let meter = get_versioned_meter();
         let metrics = Metrics::new(&meter, opts.metric_prefix.as_deref());
 
@@ -236,6 +206,7 @@ impl<S, F: Clone> Layer<S> for RequestMetricsLayer<F> {
 }
 
 /// A [`Service`] that records [http] server metrics using OpenTelemetry.
+#[derive(Debug, Clone)]
 pub struct RequestMetricsService<S, F = ()> {
     inner: S,
     metrics: Arc<Metrics>,
@@ -252,28 +223,6 @@ impl<S> RequestMetricsService<S, ()> {
     define_inner_service_accessors!();
 }
 
-impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for RequestMetricsService<S, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RequestMetricsService")
-            .field("inner", &self.inner)
-            .field("metrics", &self.metrics)
-            .field("base_attributes", &self.base_attributes)
-            .field("attributes_factory", &self.attributes_factory)
-            .finish()
-    }
-}
-
-impl<S: Clone, F: Clone> Clone for RequestMetricsService<S, F> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            metrics: self.metrics.clone(),
-            base_attributes: self.base_attributes.clone(),
-            attributes_factory: self.attributes_factory.clone(),
-        }
-    }
-}
-
 impl<S, F> RequestMetricsService<S, F> {
     fn compute_attributes<Body>(&self, req: &Request<Body>) -> Vec<KeyValue>
     where
@@ -287,11 +236,10 @@ impl<S, F> RequestMetricsService<S, F> {
         // server info
         let request_ctx = RequestContext::try_from(req).ok();
         if let Some(authority) = request_ctx.as_ref().map(|rc| &rc.authority) {
-            attributes.push(KeyValue::new(
-                HTTP_REQUEST_HOST,
-                authority.host().to_string(),
-            ));
-            attributes.push(KeyValue::new(SERVER_PORT, authority.port() as i64));
+            attributes.push(KeyValue::new(HTTP_REQUEST_HOST, authority.host.to_string()));
+            if let Some(port) = authority.port {
+                attributes.push(KeyValue::new(SERVER_PORT, port as i64));
+            }
         }
 
         // Request Info
@@ -317,14 +265,14 @@ impl<S, F> RequestMetricsService<S, F> {
 
 impl<S, F, Body> Service<Request<Body>> for RequestMetricsService<S, F>
 where
-    S: Service<Request, Response: IntoResponse>,
+    S: Service<Request, Output: IntoResponse>,
     F: AttributesFactory,
     Body: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let mut attributes: Vec<KeyValue> = self.compute_attributes(&req);
 
         self.metrics.http_server_total_requests.add(1, &attributes);
@@ -446,16 +394,7 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&req);
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME)
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION)
-        );
+
         assert!(
             attributes
                 .iter()
@@ -466,10 +405,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_default() {
         let svc = RequestMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -480,16 +415,7 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&req);
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()
@@ -500,10 +426,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_attributes_vec() {
         let svc = RequestMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -515,16 +437,6 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&req);
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
         assert!(
             attributes
                 .iter()
@@ -540,10 +452,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_attribute_fn() {
         let svc = RequestMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -559,16 +467,7 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&req);
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()

@@ -1,35 +1,24 @@
 //! module in function of [`TypedHeader`]
 
 use super::IntoResponse;
-use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
+use super::{FromPartsStateRefPair, OptionalFromPartsStateRefPair};
 use crate::headers::{self, HeaderDecode};
 use crate::request::Parts;
 use crate::{HeaderName, Response};
 use std::ops::Deref;
 
 /// Extractor to get a TypedHeader from the request.
+#[derive(Debug, Clone)]
 pub struct TypedHeader<H>(pub H);
 
-impl<H: std::fmt::Debug> std::fmt::Debug for TypedHeader<H> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("TypedHeader").field(&self.0).finish()
-    }
-}
-
-impl<H: Clone> Clone for TypedHeader<H> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<H, State> FromRequestContextRefPair<State> for TypedHeader<H>
+impl<H, State> FromPartsStateRefPair<State> for TypedHeader<H>
 where
     H: HeaderDecode + Send + Sync + 'static,
     State: Send + Sync,
 {
     type Rejection = TypedHeaderRejection;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
@@ -49,14 +38,14 @@ where
     }
 }
 
-impl<H, State> OptionalFromRequestContextRefPair<State> for TypedHeader<H>
+impl<H, State> OptionalFromPartsStateRefPair<State> for TypedHeader<H>
 where
     H: HeaderDecode + Send + Sync + 'static,
     State: Send + Sync,
 {
     type Rejection = TypedHeaderRejection;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Option<Self>, Self::Rejection> {
@@ -163,7 +152,7 @@ mod tests {
     use crate::{
         Body, Request,
         headers::ContentType,
-        service::web::extract::{FromRequestContextRefPair, TypedHeader},
+        service::web::extract::{FromPartsStateRefPair, TypedHeader},
     };
 
     #[tokio::test]
@@ -176,7 +165,7 @@ mod tests {
         let (parts, _) = req.into_parts();
 
         let typed_header =
-            match TypedHeader::<ContentType>::from_request_context_ref_pair(&parts, &()).await {
+            match TypedHeader::<ContentType>::from_parts_state_ref_pair(&parts, &()).await {
                 Ok(typed_header) => Some(typed_header),
                 Err(_) => panic!("Expected Ok"),
             };

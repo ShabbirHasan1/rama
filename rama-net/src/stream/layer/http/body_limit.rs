@@ -6,11 +6,11 @@ use std::fmt;
 /// Limit the size of the request and/or response bodies.
 ///
 /// As this layer operates on the transport layer ([`Stream`]),
-/// it only is used to add the [`BodyLimit`] value to the [`Context`],
-/// such that the L7 http service can apply the limit when found in that [`Context`].
+/// it only is used to add the [`BodyLimit`] value to input [`Extensions`],
+/// such that the L7 http service can apply the limit when found in those [`Extensions`].
 ///
 /// [`Stream`]: rama_core::stream::Stream
-/// [`Context`]: rama_core::Context`
+/// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
 pub struct BodyLimitLayer {
     limit: BodyLimit,
@@ -122,10 +122,10 @@ where
     S: Service<IO>,
     IO: Stream + ExtensionsMut,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: IO) -> Result<Self::Output, Self::Error> {
         stream.extensions_mut().insert(self.limit);
         self.inner.serve(stream).await
     }

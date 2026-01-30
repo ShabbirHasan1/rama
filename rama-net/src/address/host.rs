@@ -22,7 +22,7 @@ pub enum Host {
 }
 
 impl Host {
-    /// Returns `true` if [`host`] is a [`Domain`].
+    /// Returns `true` if [`Host`] is a [`Domain`].
     #[must_use]
     pub fn is_domain(&self) -> bool {
         matches!(self, Self::Name(_))
@@ -36,7 +36,15 @@ impl Host {
         }
     }
 
-    /// Returns `true` if [`host`] is a [`IpAddr`].
+    #[must_use]
+    pub fn into_domain(self) -> Option<Domain> {
+        match self {
+            Self::Name(domain) => Some(domain),
+            Self::Address(_) => None,
+        }
+    }
+
+    /// Returns `true` if [`Host`] is a [`IpAddr`].
     #[must_use]
     pub fn is_ip(&self) -> bool {
         matches!(self, Self::Address(_))
@@ -50,13 +58,21 @@ impl Host {
         }
     }
 
-    /// Returns `true` if [`host`] is a [`IpAddr::V4`].
+    #[must_use]
+    pub fn into_ip(self) -> Option<IpAddr> {
+        match self {
+            Self::Name(_) => None,
+            Self::Address(addr) => Some(addr),
+        }
+    }
+
+    /// Returns `true` if [`Host`] is a [`IpAddr::V4`].
     #[must_use]
     pub fn is_ipv4(&self) -> bool {
         matches!(self, Self::Address(IpAddr::V4(_)))
     }
 
-    /// Returns `true` if [`host`] is a [`IpAddr::V6`].
+    /// Returns `true` if [`Host`] is a [`IpAddr::V6`].
     #[must_use]
     pub fn is_ipv6(&self) -> bool {
         matches!(self, Self::Address(IpAddr::V4(_)))

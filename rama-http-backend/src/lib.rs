@@ -13,27 +13,35 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 pub mod client;
 pub mod server;
 
 #[cfg(test)]
 mod tests {
-    use super::{client::HttpConnector, server::HttpServer};
-    use rama_core::futures::future::join;
-    use rama_core::{Service, rt::Executor, service::service_fn};
-    use rama_http_types::{Body, Request, Response, Version};
-    use rama_net::test_utils::client::MockConnectorService;
     use std::{
         convert::Infallible,
         time::{Duration, Instant},
     };
+
     use tokio::time::sleep;
+
+    use rama_core::Layer as _;
+    use rama_core::futures::future::join;
+    use rama_core::{Service, rt::Executor, service::service_fn};
+    use rama_http_types::{Body, Request, Response, Version};
+    use rama_net::test_utils::client::MockConnectorService;
+
+    use super::{client::HttpConnectorLayer, server::HttpServer};
 
     #[tokio::test]
     async fn test_http11_pipelining() {
-        let connector = HttpConnector::new(MockConnectorService::new(|| {
+        let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
         }));
 
@@ -65,7 +73,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_http2_multiplex() {
-        let connector = HttpConnector::new(MockConnectorService::new(|| {
+        let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
         }));
 

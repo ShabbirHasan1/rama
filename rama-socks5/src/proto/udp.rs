@@ -4,6 +4,7 @@
 
 use byteorder::{BigEndian, ReadBytesExt};
 use rama_core::bytes::BufMut;
+use rama_net::address::HostWithPort;
 use std::io::Read;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -88,11 +89,11 @@ use super::{
 /// encoding said header.
 pub struct UdpHeader {
     pub fragment_number: u8,
-    pub destination: rama_net::address::Authority,
+    pub destination: HostWithPort,
 }
 
 impl UdpHeader {
-    /// Read the [`UdpPacket`], decoded from binary format as specified by [RFC 1928] from the reader.
+    /// Read the udp packet, decoded from binary format as specified by [RFC 1928] from the reader.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
     pub async fn read_from<R>(r: &mut R) -> Result<Self, ProtocolError>
@@ -111,7 +112,7 @@ impl UdpHeader {
         })
     }
 
-    /// Read the [`UdpPacket`], decoded from binary format as specified by [RFC 1928] from the reader.
+    /// Read the udp packet, decoded from binary format as specified by [RFC 1928] from the reader.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
     pub fn read_from_sync<R>(r: &mut R) -> Result<Self, ProtocolError>
@@ -130,7 +131,7 @@ impl UdpHeader {
         })
     }
 
-    /// Write the [`UdpPacket`] in binary format as specified by [RFC 1928] into the buffer.
+    /// Write the udp packet in binary format as specified by [RFC 1928] into the buffer.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
@@ -147,7 +148,6 @@ impl UdpHeader {
 #[cfg(test)]
 mod tests {
     use rama_core::bytes::BytesMut;
-    use rama_net::address::Authority;
     use std::io::Write;
     use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -181,7 +181,7 @@ mod tests {
         test_write_read_eq!(
             UdpHeader {
                 fragment_number: 2,
-                destination: Authority::local_ipv6(45),
+                destination: HostWithPort::local_ipv6(45),
             },
             UdpHeader
         );
@@ -192,7 +192,7 @@ mod tests {
         test_write_read_sync_eq!(
             UdpHeader {
                 fragment_number: 2,
-                destination: Authority::local_ipv6(45),
+                destination: HostWithPort::local_ipv6(45),
             },
             UdpHeader
         );

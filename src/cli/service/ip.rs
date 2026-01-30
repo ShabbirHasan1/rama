@@ -11,9 +11,9 @@ use crate::{
     extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Request, Response, StatusCode,
+        headers::exotic::XClacksOverhead,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         headers::{Accept, HeaderMapExt},
-        headers::{HeaderEncode as _, TypedHeader as _, exotic::XClacksOverhead},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             set_header::SetResponseHeaderLayer, trace::TraceLayer,
@@ -152,7 +152,7 @@ impl IpServiceBuilder<mode::Http> {
     pub fn build(
         mut self,
         executor: Executor,
-    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config.take();
 
@@ -179,10 +179,10 @@ impl IpServiceBuilder<mode::Http> {
 struct HttpIpService;
 
 impl Service<Request> for HttpIpService {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         let norm_req_path = req.uri().path().trim_matches('/');
         if !norm_req_path.is_empty() {
             tracing::debug!("unexpected request path '{norm_req_path}', redirect to root");
@@ -196,7 +196,7 @@ impl Service<Request> for HttpIpService {
             .or_else(|| {
                 req.extensions()
                     .get::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip())
+                    .map(|s| s.peer_addr().ip_addr)
             });
 
         Ok(match peer_ip {
@@ -227,6 +227,7 @@ impl HttpBodyContentFormat {
             return Self::default();
         };
         accept
+            .0
             .iter()
             .find_map(|qv| {
                 let r#type = qv.value.subtype();
@@ -253,10 +254,10 @@ impl<Input> Service<Input> for TcpIpService
 where
     Input: Stream + Unpin + ExtensionsRef,
 {
-    type Response = ();
+    type Output = ();
     type Error = BoxError;
 
-    async fn serve(&self, stream: Input) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Input) -> Result<Self::Output, Self::Error> {
         tracing::info!("connection received");
         let peer_ip = stream
             .extensions()
@@ -266,7 +267,7 @@ where
                 stream
                     .extensions()
                     .get::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip())
+                    .map(|s| s.peer_addr().ip_addr)
             });
         let Some(peer_ip) = peer_ip else {
             tracing::error!("missing peer information");
@@ -298,7 +299,7 @@ impl IpServiceBuilder<mode::Transport> {
     /// build a tcp service ready to echo client IP back
     pub fn build(
         mut self,
-    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config.take();
 
@@ -325,7 +326,7 @@ impl<M> IpServiceBuilder<M> {
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
         >,
-    ) -> Result<impl Service<S, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<S, Output = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             None => None,
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
@@ -363,7 +364,7 @@ impl<M> IpServiceBuilder<M> {
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
         >,
-    ) -> Result<impl Service<S, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<S, Output = (), Error = Infallible>, BoxError> {
         let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
             None => (None, None),
             Some(ForwardKind::Forwarded) => {
@@ -399,7 +400,7 @@ impl<M> IpServiceBuilder<M> {
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let hsts_layer = maybe_tls_accept_layer.is_some().then(|| {
             SetResponseHeaderLayer::if_not_present_typed(
-                StrictTransportSecurity::excluding_subdomains(Duration::from_secs(31536000)),
+                StrictTransportSecurity::excluding_subdomains_for_max_seconds(31536000),
             )
         });
 
@@ -417,9 +418,7 @@ impl<M> IpServiceBuilder<M> {
 
         let http_service = (
             TraceLayer::new_for_http(),
-            SetResponseHeaderLayer::if_not_present_fn(XClacksOverhead::name().clone(), || {
-                std::future::ready(XClacksOverhead::new().encode_to_value())
-            }),
+            SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
             ConsumeErrLayer::default(),
             #[cfg(any(feature = "rustls", feature = "boring"))]

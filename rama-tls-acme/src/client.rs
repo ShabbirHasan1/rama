@@ -51,9 +51,13 @@ pub struct AcmeClient {
 
 impl AcmeClient {
     /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
-    pub async fn new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
+    ///
+    /// # Errors
+    ///
+    /// Fails in case the ACME `Directory` could not be fetched.
+    pub async fn try_new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
     where
-        S: Service<Request, Response = Response, Error = OpaqueError>,
+        S: Service<Request, Output = Response, Error = OpaqueError>,
     {
         let https_client = https_client.boxed();
 
@@ -78,9 +82,9 @@ impl AcmeClient {
         https_client: S,
     ) -> Result<Self, OpaqueError>
     where
-        S: Service<Request, Response = Response, Error = OpaqueError>,
+        S: Service<Request, Output = Response, Error = OpaqueError>,
     {
-        Self::new(provider.as_directory_url(), https_client).await
+        Self::try_new(provider.as_directory_url(), https_client).await
     }
 
     generate_set_and_with! {
@@ -118,7 +122,6 @@ impl AcmeClient {
     /// [`Self::load_account`] instead.
     pub async fn create_or_load_account(
         &self,
-
         account_key: EcdsaKey,
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
@@ -131,10 +134,11 @@ impl AcmeClient {
     /// Internally this will generate a new [`EcdsaKey`] which will be associated with this account
     pub async fn create_account(
         &self,
-
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
-        let account_key = EcdsaKey::generate().expect("generate key for account");
+        let account_key = EcdsaKey::generate()
+            .context("generate key for account")
+            .map_err(ClientError::Other)?;
         self.create_or_load_account_inner(account_key, options, CreateAccountMode::Create)
             .await
     }
@@ -142,7 +146,6 @@ impl AcmeClient {
     /// Create a new acme account using the provided [`EcdsaKey`]
     pub async fn create_account_with_key(
         &self,
-
         account_key: EcdsaKey,
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
@@ -165,7 +168,6 @@ impl AcmeClient {
 
     async fn create_or_load_account_inner(
         &self,
-
         account_key: EcdsaKey,
         options: CreateAccountOptions,
         mode: CreateAccountMode,
@@ -210,7 +212,6 @@ impl AcmeClient {
 
     async fn post(
         &self,
-
         url: &str,
         payload: Option<&impl Serialize>,
         signer: &impl Signer,
@@ -310,7 +311,10 @@ impl<'a> Account<'a> {
     }
 
     /// Place a new [`Order`] using this [`Account`]
-    pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order<'_>, ClientError> {
+    pub async fn try_new_order(
+        &self,
+        new_order: NewOrderPayload,
+    ) -> Result<Order<'_>, ClientError> {
         let do_request = async || {
             let response = self
                 .post(&self.client.directory.new_order, Some(&new_order))

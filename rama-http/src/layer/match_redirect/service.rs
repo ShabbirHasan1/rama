@@ -1,5 +1,3 @@
-use std::fmt;
-
 use crate::service::web::response::{Headers, IntoResponse};
 use crate::utils::request_uri;
 use crate::{Body, Request, Response, StatusCode, StreamingBody};
@@ -18,38 +16,11 @@ use rama_utils::macros::define_inner_service_accessors;
 /// instead makes serves the request and produces a response.
 ///
 /// [`Uri`]: crate::Uri
+#[derive(Debug, Clone)]
 pub struct UriMatchRedirectService<R, S> {
     status_code: StatusCode,
     match_replace: R,
     inner: S,
-}
-
-impl<R, S> fmt::Debug for UriMatchRedirectService<R, S>
-where
-    R: fmt::Debug,
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UriMatchRedirectService")
-            .field("status_code", &self.status_code)
-            .field("match_replace", &self.match_replace)
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<R, S> Clone for UriMatchRedirectService<R, S>
-where
-    R: Clone,
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            status_code: self.status_code,
-            match_replace: self.match_replace.clone(),
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 impl<R, S> UriMatchRedirectService<R, S> {
@@ -130,15 +101,15 @@ impl<R, S> UriMatchRedirectService<R, S> {
 
 impl<ReqBody, ResBody, R, S> Service<Request<ReqBody>> for UriMatchRedirectService<R, S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     R: UriMatchReplace + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let full_uri = request_uri(&req);
         if let Ok(uri) = self
             .match_replace
@@ -153,15 +124,22 @@ where
             })
             && uri != full_uri
         {
-            tracing::debug!(
-                "redirct request '{full_uri}' to '{uri}' w/ status code {}",
-                self.status_code
-            );
-            return Ok((
-                Headers::single(Location::from(uri.as_ref())),
-                self.status_code,
-            )
-                .into_response());
+            return match Location::try_from(uri.as_ref()) {
+                Ok(loc) => {
+                    tracing::debug!(
+                        "redirct request '{full_uri}' to '{uri}' w/ status code {}",
+                        self.status_code
+                    );
+                    Ok((Headers::single(loc), self.status_code).into_response())
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        "failed to send response for redirct request '{full_uri}' to '{uri}' w/ status code {}; loc header encoding failed: {err}",
+                        self.status_code
+                    );
+                    Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                }
+            };
         }
 
         let resp = self.inner.serve(req).await?;

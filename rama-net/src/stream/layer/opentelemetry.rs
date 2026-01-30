@@ -4,13 +4,11 @@
 
 use crate::stream::SocketInfo;
 use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::telemetry::opentelemetry::semantic_conventions::resource::{
-    SERVICE_NAME, SERVICE_VERSION,
-};
+
 use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{
     NETWORK_TRANSPORT, NETWORK_TYPE,
 };
-use rama_core::telemetry::opentelemetry::{AttributesFactory, MeterOptions, ServiceInfo};
+use rama_core::telemetry::opentelemetry::{AttributesFactory, MeterOptions};
 use rama_core::telemetry::opentelemetry::{
     InstrumentationScope, KeyValue, global,
     metrics::{Counter, Histogram, Meter},
@@ -20,7 +18,7 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 use std::net::IpAddr;
-use std::{fmt, sync::Arc, time::SystemTime};
+use std::{sync::Arc, time::SystemTime};
 
 const NETWORK_CONNECTION_DURATION: &str = "network.server.connection_duration";
 const NETWORK_SERVER_TOTAL_CONNECTIONS: &str = "network.server.total_connections";
@@ -62,30 +60,11 @@ impl Metrics {
 }
 
 /// A layer that records network server metrics using OpenTelemetry.
+#[derive(Debug, Clone)]
 pub struct NetworkMetricsLayer<F = ()> {
     metrics: Arc<Metrics>,
     base_attributes: Vec<KeyValue>,
     attributes_factory: F,
-}
-
-impl<F: fmt::Debug> fmt::Debug for NetworkMetricsLayer<F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("NetworkMetricsLayer")
-            .field("metrics", &self.metrics)
-            .field("base_attributes", &self.base_attributes)
-            .field("attributes_factory", &self.attributes_factory)
-            .finish()
-    }
-}
-
-impl<F: Clone> Clone for NetworkMetricsLayer<F> {
-    fn clone(&self) -> Self {
-        Self {
-            metrics: self.metrics.clone(),
-            base_attributes: self.base_attributes.clone(),
-            attributes_factory: self.attributes_factory.clone(),
-        }
-    }
 }
 
 impl NetworkMetricsLayer {
@@ -100,15 +79,7 @@ impl NetworkMetricsLayer {
     /// with a custom name and version.
     #[must_use]
     pub fn custom(opts: MeterOptions) -> Self {
-        let service_info = opts.service.unwrap_or_else(|| ServiceInfo {
-            name: rama_utils::info::NAME.to_owned(),
-            version: rama_utils::info::VERSION.to_owned(),
-        });
-
-        let mut attributes = opts.attributes.unwrap_or_else(|| Vec::with_capacity(2));
-        attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
-        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version));
-
+        let attributes = opts.attributes.unwrap_or_default();
         let meter = get_versioned_meter();
         let metrics = Metrics::new(&meter, opts.metric_prefix.as_deref());
 
@@ -171,6 +142,7 @@ impl<S, F: Clone> Layer<S> for NetworkMetricsLayer<F> {
 }
 
 /// A [`Service`] that records network server metrics using OpenTelemetry.
+#[derive(Debug, Clone)]
 pub struct NetworkMetricsService<S, F = ()> {
     inner: S,
     metrics: Arc<Metrics>,
@@ -185,28 +157,6 @@ impl<S> NetworkMetricsService<S, ()> {
     }
 
     define_inner_service_accessors!();
-}
-
-impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for NetworkMetricsService<S, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NetworkMetricsService")
-            .field("inner", &self.inner)
-            .field("metrics", &self.metrics)
-            .field("base_attributes", &self.base_attributes)
-            .field("attributes_factory", &self.attributes_factory)
-            .finish()
-    }
-}
-
-impl<S: Clone, F: Clone> Clone for NetworkMetricsService<S, F> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            metrics: self.metrics.clone(),
-            base_attributes: self.base_attributes.clone(),
-            attributes_factory: self.attributes_factory.clone(),
-        }
-    }
 }
 
 impl<S, F> NetworkMetricsService<S, F> {
@@ -224,7 +174,7 @@ impl<S, F> NetworkMetricsService<S, F> {
             let peer_addr = socket_info.peer_addr();
             attributes.push(KeyValue::new(
                 NETWORK_TYPE,
-                match peer_addr.ip() {
+                match peer_addr.ip_addr {
                     IpAddr::V4(_) => "ipv4",
                     IpAddr::V6(_) => "ipv6",
                 },
@@ -244,10 +194,10 @@ where
     F: AttributesFactory,
     Stream: rama_core::stream::Stream + ExtensionsRef,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Stream) -> Result<Self::Output, Self::Error> {
         let attributes: Vec<KeyValue> = self.compute_attributes(stream.extensions());
 
         self.metrics.network_total_connections.add(1, &attributes);
@@ -278,16 +228,7 @@ mod tests {
     fn test_default_svc_compute_attributes_default() {
         let svc = NetworkMetricsService::new(());
         let attributes = svc.compute_attributes(&Extensions::default());
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME)
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION)
-        );
+
         assert!(
             attributes
                 .iter()
@@ -298,26 +239,13 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_default() {
         let svc = NetworkMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
         .into_layer(());
 
         let attributes = svc.compute_attributes(&Extensions::default());
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()
@@ -328,10 +256,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_attributes_vec() {
         let svc = NetworkMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -339,16 +263,7 @@ mod tests {
         .into_layer(());
 
         let attributes = svc.compute_attributes(&Extensions::default());
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()
@@ -364,10 +279,6 @@ mod tests {
     #[test]
     fn test_custom_svc_compute_attributes_attribute_fn() {
         let svc = NetworkMetricsLayer::custom(MeterOptions {
-            service: Some(ServiceInfo {
-                name: "test".to_owned(),
-                version: "42".to_owned(),
-            }),
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
@@ -379,16 +290,7 @@ mod tests {
         .into_layer(());
 
         let attributes = svc.compute_attributes(&Extensions::default());
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
-        );
-        assert!(
-            attributes
-                .iter()
-                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
-        );
+
         assert!(
             attributes
                 .iter()

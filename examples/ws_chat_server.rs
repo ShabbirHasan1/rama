@@ -10,7 +10,7 @@
 //! # Expected output
 //!
 //! The server will start and listen on `:62033`.
-//! Open it in the browser to see it in action or use `rama ws` cli client to test it.
+//! Open it in the browser to see it in action or use `rama` cli client to test it.
 //!
 //! Try it with some friends over a local network,
 //! or with yourself using different browsers or browser tabs :)
@@ -26,20 +26,25 @@ use rama::{
             handshake::server::{ServerWebSocket, WebSocketAcceptor},
         },
     },
-    layer::AddExtensionLayer,
+    layer::AddInputExtensionLayer,
+    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{debug, error, info, level_filters::LevelFilter, warn},
+    telemetry::tracing::{
+        self, debug, error, info,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        warn,
+    },
 };
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::broadcast;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -51,7 +56,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::http1().service(Router::new().get("/", Html(INDEX)).get(
+        let server = HttpServer::http1(Executor::graceful(guard.clone())).service(Arc::new(Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
                 async |mut ws: ServerWebSocket| {
@@ -112,15 +117,15 @@ async fn main() {
                     }
                 },
             )),
-        ));
+        )));
         info!("open mini web chat @ http://127.0.0.1:62033");
-        info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama ws')");
+        info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama')");
 
 
-        TcpListener::bind("127.0.0.1:62033")
+        TcpListener::bind("127.0.0.1:62033", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(guard, AddExtensionLayer::new(State::default()).into_layer(server))
+            .serve(AddInputExtensionLayer::new(State::default()).into_layer(server))
             .await;
     });
 

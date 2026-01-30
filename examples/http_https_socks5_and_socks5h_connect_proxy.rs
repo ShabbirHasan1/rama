@@ -25,7 +25,7 @@
 
 use rama::{
     Layer, Service,
-    extensions::{ExtensionsMut, ExtensionsRef, RequestContextExt},
+    extensions::{ExtensionsMut, ExtensionsRef, InputExtensions},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -48,13 +48,17 @@ use rama::{
             SecureTransport,
             server::{SelfSignedData, TlsPeekRouter},
         },
-        user::Basic,
+        user::credentials::basic,
     },
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 #[cfg(feature = "boring")]
@@ -70,11 +74,10 @@ use rama::{
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
 use std::{convert::Infallible, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -115,22 +118,25 @@ async fn main() {
         .build()
     };
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62029")
+    let exec = Executor::graceful(graceful.guard());
+
+    let tcp_service = TcpListener::bind("127.0.0.1:62029", exec.clone())
         .await
         .expect("bind http+https+socks5+socks5h proxy to 127.0.0.1:62029");
 
-    let socks5_acceptor = Socks5Acceptor::default()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
+    let socks5_acceptor =
+        Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
-    let exec = Executor::graceful(graceful.guard());
-    let http_service = HttpServer::auto(exec).service(
+    let http_service = HttpServer::auto(exec.clone()).service(
         (
             TraceLayer::new_for_http(),
-            ProxyAuthLayer::new(Basic::new_static("tom", "clancy")),
+            ConsumeErrLayer::default(),
+            ProxyAuthLayer::new(basic!("tom", "clancy")),
             UpgradeLayer::new(
+                exec.clone(),
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
-                ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),
@@ -144,7 +150,7 @@ async fn main() {
     let auto_socks5_acceptor =
         Socks5PeekRouter::new(socks5_acceptor).with_fallback(auto_tls_acceptor);
 
-    graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, auto_socks5_acceptor));
+    graceful.spawn_task(tcp_service.serve(auto_socks5_acceptor));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))
@@ -153,11 +159,11 @@ async fn main() {
 }
 
 async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
+    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
         Ok(authority) => {
             tracing::info!(
-                server.address = %authority.host(),
-                server.port = %authority.port(),
+                server.address = %authority.host,
+                server.port = authority.port,
                 "accept CONNECT (lazy): insert proxy target into context",
             );
             req.extensions_mut().insert(ProxyTarget(authority));
@@ -182,15 +188,15 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         Ok(resp) => {
             if let Some(client_socket_info) = resp
                 .extensions()
-                .get::<RequestContextExt>()
-                .and_then(|ext| ext.get::<ClientSocketInfo>())
+                .get()
+                .and_then(|InputExtensions(ext)| ext.get::<ClientSocketInfo>())
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),
-                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port().to_string()).unwrap_or_default(),
-                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip().to_string()).unwrap_or_default(),
-                    network.peer.port = %client_socket_info.peer_addr().port(),
-                    network.peer.address = %client_socket_info.peer_addr().ip(),
+                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port.to_string()).unwrap_or_default(),
+                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip_addr.to_string()).unwrap_or_default(),
+                    network.peer.port = %client_socket_info.peer_addr().port,
+                    network.peer.address = %client_socket_info.peer_addr().ip_addr,
                     "http plain text proxy received response",
                 )
             } else {

@@ -13,7 +13,7 @@
 //! use rama_core::service::service_fn;
 //! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
-//! use rama_net::user::Basic;
+//! use rama_net::user::credentials::basic;
 //!
 //! # async fn handle(request: Request) -> Result<Response, BoxError> {
 //! #     Ok(Response::new(Body::default()))
@@ -23,11 +23,11 @@
 //! # async fn main() -> Result<(), BoxError> {
 //! # let service_that_requires_auth = ValidateRequestHeader::auth(
 //! #     service_fn(handle),
-//! #     Basic::new_static("username", "password"),
+//! #     basic!("username", "password"),
 //! # );
 //! let mut client = (
 //!     // Use basic auth with the given username and password
-//!     AddAuthorizationLayer::new(Basic::new_static("username", "password")),
+//!     AddAuthorizationLayer::new(basic!("username", "password")),
 //! ).layer(service_that_requires_auth);
 //!
 //! // Make a request, we don't have to add the `Authorization` header manually
@@ -44,7 +44,6 @@ use crate::{HeaderValue, Request, Response};
 use rama_core::{Layer, Service};
 use rama_http_headers::authorization::Credentials;
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// Layer that applies [`AddAuthorization`] which adds authorization to all requests using the
 /// [`Authorization`] header.
@@ -78,53 +77,34 @@ impl AddAuthorizationLayer {
     /// Authorize requests using the given [`Credentials`].
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(credential: impl Credentials) -> Self {
-        let encoded = credential.encode();
         Self {
-            value: Some(encoded),
+            value: credential.encode(),
             if_not_present: false,
         }
     }
 
-    /// Mark the header as [sensitive].
-    ///
-    /// This can for example be used to hide the header value from logs.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    #[must_use]
-    pub fn as_sensitive(mut self, sensitive: bool) -> Self {
-        if let Some(value) = &mut self.value {
-            value.set_sensitive(sensitive);
+    rama_utils::macros::generate_set_and_with! {
+        /// Mark the header as [sensitive].
+        ///
+        /// This can for example be used to hide the header value from logs.
+        ///
+        /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
+        pub fn sensitive(mut self, sensitive: bool) -> Self {
+            if let Some(value) = &mut self.value {
+                value.set_sensitive(sensitive);
+            }
+            self
         }
-        self
     }
 
-    /// Mark the header as [sensitive].
-    ///
-    /// This can for example be used to hide the header value from logs.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    pub fn set_as_sensitive(&mut self, sensitive: bool) -> &mut Self {
-        if let Some(value) = &mut self.value {
-            value.set_sensitive(sensitive);
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve the existing `Authorization` header if it exists.
+        ///
+        /// This can be useful if you want to use different authorization headers for different requests.
+        pub fn if_not_present(mut self, value: bool) -> Self {
+            self.if_not_present = value;
+            self
         }
-        self
-    }
-
-    /// Preserve the existing `Authorization` header if it exists.
-    ///
-    /// This can be useful if you want to use different authorization headers for different requests.
-    #[must_use]
-    pub fn if_not_present(mut self, value: bool) -> Self {
-        self.if_not_present = value;
-        self
-    }
-
-    /// Preserve the existing `Authorization` header if it exists.
-    ///
-    /// This can be useful if you want to use different authorization headers for different requests.
-    pub fn set_if_not_present(&mut self, value: bool) -> &mut Self {
-        self.if_not_present = value;
-        self
     }
 }
 
@@ -157,6 +137,7 @@ impl<S> Layer<S> for AddAuthorizationLayer {
 ///
 /// [`Authorization`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization
 /// [`SetRequestHeader`]: crate::layer::set_header::SetRequestHeader
+#[derive(Debug, Clone)]
 pub struct AddAuthorization<S> {
     inner: S,
     value: Option<HeaderValue>,
@@ -179,79 +160,41 @@ impl<S> AddAuthorization<S> {
 
     define_inner_service_accessors!();
 
-    /// Mark the header as [sensitive].
-    ///
-    /// This can for example be used to hide the header value from logs.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    #[must_use]
-    pub fn as_sensitive(mut self, sensitive: bool) -> Self {
-        if let Some(value) = &mut self.value {
-            value.set_sensitive(sensitive);
+    rama_utils::macros::generate_set_and_with! {
+        /// Mark the header as [sensitive].
+        ///
+        /// This can for example be used to hide the header value from logs.
+        ///
+        /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
+        pub fn sensitive(mut self, sensitive: bool) -> Self {
+            if let Some(value) = &mut self.value {
+                value.set_sensitive(sensitive);
+            }
+            self
         }
-        self
     }
 
-    /// Mark the header as [sensitive].
-    ///
-    /// This can for example be used to hide the header value from logs.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    pub fn set_as_sensitive(&mut self, sensitive: bool) -> &mut Self {
-        if let Some(value) = &mut self.value {
-            value.set_sensitive(sensitive);
-        }
-        self
-    }
-
-    /// Preserve the existing `Authorization` header if it exists.
-    ///
-    /// This can be useful if you want to use different authorization headers for different requests.
-    #[must_use]
-    pub fn if_not_present(mut self, value: bool) -> Self {
-        self.if_not_present = value;
-        self
-    }
-
-    /// Preserve the existing `Authorization` header if it exists.
-    ///
-    /// This can be useful if you want to use different authorization headers for different requests.
-    pub fn set_if_not_present(&mut self, value: bool) -> &mut Self {
-        self.if_not_present = value;
-        self
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for AddAuthorization<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AddAuthorization")
-            .field("inner", &self.inner)
-            .field("value", &self.value)
-            .field("if_not_present", &self.if_not_present)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for AddAuthorization<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            value: self.value.clone(),
-            if_not_present: self.if_not_present,
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve the existing `Authorization` header if it exists.
+        ///
+        /// This can be useful if you want to use different authorization headers for different requests.
+        pub fn if_not_present(mut self, value: bool) -> Self {
+            self.if_not_present = value;
+            self
         }
     }
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for AddAuthorization<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(value) = &self.value
             && (!self.if_not_present
                 || !req
@@ -275,17 +218,17 @@ mod tests {
     use rama_core::Service;
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
-    use rama_net::user::{Basic, Bearer};
+    use rama_net::user::credentials::{basic, bearer};
     use std::convert::Infallible;
 
     #[tokio::test]
-    async fn basic() {
+    async fn test_basic() {
         // service that requires auth for all requests
-        let svc = ValidateRequestHeaderLayer::auth(Basic::new_static("foo", "bar"))
-            .into_layer(service_fn(echo));
+        let svc =
+            ValidateRequestHeaderLayer::auth(basic!("foo", "bar")).into_layer(service_fn(echo));
 
         // make a client that adds auth
-        let client = AddAuthorization::new(svc, Basic::new_static("foo", "bar"));
+        let client = AddAuthorization::new(svc, basic!("foo", "bar"));
 
         let res = client.serve(Request::new(Body::empty())).await.unwrap();
 
@@ -293,13 +236,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token() {
+    async fn test_token() {
         // service that requires auth for all requests
-        let svc = ValidateRequestHeaderLayer::auth(Bearer::new_static("foo"))
-            .into_layer(service_fn(echo));
+        let svc = ValidateRequestHeaderLayer::auth(bearer!("foo")).into_layer(service_fn(echo));
 
         // make a client that adds auth
-        let client = AddAuthorization::new(svc, Bearer::new_static("foo"));
+        let client = AddAuthorization::new(svc, bearer!("foo"));
 
         let res = client.serve(Request::new(Body::empty())).await.unwrap();
 
@@ -308,8 +250,8 @@ mod tests {
 
     #[tokio::test]
     async fn making_header_sensitive() {
-        let svc = ValidateRequestHeaderLayer::auth(Bearer::new_static("foo")).into_layer(
-            service_fn(async |request: Request<Body>| {
+        let svc = ValidateRequestHeaderLayer::auth(bearer!("foo")).into_layer(service_fn(
+            async |request: Request<Body>| {
                 let auth = request
                     .headers()
                     .get(rama_http_types::header::AUTHORIZATION)
@@ -317,10 +259,10 @@ mod tests {
                 assert!(auth.is_sensitive());
 
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }),
-        );
+            },
+        ));
 
-        let client = AddAuthorization::new(svc, Bearer::new_static("foo")).as_sensitive(true);
+        let client = AddAuthorization::new(svc, bearer!("foo")).with_sensitive(true);
 
         let res = client.serve(Request::new(Body::empty())).await.unwrap();
 

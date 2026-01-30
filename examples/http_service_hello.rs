@@ -22,9 +22,8 @@
 use rama::{
     Layer,
     bytes::Bytes,
-    extensions::ExtensionsRef,
     http::{
-        Request, header,
+        Uri, header,
         layer::{
             compression::CompressionLayer,
             sensitive_headers::{
@@ -33,26 +32,32 @@ use rama::{
             trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
         },
         server::HttpServer,
-        service::web::response::{Html, IntoResponse},
+        service::web::{
+            IntoEndpointService,
+            extract::Extension,
+            response::{Html, IntoResponse},
+        },
     },
-    layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
+    layer::{MapOutputLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{
         SocketInfo,
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
     },
     rt::Executor,
-    service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     utils::latency::LatencyUnit,
 };
 
 use std::{sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -79,20 +84,21 @@ async fn main() {
                         "sending body chunk"
                     )
                 })
-                .make_span_with(DefaultMakeSpan::new().include_headers(true))
+                .make_span_with(DefaultMakeSpan::new().with_include_headers(true))
                 .on_response(
                     DefaultOnResponse::new()
-                        .include_headers(true)
-                        .latency_unit(LatencyUnit::Micros),
+                        .with_include_headers(true)
+                        .with_latency_unit(LatencyUnit::Micros),
                 ),
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
-            MapResponseLayer::new(IntoResponse::into_response),
+            MapOutputLayer::new(IntoResponse::into_response),
         )
-            .into_layer(service_fn(async |req: Request| {
-                let socket_info = req.extensions().get::<SocketInfo>().unwrap();
-                let tracker = req.extensions().get::<BytesRWTrackerHandle>().unwrap();
-                Ok(Html(format!(
-                    r##"
+            .into_layer(
+                (|Extension(socket_info): Extension<SocketInfo>,
+                  Extension(tracker): Extension<BytesRWTrackerHandle>,
+                  uri: Uri| {
+                    std::future::ready(Html(format!(
+                        r##"
                         <html>
                             <head>
                                 <title>Rama — Http Service Hello</title>
@@ -108,20 +114,21 @@ async fn main() {
                                 </ul>
                             </body>
                         </html>"##,
-                    socket_info.peer_addr(),
-                    req.uri().path(),
-                    tracker.read(),
-                    tracker.written(),
-                )))
-            }));
+                        socket_info.peer_addr(),
+                        uri.path(),
+                        tracker.read(),
+                        tracker.written(),
+                    )))
+                })
+                .into_endpoint_service(),
+            );
 
-        let tcp_http_service = HttpServer::auto(exec).service(http_service);
+        let tcp_http_service = HttpServer::auto(exec.clone()).service(Arc::new(http_service));
 
-        TcpListener::bind("127.0.0.1:62010")
+        TcpListener::bind("127.0.0.1:62010", exec)
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(
-                guard,
+            .serve(
                 (
                     TraceErrLayer::new(),
                     TimeoutLayer::new(Duration::from_secs(8)),

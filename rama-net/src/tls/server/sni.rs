@@ -31,6 +31,9 @@ use super::{NoTlsRejectError, TlsPeekStream};
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`SniRouter::with_fallback`] to configure the fallback service.
+///
+/// [`TlsPeekRouter`]: super::TlsPeekRouter
+#[derive(Debug, Clone)]
 pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>> {
     service: S,
     fallback: F,
@@ -56,35 +59,17 @@ impl<S> SniRouter<S> {
     }
 }
 
-impl<S: Clone, F: Clone> Clone for SniRouter<S, F> {
-    fn clone(&self) -> Self {
-        Self {
-            service: self.service.clone(),
-            fallback: self.fallback.clone(),
-        }
-    }
-}
-
-impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for SniRouter<S, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SniRouter")
-            .field("service", &self.service)
-            .field("fallback", &self.fallback)
-            .finish()
-    }
-}
-
-impl<Stream, Response, S, F> Service<Stream> for SniRouter<S, F>
+impl<Stream, Output, S, F> Service<Stream> for SniRouter<S, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    S: Service<SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    S: Service<SniRequest<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)
@@ -154,6 +139,7 @@ pub type SniPeekStream<S> = PeekStream<HeapReader, S>;
 pin_project! {
     /// A request ready for SNI routing,
     /// usually used in combination with [`SniRouter`].
+    #[derive(Debug, Clone)]
     pub struct SniRequest<S> {
         #[pin]
         pub stream: SniPeekStream<S>,
@@ -294,24 +280,6 @@ where
     #[inline]
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
         self.stream.write_vectored(bufs)
-    }
-}
-
-impl<S: Clone> Clone for SniRequest<S> {
-    fn clone(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
-            sni: self.sni.clone(),
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for SniRequest<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SniRequest")
-            .field("stream", &self.stream)
-            .field("sni", &self.sni)
-            .finish()
     }
 }
 

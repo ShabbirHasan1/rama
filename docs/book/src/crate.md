@@ -28,8 +28,8 @@ Here is a list of all `rama` crates:
 - [`rama-macros`](https://crates.io/crates/rama-macros): contains the procedural macros used by `rama`
 - [`rama-utils`](https://crates.io/crates/rama-utils): utilities crate for rama
 - [`rama-ws`](https://crates.io/crates/rama-ws): WebSocket (WS) support for rama
-- [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
-  context used by all other `rama` code, as well as some other _core_ utilities
+- [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service and layer trait
+  used by all other `rama` code, as well as some other _core_ utilities
 - [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
 - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
@@ -45,6 +45,8 @@ Here is a list of all `rama` crates:
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): types http headers
+- [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
+- [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
@@ -102,9 +104,25 @@ Most organisations running rama in production do so on a variety of Linux system
 
 | platform | tested | test platform |
 |----------|--------|---------------|
-| MacOS    | ✅     | MacOS 15 Apple Silicon: developer machine + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
-| Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
-| Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action (Windows latest (x64))](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
+| MacOS    | ✅     | developer machine (arm64) + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and intel) |
+| Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and amd64) |
+| Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and amd64) |
+
+### Tier 2 Platforms
+
+Tier 2 platforms run `cargo check` and also `cargo build` tests.
+These platforms do however not run tests, let alone integration tests.
+
+Some users of rama do run actual Rama production code on these platforms.
+
+Targets checked in CI:
+
+- `armv7-linux-androideabi`
+- `aarch64-linux-android`
+- `i686-linux-android`
+- `x86_64-linux-android`
+- `aarch64-apple-ios`
+- `x86_64-apple-ios`
 
 ### Other Platforms
 
@@ -115,7 +133,7 @@ and continue to happen with community/ecosystem support.
 
 ### Minimum supported Rust version
 
-Rama's MSRV is `1.88`.
+Rama's MSRV is `1.91`.
 
 [Using GitHub Actions we also test](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) if `rama` on that version still works on
 the stable and beta versions of _rust_ as well.

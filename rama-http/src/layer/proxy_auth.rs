@@ -6,8 +6,10 @@ use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, ExtensionsMut, ExtensionsRef};
 use rama_core::{Layer, Service};
+use rama_error::{BoxError, ErrorContext as _, OpaqueError};
+use rama_http_types::body::OptionalBody;
 use rama_net::user::UserId;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -54,17 +56,12 @@ impl<A, C> ProxyAuthLayer<A, C, ()> {
         }
     }
 
-    /// Allow anonymous requests.
-    pub fn set_allow_anonymous(&mut self, allow_anonymous: bool) -> &mut Self {
-        self.allow_anonymous = allow_anonymous;
-        self
-    }
-
-    /// Allow anonymous requests.
-    #[must_use]
-    pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
-        self.allow_anonymous = allow_anonymous;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow anonymous requests.
+        pub fn allow_anonymous(mut self, allow_anonymous: bool) -> Self {
+            self.allow_anonymous = allow_anonymous;
+            self
+        }
     }
 }
 
@@ -96,10 +93,11 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         ProxyAuthService::new(self.proxy_auth.clone(), inner)
+            .with_allow_anonymous(self.allow_anonymous)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        ProxyAuthService::new(self.proxy_auth, inner)
+        ProxyAuthService::new(self.proxy_auth, inner).with_allow_anonymous(self.allow_anonymous)
     }
 }
 
@@ -128,17 +126,12 @@ impl<A, C, S, L> ProxyAuthService<A, C, S, L> {
         }
     }
 
-    /// Allow anonymous requests.
-    pub fn set_allow_anonymous(&mut self, allow_anonymous: bool) -> &mut Self {
-        self.allow_anonymous = allow_anonymous;
-        self
-    }
-
-    /// Allow anonymous requests.
-    #[must_use]
-    pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
-        self.allow_anonymous = allow_anonymous;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow anonymous requests.
+        pub fn allow_anonymous(mut self, allow_anonymous: bool) -> Self {
+            self.allow_anonymous = allow_anonymous;
+            self
+        }
     }
 
     define_inner_service_accessors!();
@@ -172,16 +165,16 @@ impl<A: Clone, C, S: Clone, L> Clone for ProxyAuthService<A, C, S, L> {
 impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for ProxyAuthService<A, C, S, L>
 where
     A: Authority<C, L>,
-    C: Credentials + Clone + Send + Sync + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    C: Credentials + Extension + Clone,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     L: 'static,
     ReqBody: Send + 'static,
-    ResBody: Default + Send + 'static,
+    ResBody: Send + 'static,
 {
-    type Response = S::Response;
-    type Error = S::Error;
+    type Output = Response<OptionalBody<ResBody>>;
+    type Error = OpaqueError;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(credentials) = req
             .headers()
             .typed_get::<ProxyAuthorization<C>>()
@@ -190,23 +183,33 @@ where
         {
             if let Some(ext) = self.proxy_auth.authorized(credentials).await {
                 req.extensions_mut().extend(ext);
-                self.inner.serve(req).await
+                Ok(self
+                    .inner
+                    .serve(req)
+                    .await
+                    .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                    .map(OptionalBody::some))
             } else {
                 Ok(Response::builder()
                     .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                     .header(PROXY_AUTHENTICATE, C::SCHEME)
-                    .body(Default::default())
-                    .unwrap())
+                    .body(OptionalBody::none())
+                    .context("create auth-required response")?)
             }
         } else if self.allow_anonymous {
             req.extensions_mut().insert(UserId::Anonymous);
-            self.inner.serve(req).await
+            Ok(self
+                .inner
+                .serve(req)
+                .await
+                .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                .map(OptionalBody::some))
         } else {
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                 .header(PROXY_AUTHENTICATE, C::SCHEME)
-                .body(Default::default())
-                .unwrap())
+                .body(OptionalBody::none())
+                .context("create auth-required response")?)
         }
     }
 }

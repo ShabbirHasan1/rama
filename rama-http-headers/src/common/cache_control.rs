@@ -3,6 +3,7 @@ use std::iter::FromIterator;
 use std::str::FromStr;
 use std::time::Duration;
 
+use rama_error::{ErrorContext as _, OpaqueError};
 use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::util::{self, Seconds, csv};
@@ -175,95 +176,172 @@ impl CacheControl {
 
     // setters
 
-    /// Set the `no-cache` directive.
-    #[must_use]
-    pub fn with_no_cache(mut self) -> Self {
-        self.flags.insert(Flags::NO_CACHE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `no-cache` directive.
+        pub fn no_cache(mut self) -> Self {
+            self.flags.insert(Flags::NO_CACHE);
+            self
+        }
     }
 
-    /// Set the `no-store` directive.
-    #[must_use]
-    pub fn with_no_store(mut self) -> Self {
-        self.flags.insert(Flags::NO_STORE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `no-store` directive.
+        pub fn no_store(mut self) -> Self {
+            self.flags.insert(Flags::NO_STORE);
+            self
+        }
     }
 
-    /// Set the `no-transform` directive.
-    #[must_use]
-    pub fn with_no_transform(mut self) -> Self {
-        self.flags.insert(Flags::NO_TRANSFORM);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `no-transform` directive.
+        pub fn no_transform(mut self) -> Self {
+            self.flags.insert(Flags::NO_TRANSFORM);
+            self
+        }
     }
 
-    /// Set the `only-if-cached` directive.
-    #[must_use]
-    pub fn with_only_if_cached(mut self) -> Self {
-        self.flags.insert(Flags::ONLY_IF_CACHED);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `only-if-cached` directive.
+        pub fn only_if_cached(mut self) -> Self {
+            self.flags.insert(Flags::ONLY_IF_CACHED);
+            self
+        }
     }
 
-    /// Set the `private` directive.
-    #[must_use]
-    pub fn with_private(mut self) -> Self {
-        self.flags.insert(Flags::PRIVATE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `private` directive.
+        pub fn private(mut self) -> Self {
+            self.flags.insert(Flags::PRIVATE);
+            self
+        }
     }
 
-    /// Set the `public` directive.
-    #[must_use]
-    pub fn with_public(mut self) -> Self {
-        self.flags.insert(Flags::PUBLIC);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `public` directive.
+        pub fn public(mut self) -> Self {
+            self.flags.insert(Flags::PUBLIC);
+            self
+        }
     }
 
-    /// Set the `immutable` directive.
-    #[must_use]
-    pub fn with_immutable(mut self) -> Self {
-        self.flags.insert(Flags::IMMUTABLE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `immutable` directive.
+        pub fn immutable(mut self) -> Self {
+            self.flags.insert(Flags::IMMUTABLE);
+            self
+        }
     }
 
-    /// Set the `must-revalidate` directive.
-    #[must_use]
-    pub fn with_must_revalidate(mut self) -> Self {
-        self.flags.insert(Flags::MUST_REVALIDATE);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `must-revalidate` directive.
+        pub fn must_revalidate(mut self) -> Self {
+            self.flags.insert(Flags::MUST_REVALIDATE);
+            self
+        }
     }
 
-    /// Set the `must-understand` directive.
-    #[must_use]
-    pub fn with_must_understand(mut self) -> Self {
-        self.flags.insert(Flags::MUST_UNDERSTAND);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `must-understand` directive.
+        pub fn must_understand(mut self) -> Self {
+            self.flags.insert(Flags::MUST_UNDERSTAND);
+            self
+        }
     }
 
-    /// Set the `max-age` directive.
-    #[must_use]
-    pub fn with_max_age(mut self, duration: Duration) -> Self {
-        self.max_age = Some(duration.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `max-age` directive.
+        pub fn max_age_duration_rounded(mut self, dur: Duration) -> Self {
+            self.max_age = Some(Seconds::from_duration_rounded(dur));
+            self
+        }
     }
 
-    /// Set the `max-stale` directive.
-    #[must_use]
-    pub fn with_max_stale(mut self, duration: Duration) -> Self {
-        self.max_stale = Some(duration.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `max-age` directive.
+        pub fn max_age_seconds(mut self, seconds: u64) -> Self {
+            self.max_age = Some(Seconds::new(seconds));
+            self
+        }
     }
 
-    /// Set the `min-fresh` directive.
-    #[must_use]
-    pub fn with_min_fresh(mut self, duration: Duration) -> Self {
-        self.min_fresh = Some(duration.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Try to set the `max-age` directive.
+        pub fn max_age_duration(mut self, dur: Duration) -> Result<Self, OpaqueError> {
+            self.max_age = Some(Seconds::try_from_duration(dur).context("duration contains sub nano seconds")?);
+            Ok(self)
+        }
     }
 
-    /// Set the `s-maxage` directive.
-    #[must_use]
-    pub fn with_s_max_age(mut self, duration: Duration) -> Self {
-        self.s_max_age = Some(duration.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `max-stale` directive.
+        pub fn max_stale_duration_rounded(mut self, dur: Duration) -> Self {
+            self.max_stale = Some(Seconds::from_duration_rounded(dur));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `max-stale` directive.
+        pub fn max_stale_seconds(mut self, seconds: u64) -> Self {
+            self.max_stale = Some(Seconds::new(seconds));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Try to set the `max-stale` directive.
+        pub fn max_stale_duration(mut self, dur: Duration) -> Result<Self, OpaqueError> {
+            self.max_stale = Some(Seconds::try_from_duration(dur).context("duration contains sub nano seconds")?);
+            Ok(self)
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `min-fresh` directive.
+        pub fn min_fresh_duration_rounded(mut self, dur: Duration) -> Self {
+            self.min_fresh = Some(Seconds::from_duration_rounded(dur));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `min-fresh` directive.
+        pub fn min_fresh_seconds(mut self, seconds: u64) -> Self {
+            self.min_fresh = Some(Seconds::new(seconds));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Try to set the `min-fresh` directive.
+        pub fn min_fresh_duration(mut self, dur: Duration) -> Result<Self, OpaqueError> {
+            self.min_fresh = Some(Seconds::try_from_duration(dur).context("duration contains sub nano seconds")?);
+            Ok(self)
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `s-maxage` directive.
+        pub fn s_max_age_duration_rounded(mut self, dur: Duration) -> Self {
+            self.s_max_age = Some(Seconds::from_duration_rounded(dur));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `s-maxage` directive.
+        pub fn s_max_age_seconds(mut self, seconds: u64) -> Self {
+            self.s_max_age = Some(Seconds::new(seconds));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Try to set the `s-maxage` directive.
+        pub fn s_max_age_duration(mut self, dur: Duration) -> Result<Self, OpaqueError> {
+            self.s_max_age = Some(Seconds::try_from_duration(dur).context("duration contains sub nano seconds")?);
+            Ok(self)
+        }
     }
 }
 
@@ -334,16 +412,16 @@ impl FromIterator<KnownDirective> for FromIter {
                     cc.flags.insert(Flags::PROXY_REVALIDATE);
                 }
                 Directive::MaxAge(secs) => {
-                    cc.max_age = Some(Duration::from_secs(secs).into());
+                    cc.max_age = Some(Seconds::new(secs));
                 }
                 Directive::MaxStale(secs) => {
-                    cc.max_stale = Some(Duration::from_secs(secs).into());
+                    cc.max_stale = Some(Seconds::new(secs));
                 }
                 Directive::MinFresh(secs) => {
-                    cc.min_fresh = Some(Duration::from_secs(secs).into());
+                    cc.min_fresh = Some(Seconds::new(secs));
                 }
                 Directive::SMaxAge(secs) => {
-                    cc.s_max_age = Some(Duration::from_secs(secs).into());
+                    cc.s_max_age = Some(Seconds::new(secs));
                 }
             }
         }
@@ -507,9 +585,7 @@ mod tests {
     fn test_parse_argument() {
         assert_eq!(
             test_decode::<CacheControl>(&["max-age=100, private"]).unwrap(),
-            CacheControl::new()
-                .with_max_age(Duration::from_secs(100))
-                .with_private(),
+            CacheControl::new().with_max_age_seconds(100).with_private(),
         );
     }
 
@@ -517,7 +593,7 @@ mod tests {
     fn test_parse_quote_form() {
         assert_eq!(
             test_decode::<CacheControl>(&["max-age=\"200\""]).unwrap(),
-            CacheControl::new().with_max_age(Duration::from_secs(200)),
+            CacheControl::new().with_max_age_seconds(200),
         );
     }
 
@@ -587,7 +663,7 @@ mod tests {
 
     #[test]
     fn encode_one_param_directive() {
-        let cc = CacheControl::new().with_max_age(Duration::from_secs(300));
+        let cc = CacheControl::new().with_max_age_seconds(300);
 
         let headers = test_encode(cc);
         assert_eq!(headers["cache-control"], "max-age=300");
@@ -601,7 +677,7 @@ mod tests {
         let headers = test_encode(
             CacheControl::new()
                 .with_no_cache()
-                .with_max_age(Duration::from_secs(100)),
+                .with_max_age_seconds(100),
         );
         assert_eq!(headers["cache-control"], "no-cache, max-age=100");
     }

@@ -1,6 +1,6 @@
 //! Module in function of the [`Host`] extractor.
 
-use super::FromRequestContextRefPair;
+use super::FromPartsStateRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_http_types::request::Parts;
 use rama_net::address;
@@ -21,13 +21,13 @@ define_http_rejection! {
     pub struct MissingHost;
 }
 
-impl<State> FromRequestContextRefPair<State> for Host
+impl<State> FromPartsStateRefPair<State> for Host
 where
     State: Send + Sync,
 {
     type Rejection = MissingHost;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
@@ -35,8 +35,7 @@ where
             RequestContext::try_from(parts)
                 .map_err(|_| MissingHost)?
                 .authority
-                .host()
-                .clone(),
+                .host,
         ))
     }
 }
@@ -55,7 +54,7 @@ mod tests {
 
     async fn test_host_from_request(uri: &str, host: &str, headers: Vec<(&HeaderName, &str)>) {
         let svc = GetForwardedHeaderService::x_forwarded_host(
-            WebService::default().get("/", async |Host(host): Host| host.to_string()),
+            WebService::default().with_get("/", async |Host(host): Host| host.to_string()),
         );
 
         let mut builder = Request::builder().method("GET").uri(uri);

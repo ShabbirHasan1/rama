@@ -29,8 +29,8 @@ Here is a list of all `rama` crates:
 - [`rama-macros`](https://crates.io/crates/rama-macros): contains the procedural macros used by `rama`
 - [`rama-utils`](https://crates.io/crates/rama-utils): utilities crate for rama
 - [`rama-ws`](https://crates.io/crates/rama-ws): WebSocket (WS) support for rama
-- [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
-  context used by all other `rama` code, as well as some other _core_ utilities
+- [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service and layer traits
+  used by all other `rama` code, as well as some other _core_ utilities
 - [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
 - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
@@ -46,6 +46,8 @@ Here is a list of all `rama` crates:
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): types http headers
+- [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
+- [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`

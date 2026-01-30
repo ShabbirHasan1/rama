@@ -1,7 +1,6 @@
-//! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
+//! Extract a header config from a request or response and insert it into [`Extensions`].
 //!
 //! [`Extensions`]: rama_core::extensions::Extensions
-//! [`Context`]: rama_core::Context
 //!
 //! # Example
 //!
@@ -17,7 +16,7 @@
 //!     let service = HeaderFromStrConfigLayer::<String>::required(HeaderName::from_static("x-proxy-labels"))
 //!         .with_repeat(true)
 //!         .into_layer(WebService::default()
-//!             .get("/", async |req: Request| {
+//!             .with_get("/", async |req: Request| {
 //!                 // For production-like code you should prefer a custom type
 //!                 // to avoid possible conflicts. Ideally these are also as
 //!                 // cheap as possible to allocate.
@@ -90,19 +89,13 @@ impl<T, S, C> HeaderFromStrConfigService<T, S, C> {
         }
     }
 
-    /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-    pub fn set_repeat(&mut self, repeat: bool) -> &mut Self {
-        self.repeat = repeat;
-        self
-    }
-
-    /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-    #[must_use]
-    pub fn with_repeat(mut self, repeat: bool) -> Self {
-        self.repeat = repeat;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Toggle repeat on/off. When repeat is enabled the
+        /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
+        pub fn repeat(mut self, repeat: bool) -> Self {
+            self.repeat = repeat;
+            self
+        }
     }
 }
 
@@ -142,15 +135,20 @@ where
 impl<T, S, Body, E, C> Service<Request<Body>> for HeaderFromStrConfigService<T, S, C>
 where
     S: Service<Request<Body>, Error = E>,
-    T: FromStr<Err: Into<BoxError> + Send + Sync + 'static> + Send + Sync + 'static + Clone,
-    C: FromIterator<T> + Send + Sync + 'static + Clone,
+    T: FromStr<Err: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + Sync
+        + Clone
+        + std::fmt::Debug
+        + 'static,
+    C: FromIterator<T> + Send + Sync + Clone + std::fmt::Debug + 'static,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
         if self.repeat {
             let headers = request.headers().get_all(&self.header_name);
             let mut parsed_values = headers
@@ -254,19 +252,13 @@ impl<T, C> HeaderFromStrConfigLayer<T, C> {
         }
     }
 
-    /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-    pub fn set_repeat(&mut self, repeat: bool) -> &mut Self {
-        self.repeat = repeat;
-        self
-    }
-
-    /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-    #[must_use]
-    pub fn with_repeat(mut self, repeat: bool) -> Self {
-        self.repeat = repeat;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Toggle repeat on/off. When repeat is enabled the
+        /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
+        pub fn repeat(mut self, repeat: bool) -> Self {
+            self.repeat = repeat;
+            self
+        }
     }
 }
 

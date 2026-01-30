@@ -12,8 +12,9 @@ use super::{
 };
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
-use rama_net::{address::Authority, user};
-use smallvec::{SmallVec, smallvec};
+use rama_net::{address::HostWithPort, user};
+use rama_utils::collections::smallvec::{SmallVec, smallvec};
+use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +29,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// +-----+----------+----------|
 /// ```
 ///
-/// Reference: https://datatracker.ietf.org/doc/html/rfc1928
+/// Reference: <https://datatracker.ietf.org/doc/html/rfc1928>
 pub struct Header {
     pub version: ProtocolVersion,
     pub methods: SmallVec<[SocksMethod; 2]>,
@@ -163,7 +164,7 @@ impl Header {
 pub struct Request {
     pub version: ProtocolVersion,
     pub command: Command,
-    pub destination: Authority,
+    pub destination: HostWithPort,
 }
 
 impl Request {
@@ -225,7 +226,7 @@ impl Request {
 pub struct RequestRef<'a> {
     pub version: ProtocolVersion,
     pub command: Command,
-    pub destination: &'a Authority,
+    pub destination: &'a HostWithPort,
 }
 
 impl PartialEq<Request> for RequestRef<'_> {
@@ -253,7 +254,7 @@ impl PartialEq<RequestRef<'_>> for Request {
 
 impl<'a> RequestRef<'a> {
     #[must_use]
-    pub fn new(command: Command, destination: &'a Authority) -> Self {
+    pub fn new(command: Command, destination: &'a HostWithPort) -> Self {
         Self {
             version: ProtocolVersion::Socks5,
             command,
@@ -272,7 +273,7 @@ impl RequestRef<'_> {
     {
         let n = self.serialized_len();
 
-        match self.destination.host() {
+        match self.destination.host {
             rama_net::address::Host::Address(IpAddr::V4(_)) => {
                 tracing::trace!("write socks5 client request w/ Ipv4 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 4 + 2, n);
@@ -402,20 +403,28 @@ impl UsernamePasswordRequest {
                 byte: username_length,
             });
         }
-        let mut username_bytes = vec![0u8; username_length as usize];
-        r.read_exact(username_bytes.as_mut_slice()).await?;
+        let username_length = username_length as usize;
 
-        let username = String::from_utf8(username_bytes)?;
+        let mut buffer = [0u8; u8::MAX as usize];
+
+        r.read_exact(&mut buffer[..username_length]).await?;
+
+        // SAFETY: above code has username_length check
+        let username =
+            unsafe { NonEmptyStr::new_unchecked(ArcStr::try_from(&buffer[..username_length])?) };
 
         let password_length = r.read_u8().await?;
 
         let basic = if password_length == 0 {
             user::Basic::new_insecure(username)
         } else {
-            let mut password_bytes = vec![0u8; password_length as usize];
-            r.read_exact(password_bytes.as_mut_slice()).await?;
+            let password_length = password_length as usize;
+            r.read_exact(&mut buffer[..password_length]).await?;
 
-            let password = String::from_utf8(password_bytes)?;
+            // SAFETY: above code has username_length check
+            let password = unsafe {
+                NonEmptyStr::new_unchecked(ArcStr::try_from(&buffer[..password_length])?)
+            };
 
             user::Basic::new(username, password)
         };
@@ -528,33 +537,33 @@ impl<'a> UsernamePasswordRequestRef<'a> {
         buf.put_u8(username.len() as u8);
         buf.put_slice(username.as_bytes());
 
-        let password = self.basic.password();
-
-        if password.is_empty() {
-            buf.put_u8(0)
-        } else {
+        if let Some(password) = self.basic.password() {
             debug_assert!((1..=255).contains(&password.len()));
             buf.put_u8(password.len() as u8);
             buf.put_slice(password.as_bytes());
+        } else {
+            buf.put_u8(0);
         }
     }
 
     fn serialized_len(&self) -> usize {
-        3 + self.basic.username().len() + self.basic.password().len()
+        3 + self.basic.username().len() + self.basic.password().map(|p| p.len()).unwrap_or_default()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rama_net::user::credentials::basic;
+    use rama_utils::str::non_empty_str;
+
     use crate::proto::test_write_read_eq;
-    use rama_net::address::{Domain, Host};
 
     use super::*;
 
     #[tokio::test]
     async fn test_header_write_read_eq() {
         test_write_read_eq!(
-            Header::new(smallvec::smallvec![SocksMethod::NoAuthenticationRequired]),
+            Header::new(smallvec![SocksMethod::NoAuthenticationRequired]),
             Header,
         );
         test_write_read_eq!(
@@ -569,7 +578,7 @@ mod tests {
             Request {
                 version: ProtocolVersion::Socks5,
                 command: Command::Connect,
-                destination: Authority::local_ipv4(1234)
+                destination: HostWithPort::local_ipv4(1234)
             },
             Request,
         );
@@ -578,7 +587,7 @@ mod tests {
             Request {
                 version: ProtocolVersion::Socks5,
                 command: Command::Connect,
-                destination: Authority::local_ipv6(1450)
+                destination: HostWithPort::local_ipv6(1450)
             },
             Request,
         );
@@ -587,7 +596,7 @@ mod tests {
             RequestRef {
                 version: ProtocolVersion::Socks5,
                 command: Command::Bind,
-                destination: &Authority::new(Host::Name(Domain::example()), 1450),
+                destination: &HostWithPort::example_domain_with_port(1450),
             },
             Request,
         );
@@ -596,14 +605,17 @@ mod tests {
     #[tokio::test]
     async fn test_username_password_request_write_read_eq() {
         test_write_read_eq!(
-            UsernamePasswordRequest::new(user::Basic::new_static("john", "secret")),
+            UsernamePasswordRequest::new(user::Basic::new(
+                non_empty_str!("john"),
+                non_empty_str!("secret")
+            )),
             UsernamePasswordRequest,
         );
 
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                basic: &user::Basic::new_static("a", "b"),
+                basic: &basic!("a", "b"),
             },
             UsernamePasswordRequest,
         );
@@ -611,9 +623,9 @@ mod tests {
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                basic: &user::Basic::new_static(
-                    "adasdadadadadsadasdasdasdasddada",
-                    "bdafasdfdasdadasfsfsfdsasdasdsadsadsad"
+                basic: &user::Basic::new(
+                    non_empty_str!("adasdadadadadsadasdasdasdasddada"),
+                    non_empty_str!("bdafasdfdasdadasfsfsfdsasdasdsadsadsad"),
                 ),
             },
             UsernamePasswordRequest,
@@ -622,7 +634,7 @@ mod tests {
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                basic: &user::Basic::new_static_insecure("a"),
+                basic: &user::Basic::new_insecure(non_empty_str!("a")),
             },
             UsernamePasswordRequest,
         );

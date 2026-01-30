@@ -18,6 +18,7 @@ use std::{fmt, time::Instant};
 ///
 /// [tracing]: https://crates.io/crates/tracing
 /// [`Service`]: rama_core::Service
+#[derive(Debug, Clone)]
 pub struct Trace<
     S,
     M,
@@ -36,56 +37,6 @@ pub struct Trace<
     pub(crate) on_body_chunk: OnBodyChunk,
     pub(crate) on_eos: OnEos,
     pub(crate) on_failure: OnFailure,
-}
-
-impl<
-    S: fmt::Debug,
-    M: fmt::Debug,
-    MakeSpan: fmt::Debug,
-    OnRequest: fmt::Debug,
-    OnResponse: fmt::Debug,
-    OnBodyChunk: fmt::Debug,
-    OnEos: fmt::Debug,
-    OnFailure: fmt::Debug,
-> fmt::Debug for Trace<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("TraceLayer")
-            .field("inner", &self.inner)
-            .field("make_classifier", &self.make_classifier)
-            .field("make_span", &self.make_span)
-            .field("on_request", &self.on_request)
-            .field("on_response", &self.on_response)
-            .field("on_body_chunk", &self.on_body_chunk)
-            .field("on_eos", &self.on_eos)
-            .field("on_failure", &self.on_failure)
-            .finish()
-    }
-}
-
-impl<
-    S: Clone,
-    M: Clone,
-    MakeSpan: Clone,
-    OnRequest: Clone,
-    OnResponse: Clone,
-    OnBodyChunk: Clone,
-    OnEos: Clone,
-    OnFailure: Clone,
-> Clone for Trace<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            make_classifier: self.make_classifier.clone(),
-            make_span: self.make_span.clone(),
-            on_request: self.on_request.clone(),
-            on_response: self.on_response.clone(),
-            on_body_chunk: self.on_body_chunk.clone(),
-            on_eos: self.on_eos.clone(),
-            on_failure: self.on_failure.clone(),
-        }
-    }
 }
 
 impl<S, M> Trace<S, M> {
@@ -222,7 +173,7 @@ impl<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
     /// `NewMakeSpan` is expected to implement [`MakeSpan`].
     ///
     /// [`MakeSpan`]: super::MakeSpan
-    /// [`Span`]: tracing::Span
+    /// [`Span`]: rama_core::telemetry::tracing::Span
     pub fn make_span_with<NewMakeSpan>(
         self,
         new_make_span: NewMakeSpan,
@@ -300,7 +251,7 @@ impl<S, ReqBody, ResBody, M, OnRequestT, OnResponseT, OnFailureT, OnBodyChunkT, 
     Service<Request<ReqBody>>
     for Trace<S, M, MakeSpanT, OnRequestT, OnResponseT, OnBodyChunkT, OnEosT, OnFailureT>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: fmt::Display>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: fmt::Display>,
     ReqBody: StreamingBody + Send + 'static,
     ResBody: StreamingBody<Error: fmt::Display> + Send + Sync + 'static,
     M: MakeClassifier<Classifier: Clone>,
@@ -311,11 +262,10 @@ where
     OnEosT: OnEos + Clone,
     OnFailureT: OnFailure<M::FailureClass> + Clone,
 {
-    type Response =
-        Response<ResponseBody<ResBody, M::ClassifyEos, OnBodyChunkT, OnEosT, OnFailureT>>;
+    type Output = Response<ResponseBody<ResBody, M::ClassifyEos, OnBodyChunkT, OnEosT, OnFailureT>>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let start = Instant::now();
 
         let span = self.make_span.make_span(&req);

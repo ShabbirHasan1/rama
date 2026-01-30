@@ -1,5 +1,3 @@
-use std::fmt;
-
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
@@ -20,6 +18,7 @@ use crate::proto::{ProtocolVersion, SocksMethod};
 ///
 /// This kind of router can be useful in case you want to have a proxy
 /// which supports for example both HTTP proxy requests as well socks5 proxy requests.
+#[derive(Debug, Clone)]
 pub struct Socks5PeekRouter<T, F = RejectService<(), NoSocks5RejectError>> {
     socks5_acceptor: T,
     fallback: F,
@@ -48,35 +47,17 @@ impl<T> Socks5PeekRouter<T> {
     }
 }
 
-impl<T: Clone, F: Clone> Clone for Socks5PeekRouter<T, F> {
-    fn clone(&self) -> Self {
-        Self {
-            socks5_acceptor: self.socks5_acceptor.clone(),
-            fallback: self.fallback.clone(),
-        }
-    }
-}
-
-impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for Socks5PeekRouter<T, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Socks5PeekRouter")
-            .field("socks5_acceptor", &self.socks5_acceptor)
-            .field("fallback", &self.fallback)
-            .finish()
-    }
-}
-
-impl<Stream, Response, T, F> Service<Stream> for Socks5PeekRouter<T, F>
+impl<Stream, Output, T, F> Service<Stream> for Socks5PeekRouter<T, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    T: Service<Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    T: Service<Socks5PeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<Socks5PeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; SOCKS5_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)

@@ -1,6 +1,6 @@
 use super::{LruDropPool, PooledConnector, ReqToConnID};
-use crate::{Protocol, address::Authority, client::pool::OpaqueError, http::RequestContext};
-use rama_core::extensions::ExtensionsRef;
+use crate::{Protocol, address::HostWithOptPort, client::pool::OpaqueError, http::RequestContext};
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_http_types::Request;
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use std::time::Duration;
 /// [`BasicHttpConnIdentifier`] can be used together with a [`super::Pool`] to create a basic http connection pool
 pub struct BasicHttpConnIdentifier;
 
-pub type BasicHttpConId = (Protocol, Authority);
+pub type BasicHttpConId = (Protocol, HostWithOptPort);
 
 impl super::ConnID for BasicHttpConId {
     #[cfg(feature = "opentelemetry")]
@@ -71,14 +71,14 @@ impl Default for HttpPooledConnectorConfig {
 }
 
 impl HttpPooledConnectorConfig {
-    pub fn build_connector<C, S>(
+    pub fn build_connector<C: ExtensionsMut, S>(
         self,
         inner: S,
     ) -> Result<
         PooledConnector<S, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
         OpaqueError,
     > {
-        let pool = LruDropPool::new(self.max_active, self.max_total)?
+        let pool = LruDropPool::try_new(self.max_active, self.max_total)?
             .maybe_with_idle_timeout(self.idle_timeout);
 
         Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)

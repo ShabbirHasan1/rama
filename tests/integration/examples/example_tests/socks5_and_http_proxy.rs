@@ -14,6 +14,7 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
+    utils::str::non_empty_str,
 };
 
 #[tokio::test]
@@ -57,8 +58,11 @@ async fn test_http_client_over_socks5_proxy_connect(
 
     let proxy_address = ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
-        authority: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
+        address: proxy_socket_addr.into(),
+        credential: Some(ProxyCredential::Basic(Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ))),
     };
 
     let uri = format!("http://{http_socket_addr}/ping");
@@ -83,7 +87,7 @@ async fn test_http_client_over_socks5_proxy_connect(
 }
 
 async fn spawn_http_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63007))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63007), Executor::default())
         .await
         .expect("bind HTTP server on open port");
 
@@ -92,7 +96,7 @@ async fn spawn_http_server() -> SocketAddress {
         .expect("get bind address of http server")
         .into();
 
-    let app = Router::new().get("/ping", "pong");
+    let app = Router::new().with_get("/ping", "pong");
     let server = HttpServer::auto(Executor::default()).service(Arc::new(app));
 
     tokio::spawn(tcp_service.serve(server));

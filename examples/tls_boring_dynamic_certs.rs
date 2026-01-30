@@ -52,6 +52,7 @@
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy
+
 use rama::{
     Layer,
     error::OpaqueError,
@@ -72,17 +73,20 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -105,7 +109,7 @@ async fn main() {
     // create http server
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(http_service));
+        let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service = (
             ConsumeErrLayer::default(),
@@ -113,10 +117,10 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind("127.0.0.1:64801")
+        TcpListener::bind("127.0.0.1:64801", exec)
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

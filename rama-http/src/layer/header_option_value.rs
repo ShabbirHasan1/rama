@@ -7,7 +7,7 @@ use crate::{HeaderName, Request, utils::HeaderValueGetter};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
-    extensions::ExtensionsMut,
+    extensions::{Extension, ExtensionsMut},
     telemetry::tracing,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -85,14 +85,14 @@ where
 impl<T, S, Body, E> Service<Request<Body>> for HeaderOptionValueService<T, S>
 where
     S: Service<Request<Body>, Error = E>,
-    T: Default + Clone + Send + Sync + 'static,
+    T: Default + Extension + Clone,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
         match request.header_str(&self.header_name) {
             Ok(str_value) => {
                 let str_value = str_value.trim();

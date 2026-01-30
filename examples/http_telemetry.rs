@@ -48,7 +48,7 @@ use rama::{
             web::{WebService, response::Html},
         },
     },
-    layer::AddExtensionLayer,
+    layer::AddInputExtensionLayer,
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
     tcp::server::TcpListener,
@@ -63,11 +63,14 @@ use rama::{
             },
             semantic_conventions::{
                 self,
-                resource::{HOST_ARCH, OS_NAME},
+                resource::{HOST_ARCH, OS_NAME, SERVICE_NAME, SERVICE_VERSION},
             },
         },
-        tracing::level_filters::LevelFilter,
-        tracing::subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
     },
 };
 
@@ -99,7 +102,7 @@ impl Metrics {
 #[tokio::main]
 async fn main() {
     // tracing setup
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -123,12 +126,13 @@ async fn main() {
         .with_interval(Duration::from_secs(3))
         .build();
 
+    let resource = Resource::builder()
+        .with_attribute(KeyValue::new(SERVICE_NAME, "http_telemetry"))
+        .with_attribute(KeyValue::new(SERVICE_VERSION, rama::utils::info::VERSION))
+        .build();
+
     let meter = SdkMeterProvider::builder()
-        .with_resource(
-            Resource::builder()
-                .with_attribute(KeyValue::new("service.name", "http_telemetry"))
-                .build(),
-        )
+        .with_resource(resource)
         .with_reader(meter_reader)
         .build();
 
@@ -142,10 +146,10 @@ async fn main() {
     // http web service
     graceful.spawn_task_fn(async |guard| {
         // http service
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(
+        let exec = Executor::graceful(guard);
+        let http_service = HttpServer::auto(exec.clone()).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
-                WebService::default().get("/", async |ext: Extensions| {
+                WebService::default().with_get("/", async |ext: Extensions| {
                     ext.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),
@@ -153,14 +157,13 @@ async fn main() {
         );
 
         // service setup & go
-        TcpListener::build()
+        TcpListener::build(exec)
             .bind("127.0.0.1:62012")
             .await
             .unwrap()
-            .serve_graceful(
-                guard,
+            .serve(
                 (
-                    AddExtensionLayer::new(state),
+                    AddInputExtensionLayer::new(state),
                     NetworkMetricsLayer::default(),
                 )
                     .into_layer(http_service),

@@ -1,22 +1,14 @@
 use super::bytes::BytesRWTracker;
 use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// A [`Service`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
 ///
 /// [`Service`]: rama_core::Service
 /// [`Stream`]: rama_core::stream::Stream
+#[derive(Debug, Clone)]
 pub struct IncomingBytesTrackerService<S> {
     inner: S,
-}
-
-impl<S: fmt::Debug> fmt::Debug for IncomingBytesTrackerService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("IncomingBytesTrackerService")
-            .field("inner", &self.inner)
-            .finish()
-    }
 }
 
 impl<S> IncomingBytesTrackerService<S> {
@@ -30,29 +22,18 @@ impl<S> IncomingBytesTrackerService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S> Clone for IncomingBytesTrackerService<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
 impl<S, IO> Service<IO> for IncomingBytesTrackerService<S>
 where
     S: Service<BytesRWTracker<IO>>,
     IO: Stream + ExtensionsMut,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         stream: IO,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let mut tracked_stream = BytesRWTracker::new(stream);
         let handle = tracked_stream.handle();
         tracked_stream.extensions_mut().insert(handle);

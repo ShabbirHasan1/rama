@@ -1,35 +1,44 @@
+use matchit::Router as MatchitRouter;
+use radix_trie::{Trie, TrieCommon as _};
 use std::{convert::Infallible, path::Path, sync::Arc};
 
 use crate::{
     Request, Response,
-    matcher::{HttpMatcher, MethodMatcher, UriParams},
+    matcher::{HttpMatcher, PathMatcher, UriParams},
     service::{
         fs::{DirectoryServeMode, ServeDir},
         web::{IntoEndpointService, IntoEndpointServiceWithState, response::IntoResponse},
     },
 };
 
-use matchit::Router as MatchitRouter;
 use rama_core::{
-    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut},
     matcher::Matcher,
     service::{BoxService, Service},
+    telemetry::tracing,
 };
-use rama_http_types::{Body, StatusCode, mime::Mime};
-use rama_utils::include_dir;
+use rama_http_types::{
+    Body, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
+};
+use rama_utils::{
+    include_dir,
+    str::smol_str::{StrExt as _, format_smolstr},
+};
 
 /// A basic router that can be used to route requests to different services based on the request path.
 ///
 /// This router uses `matchit::Router` to efficiently match incoming requests
 /// to predefined routes. Each route is associated with an `HttpMatcher`
 /// and a corresponding service handler.
+#[allow(unused)]
 pub struct Router<State = ()> {
     routes: MatchitRouter<Vec<(HttpMatcher<Body>, BoxService<Request, Response, Infallible>)>>,
+    sub_services: Option<Trie<String, SubService>>,
     not_found: Option<BoxService<Request, Response, Infallible>>,
     state: State,
 }
 
-impl std::fmt::Debug for Router {
+impl<S> std::fmt::Debug for Router<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Router").finish()
     }
@@ -41,6 +50,7 @@ impl Router {
     pub fn new() -> Self {
         Self {
             routes: MatchitRouter::new(),
+            sub_services: None,
             not_found: None,
             state: (),
         }
@@ -52,14 +62,12 @@ where
     State: Send + Sync + Clone + 'static,
 {
     #[must_use]
-    /// Attach state to this router
-    pub fn with_state<T>(self, state: T) -> Router<T>
-    where
-        T: Send + Sync + Clone + 'static,
-    {
-        Router {
-            routes: self.routes,
-            not_found: self.not_found,
+    /// Create a new router with state
+    pub fn new_with_state(state: State) -> Self {
+        Self {
+            routes: MatchitRouter::new(),
+            sub_services: None,
+            not_found: None,
             state,
         }
     }
@@ -68,173 +76,360 @@ where
     /// the path can contain parameters, e.g. `/users/{id}`.
     /// the path can also contain a catch call, e.g. `/assets/{*path}`.
     #[must_use]
-    pub fn get<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_get<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::GET);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_get();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a GET route to the router.
+    /// the path can contain parameters, e.g. `/users/{id}`.
+    /// the path can also contain a catch call, e.g. `/assets/{*path}`.
+    #[inline]
+    pub fn set_get<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_get();
+        self.set_match_route(path, matcher, service)
     }
 
     /// add a POST route to the router.
     #[must_use]
-    pub fn post<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_post<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::POST);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_post();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a POST route to the router.
+    #[inline]
+    pub fn set_post<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_post();
+        self.set_match_route(path, matcher, service)
     }
 
     /// add a PUT route to the router.
     #[must_use]
-    pub fn put<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_put<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::PUT);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_put();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a PUT route to the router.
+    #[inline]
+    pub fn set_put<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_put();
+        self.set_match_route(path, matcher, service)
     }
 
     /// add a DELETE route to the router.
     #[must_use]
-    pub fn delete<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_delete<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::DELETE);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_delete();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a DELETE route to the router.
+    #[inline]
+    pub fn set_delete<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_delete();
+        self.set_match_route(path, matcher, service)
     }
 
     /// add a PATCH route to the router.
     #[must_use]
-    pub fn patch<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_patch<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::PATCH);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_patch();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a PATCH route to the router.
+    #[inline]
+    pub fn set_patch<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_patch();
+        self.set_match_route(path, matcher, service)
     }
 
     /// add a HEAD route to the router.
     #[must_use]
-    pub fn head<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_head<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::HEAD);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_head();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a HEAD route to the router.
+    #[inline]
+    pub fn set_head<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_head();
+        self.set_match_route(path, matcher, service)
     }
 
     /// add a OPTIONS route to the router.
     #[must_use]
-    pub fn options<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_options<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::OPTIONS);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_options();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a OPTIONS route to the router.
+    #[inline]
+    pub fn set_options<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_options();
+        self.set_match_route(path, matcher, service)
     }
 
     /// add a TRACE route to the router.
     #[must_use]
-    pub fn trace<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_trace<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::TRACE);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_trace();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a TRACE route to the router.
+    #[inline]
+    pub fn set_trace<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_trace();
+        self.set_match_route(path, matcher, service)
     }
 
     /// add a CONNECT route to the router.
     #[must_use]
-    pub fn connect<I, T>(self, path: &str, service: I) -> Self
+    #[inline]
+    pub fn with_connect<I, T>(self, path: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        let matcher = HttpMatcher::method(MethodMatcher::CONNECT);
-        self.match_route(path, matcher, service)
+        let matcher = HttpMatcher::method_connect();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a CONNECT route to the router.
+    #[inline]
+    pub fn set_connect<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        let matcher = HttpMatcher::method_connect();
+        self.set_match_route(path, matcher, service)
     }
 
     /// serve the given file under the given path.
     #[must_use]
-    pub fn file(self, path: &str, file: impl AsRef<Path>, mime: Mime) -> Self {
+    #[inline]
+    pub fn with_file(self, path: &str, file: impl AsRef<Path>, mime: Mime) -> Self {
         let service = ServeDir::new_single_file(file, mime);
         match self.not_found.clone() {
-            Some(not_found) => self.sub_service(path, service.fallback(not_found)),
-            None => self.sub_service(path, service),
+            Some(not_found) => self.with_sub_service(path, service.fallback(not_found)),
+            None => self.with_sub_service(path, service),
         }
     }
 
-    /// serve the given directory under the given path.
+    /// serve the given file under the given prefix (path).
     #[inline]
-    #[must_use]
-    pub fn dir(self, path: &str, dir: impl AsRef<Path>) -> Self {
-        self.dir_with_serve_mode(path, dir, Default::default())
+    pub fn set_file(
+        &mut self,
+        prefix: impl AsRef<str>,
+        file: impl AsRef<Path>,
+        mime: Mime,
+    ) -> &mut Self {
+        let service = ServeDir::new_single_file(file, mime);
+        match self.not_found.clone() {
+            Some(not_found) => self.set_sub_service(prefix, service.fallback(not_found)),
+            None => self.set_sub_service(prefix, service),
+        }
     }
 
-    /// serve the given directory under the given path,
+    /// serve the given directory under the given prefix (path).
+    #[inline]
+    #[must_use]
+    pub fn with_dir(self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> Self {
+        self.with_dir_and_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given directory under the given prefix (path).
+    #[inline]
+    pub fn set_dir(&mut self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> &mut Self {
+        self.set_dir_with_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given directory under the given prefix (path),
     /// with a custom serve move.
     #[must_use]
-    pub fn dir_with_serve_mode(
+    #[inline]
+    pub fn with_dir_and_serve_mode(
         self,
-        path: &str,
+        prefix: impl AsRef<str>,
         dir: impl AsRef<Path>,
         mode: DirectoryServeMode,
     ) -> Self {
         let service = ServeDir::new(dir).with_directory_serve_mode(mode);
         match self.not_found.clone() {
-            Some(not_found) => self.sub_service(path, service.fallback(not_found)),
-            None => self.sub_service(path, service),
+            Some(not_found) => self.with_sub_service(prefix, service.fallback(not_found)),
+            None => self.with_sub_service(prefix, service),
         }
     }
 
-    /// serve the given embedded directory under the given path.
+    /// serve the given directory under the given prefix (path),
+    /// with a custom serve move.
     #[inline]
-    #[must_use]
-    pub fn dir_embed(self, path: &str, dir: include_dir::Dir<'static>) -> Self {
-        self.dir_embed_with_serve_mode(path, dir, Default::default())
+    pub fn set_dir_with_serve_mode(
+        &mut self,
+        prefix: impl AsRef<str>,
+        dir: impl AsRef<Path>,
+        mode: DirectoryServeMode,
+    ) -> &mut Self {
+        let service = ServeDir::new(dir).with_directory_serve_mode(mode);
+        match self.not_found.clone() {
+            Some(not_found) => self.set_sub_service(prefix, service.fallback(not_found)),
+            None => self.set_sub_service(prefix, service),
+        }
     }
 
-    /// serve the given embedded directory under the given path
+    /// serve the given embedded directory under the given prefix (path).
+    #[inline]
+    #[must_use]
+    pub fn with_dir_embed(self, prefix: impl AsRef<str>, dir: include_dir::Dir<'static>) -> Self {
+        self.with_dir_embed_and_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given embedded directory under the given prefix (path).
+    #[inline]
+    pub fn set_dir_embed(
+        &mut self,
+        prefix: impl AsRef<str>,
+        dir: include_dir::Dir<'static>,
+    ) -> &mut Self {
+        self.set_dir_embed_with_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given embedded directory under the given prefix (path)
     /// with a custom serve move.
     #[must_use]
-    pub fn dir_embed_with_serve_mode(
-        self,
-        path: &str,
+    #[inline]
+    pub fn with_dir_embed_and_serve_mode(
+        mut self,
+        prefix: impl AsRef<str>,
         dir: include_dir::Dir<'static>,
         mode: DirectoryServeMode,
     ) -> Self {
+        self.set_dir_embed_with_serve_mode(prefix, dir, mode);
+        self
+    }
+
+    /// serve the given embedded directory under the given prefix (path)
+    /// with a custom serve move.
+    #[inline]
+    pub fn set_dir_embed_with_serve_mode(
+        &mut self,
+        prefix: impl AsRef<str>,
+        dir: include_dir::Dir<'static>,
+        mode: DirectoryServeMode,
+    ) -> &mut Self {
         let service = ServeDir::new_embedded(dir).with_directory_serve_mode(mode);
         match self.not_found.clone() {
-            Some(not_found) => self.sub_service(path, service.fallback(not_found)),
-            None => self.sub_service(path, service),
+            Some(not_found) => self.set_sub_service(prefix, service.fallback(not_found)),
+            None => self.set_sub_service(prefix, service),
         }
     }
 
-    /// register a nested router under a prefix.
+    /// register a nested router under a prefix (path).
     ///
     /// The prefix is used to match the request path and strip it from the request URI.
     ///
     /// Note: this sub-router is configured with the same State this router has.
     #[must_use]
-    pub fn sub(self, prefix: &str, router: Router) -> Self {
-        let path = format!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
+    #[inline]
+    pub fn with_sub_router_make_fn(
+        mut self,
+        prefix: impl AsRef<str>,
+        configure_router: impl FnOnce(Self) -> Self,
+    ) -> Self {
+        self.set_sub_router_make_fn(prefix, configure_router);
+        self
+    }
 
-        let router = router.with_state(self.state.clone());
+    /// register a nested router under a prefix (path).
+    ///
+    /// The prefix is used to match the request path and strip it from the request URI.
+    ///
+    /// Note: this sub-router is configured with the same State this router has.
+    pub fn set_sub_router_make_fn(
+        &mut self,
+        prefix: impl AsRef<str>,
+        configure_router: impl FnOnce(Self) -> Self,
+    ) -> &mut Self {
+        let router = Self::new_with_state(self.state.clone());
+        let router = configure_router(router);
         let nested = router.boxed();
+        self.set_sub_service_inner(prefix, nested)
+    }
 
-        let nested_router_service = NestedRouterService {
-            prefix: Arc::from(prefix),
-            nested,
-        };
-
-        self.match_route(
-            prefix,
-            HttpMatcher::custom(true),
-            nested_router_service.clone(),
-        )
-        .match_route(&path, HttpMatcher::custom(true), nested_router_service)
+    /// Register a nested service under a prefix (path).
+    ///
+    /// The prefix is used to match the request path and strip it from the request URI.
+    ///
+    /// Warning: This sub-service has no notion of the state this router has. If you want
+    /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
+    #[must_use]
+    #[inline]
+    pub fn with_sub_service<I, T>(mut self, prefix: impl AsRef<str>, service: I) -> Self
+    where
+        I: IntoEndpointService<T>,
+    {
+        self.set_sub_service(prefix, service);
+        self
     }
 
     /// Register a nested service under a prefix.
@@ -242,32 +437,85 @@ where
     /// The prefix is used to match the request path and strip it from the request URI.
     ///
     /// Warning: This sub-service has no notion of the state this router has. If you want
-    /// to create a sub-router that shares the same state this router has, use [`Router::sub`] instead.
-    #[must_use]
-    pub fn sub_service<I, T>(self, prefix: &str, service: I) -> Self
+    /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
+    #[inline]
+    pub fn set_sub_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
     where
         I: IntoEndpointService<T>,
     {
-        let path =
-            smol_str::format_smolstr!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
         let nested = service.into_endpoint_service().boxed();
+        self.set_sub_service_inner(prefix, nested)
+    }
 
-        let nested_router_service = NestedRouterService {
-            prefix: Arc::from(prefix),
-            nested,
-        };
+    fn set_sub_service_inner(
+        &mut self,
+        prefix: impl AsRef<str>,
+        nested: BoxService<Request, Response, Infallible>,
+    ) -> &mut Self {
+        let prefix = prefix.as_ref().trim().trim_matches('/').to_lowercase();
+        let trie = self.sub_services.get_or_insert_default();
 
-        self.match_route(
-            prefix,
-            HttpMatcher::custom(true),
-            nested_router_service.clone(),
-        )
-        .match_route(&path, HttpMatcher::custom(true), nested_router_service)
+        if !prefix.contains(['*', '{', '}']) {
+            trie.insert(
+                prefix,
+                SubService {
+                    svc: nested,
+                    matcher: None,
+                },
+            );
+        } else {
+            const DISALLOW_GLOB: bool = false;
+            match PathMatcher::new(prefix).try_remove_literal_prefix(DISALLOW_GLOB) {
+                Ok((literal, maybe_matcher)) => {
+                    trie.insert(
+                        literal.to_string(),
+                        SubService {
+                            svc: nested,
+                            matcher: maybe_matcher,
+                        },
+                    );
+                }
+                Err(matcher) => {
+                    trie.insert(
+                        Default::default(),
+                        SubService {
+                            svc: nested,
+                            matcher: Some(matcher),
+                        },
+                    );
+                }
+            }
+        }
+
+        self
     }
 
     /// add a route to the router with it's matcher and service.
+    #[inline(always)]
     #[must_use]
-    pub fn match_route<I, T>(mut self, path: &str, matcher: HttpMatcher<Body>, service: I) -> Self
+    pub fn with_match_route<I, T>(
+        mut self,
+        path: impl AsRef<str>,
+        matcher: HttpMatcher<Body>,
+        service: I,
+    ) -> Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        self.set_match_route(path, matcher, service);
+        self
+    }
+
+    // TODO: Make this fallible,
+    // and also do not allow empty path, instead folks should use `not_found` for that
+
+    /// add a route to the router with it's matcher and service.
+    pub fn set_match_route<I, T>(
+        &mut self,
+        path: impl AsRef<str>,
+        matcher: HttpMatcher<Body>,
+        service: I,
+    ) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
@@ -275,23 +523,34 @@ where
             .into_endpoint_service_with_state(self.state.clone())
             .boxed();
 
-        let path = path.trim().trim_matches('/');
-        let path = smol_str::format_smolstr!("/{path}");
+        let path = path.as_ref().trim().trim_matches('/');
+        let path = format_smolstr!("/{path}").to_lowercase_smolstr();
 
         if let Ok(matched) = self.routes.at_mut(&path) {
             matched.value.push((matcher, service));
         } else {
+            #[allow(clippy::expect_used, reason = "TODO later")]
             self.routes
                 .insert(path, vec![(matcher, service)])
-                .expect("Failed to add route");
+                .expect("add route");
         }
 
         self
     }
 
     /// use the provided service when no route matches the request.
+    #[inline(always)]
     #[must_use]
-    pub fn not_found<I, T>(mut self, service: I) -> Self
+    pub fn with_not_found<I, T>(mut self, service: I) -> Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+    {
+        self.set_not_found(service);
+        self
+    }
+
+    /// use the provided service when no route matches the request.
+    pub fn set_not_found<I, T>(&mut self, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
@@ -304,80 +563,145 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-struct NestedRouterService {
-    #[expect(unused)]
-    prefix: Arc<str>,
-    nested: BoxService<Request, Response, Infallible>,
-}
-
-impl Service<Request> for NestedRouterService {
-    type Response = Response;
-    type Error = Infallible;
-
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let params = match req.extensions().get::<UriParams>() {
-            Some(params) => {
-                let nested_path = params.get("nest").unwrap_or_default();
-
-                let filtered_params: UriParams =
-                    params.iter().filter(|(key, _)| *key != "nest").collect();
-
-                // build the nested path and update the request URI
-                let path = smol_str::format_smolstr!("/{nested_path}");
-                *req.uri_mut() = path.parse().unwrap();
-
-                filtered_params
-            }
-            None => UriParams::default(),
-        };
-
-        req.extensions_mut().insert(params);
-
-        self.nested.serve(req).await
-    }
-}
-
 impl Default for Router {
     fn default() -> Self {
         Self::new()
     }
 }
 
+struct SubService {
+    svc: BoxService<Request, Response, Infallible>,
+    matcher: Option<PathMatcher>,
+}
+
 impl<State> Service<Request> for Router<State>
 where
     State: Send + Sync + Clone + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let mut ext = Extensions::new();
+    async fn serve(&self, mut req: Request) -> Result<Self::Output, Self::Error> {
+        let path = req.uri().path().to_lowercase_smolstr();
 
-        let uri = req.uri().path().to_owned();
-        if let Ok(matched) = self.routes.at(&uri) {
+        if let Ok(matched) = self.routes.at(path.as_str()) {
             let uri_params = matched.params.iter();
 
-            match req.extensions_mut().get_mut::<UriParams>() {
+            let params = match req.extensions_mut().get::<UriParams>() {
                 Some(params) => {
+                    let mut params = params.clone();
                     params.extend(uri_params);
+                    params
                 }
-                None => {
-                    req.extensions_mut()
-                        .insert(uri_params.collect::<UriParams>());
-                }
-            }
+                None => uri_params.collect::<UriParams>(),
+            };
+
+            req.extensions_mut().insert(params);
 
             for (matcher, service) in matched.value.iter() {
+                let mut ext = Extensions::new();
                 if matcher.matches(Some(&mut ext), &req) {
                     req.extensions_mut().extend(ext);
                     return service.serve(req).await;
                 }
-                ext.clear();
+            }
+        }
+
+        let (mut parts, body) = req.into_parts();
+
+        if let Some(trie) = self.sub_services.as_ref() {
+            let norm_path = parts.uri.path().trim_matches('/').to_lowercase_smolstr();
+            if let Some((prefix, sub_svc)) =
+                trie.get_ancestor(norm_path.as_str()).and_then(|sub_trie| {
+                    sub_trie
+                        .key()
+                        .and_then(|k| sub_trie.value().map(|v| (k, v)))
+                })
+            {
+                if let Some(matcher) = sub_svc.matcher.as_ref() {
+                    let fragment_count = matcher.fragment_count();
+                    let mut pos = 0;
+                    let mut fragment_index = 0;
+                    let path = parts.uri.path().trim_matches('/');
+
+                    let offset = prefix.len().min(path.len());
+                    let path = &path[offset..].trim_matches('/');
+
+                    for char in path.bytes() {
+                        if fragment_index >= fragment_count {
+                            break;
+                        }
+                        pos += 1;
+                        if char == b'/' {
+                            fragment_index += 1;
+                        }
+                    }
+
+                    let fragments_path = &path[..pos];
+
+                    let mut ext = Extensions::new();
+                    if matcher.matches_path(Some(&mut ext), fragments_path) {
+                        let full_prefix = format_smolstr!("{prefix}/{fragments_path}",);
+                        let modified_uri = match try_to_strip_path_prefix_from_uri(
+                            &parts.uri,
+                            &full_prefix,
+                        ) {
+                            Ok(value) => value,
+                            Err(err) => {
+                                tracing::warn!(
+                                    "failed to strip full prefix '{full_prefix}' (static: '{prefix}') from Uri (bug??); err = {err}",
+                                );
+                                return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                            }
+                        };
+
+                        parts.extensions.extend(ext);
+                        parts
+                            .extensions
+                            .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                        parts.uri = modified_uri;
+
+                        tracing::trace!(
+                            "svc request using sub service of router using uri with full prefix '{full_prefix}' (static: '{prefix}') removed from path; new uri: {}",
+                            parts.uri,
+                        );
+                        let req = Request::from_parts(parts, body);
+                        return sub_svc.svc.serve(req).await;
+                    }
+
+                    tracing::trace!(
+                        "svc request using sub service matched with static prefix '{prefix}' (fragment path: '{fragments_path}'), but matcher didn't match"
+                    );
+                } else {
+                    match try_to_strip_path_prefix_from_uri(&parts.uri, prefix) {
+                        Ok(modified_uri) => {
+                            if !parts.extensions.contains::<OriginalRouterUri>() {
+                                parts
+                                    .extensions
+                                    .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                            }
+                            parts.uri = modified_uri;
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "failed to strip literal prefix '{prefix}' from Uri (bug??); err = {err}",
+                            );
+                            return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                        }
+                    }
+
+                    tracing::trace!(
+                        "svc request using sub service of router using uri with literal prefix '{prefix}' removed from path; new uri: {}",
+                        parts.uri,
+                    );
+                    let req = Request::from_parts(parts, body);
+                    return sub_svc.svc.serve(req).await;
+                }
             }
         }
 
         if let Some(not_found) = &self.not_found {
+            let req = Request::from_parts(parts, body);
             not_found.serve(req).await
         } else {
             Ok(StatusCode::NOT_FOUND.into_response())
@@ -387,13 +711,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::matcher::UriParams;
+    use crate::{matcher::UriParams, service::web::extract::State};
 
     use super::*;
     use rama_core::{extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt};
 
-    fn root_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn root_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
@@ -402,7 +726,7 @@ mod tests {
         })
     }
 
-    fn create_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn create_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
@@ -411,7 +735,7 @@ mod tests {
         })
     }
 
-    fn get_users_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn get_users_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
@@ -420,7 +744,7 @@ mod tests {
         })
     }
 
-    fn get_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn get_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
@@ -431,7 +755,7 @@ mod tests {
         })
     }
 
-    fn delete_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn delete_user_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
@@ -442,7 +766,7 @@ mod tests {
         })
     }
 
-    fn serve_assets_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn serve_assets_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let path = uri_params.get("path").unwrap();
@@ -453,7 +777,7 @@ mod tests {
         })
     }
 
-    fn not_found_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn not_found_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -462,7 +786,7 @@ mod tests {
         })
     }
 
-    fn get_user_order_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+    fn get_user_order_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let user_id = uri_params.get("user_id").unwrap();
@@ -517,17 +841,17 @@ mod tests {
 
         for prefix in ["/", ""] {
             let router = Router::new()
-                .get(prefix, root_service())
-                .get(&format!("{prefix}users"), get_users_service())
-                .post(&format!("{prefix}users"), create_user_service())
-                .get(&format!("{prefix}users/{{user_id}}"), get_user_service())
-                .delete(&format!("{prefix}users/{{user_id}}"), delete_user_service())
-                .get(
-                    &format!("{prefix}users/{{user_id}}/orders/{{order_id}}"),
+                .with_get(prefix, root_service())
+                .with_get(format!("{prefix}users"), get_users_service())
+                .with_post(format!("{prefix}users"), create_user_service())
+                .with_get(format!("{prefix}users/{{user_id}}"), get_user_service())
+                .with_delete(format!("{prefix}users/{{user_id}}"), delete_user_service())
+                .with_get(
+                    format!("{prefix}users/{{user_id}}/orders/{{order_id}}"),
                     get_user_order_service(),
                 )
-                .get(&format!("{prefix}assets/{{*path}}"), serve_assets_service())
-                .not_found(not_found_service());
+                .with_get(format!("{prefix}assets/{{*path}}"), serve_assets_service())
+                .with_not_found(not_found_service());
 
             for (method, path, expected_body, expected_status) in cases.iter() {
                 let req = match *method {
@@ -556,6 +880,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[tracing_test::traced_test]
     async fn test_router_nest() {
         let cases = [
             (Method::GET, "/", "Hello, World!", StatusCode::OK),
@@ -579,24 +904,42 @@ mod tests {
                 "Get Order: 456 for User: 123",
                 StatusCode::OK,
             ),
+            (Method::GET, "/api/state", "state", StatusCode::OK),
+            (Method::GET, "/api/users/123/state", "state", StatusCode::OK),
+            // to test case insensitive :)
+            (Method::GET, "/Api/USERS/123/State", "state", StatusCode::OK),
         ];
 
+        let state = "state".to_owned();
+
         for prefix in ["/", ""] {
-            let api_router = Router::new()
-                .get(&format!("{prefix}users"), get_users_service())
-                .post(&format!("{prefix}users"), create_user_service())
-                .delete(&format!("{prefix}users/{{user_id}}"), delete_user_service())
-                .sub(
-                    &format!("{prefix}users/{{user_id}}"),
-                    Router::new().get(prefix, get_user_service()).get(
-                        &format!("{prefix}orders/{{order_id}}"),
-                        get_user_order_service(),
-                    ),
+            let api_router = Router::new_with_state(state.clone())
+                .with_get(format!("{prefix}users"), get_users_service())
+                .with_get(
+                    format!("{prefix}state"),
+                    async |State(state): State<String>| state,
+                )
+                .with_post(format!("{prefix}users"), create_user_service())
+                .with_delete(format!("{prefix}users/{{user_id}}"), delete_user_service())
+                .with_sub_router_make_fn(
+                    format!("{prefix}users/{{user_id}}/*"), // glob should be dropped by nester
+                    |router| {
+                        router
+                            .with_get(prefix, get_user_service())
+                            .with_get(
+                                format!("{prefix}orders/{{order_id}}"),
+                                get_user_order_service(),
+                            )
+                            .with_get(
+                                format!("{prefix}/state"),
+                                async |State(state): State<String>| state,
+                            )
+                    },
                 );
 
             let app = Router::new()
-                .sub(&format!("{prefix}api"), api_router)
-                .get(prefix, root_service());
+                .with_sub_service(format!("{prefix}api"), api_router)
+                .with_get(prefix, root_service());
 
             for (method, path, expected_body, expected_status) in cases.iter() {
                 let req = match *method {

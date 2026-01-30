@@ -1,12 +1,13 @@
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_error::OpaqueError;
 use rama_utils::macros::generate_set_and_with;
-use smol_str::SmolStr;
+use rama_utils::str::smol_str::SmolStr;
 use std::{fmt, time::Duration};
 
 use super::{EventDataWrite, JsonEventData};
 
 /// Server-sent event
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event<T = String> {
     pub(super) event: Option<SmolStr>,
     pub(super) id: Option<SmolStr>,
@@ -20,42 +21,6 @@ impl<T> Default for Event<T> {
         Self::new()
     }
 }
-
-impl<T: fmt::Debug> fmt::Debug for Event<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Event")
-            .field("event", &self.event)
-            .field("id", &self.id)
-            .field("data", &self.data)
-            .field("retry", &self.retry)
-            .field("comments", &self.comments)
-            .finish()
-    }
-}
-
-impl<T: Clone> Clone for Event<T> {
-    fn clone(&self) -> Self {
-        Self {
-            event: self.event.clone(),
-            id: self.id.clone(),
-            data: self.data.clone(),
-            retry: self.retry,
-            comments: self.comments.clone(),
-        }
-    }
-}
-
-impl<T: PartialEq> PartialEq for Event<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.comments == other.comments
-            && self.data == other.data
-            && self.event == other.event
-            && self.id == other.id
-            && self.retry == other.retry
-    }
-}
-
-impl<T: Eq> Eq for Event<T> {}
 
 #[derive(Debug)]
 pub struct EventBuildError {
@@ -271,7 +236,7 @@ impl<T> Event<T> {
         /// This sets how long clients will wait before reconnecting if they are disconnected from the
         /// SSE endpoint. Note that this is just a hint: clients are free to wait for longer if they
         /// wish, such as if they implement exponential backoff.
-        pub const fn retry(mut self, millis: u64) -> Self {
+        pub const fn static_retry(mut self, millis: u64) -> Self {
             self.retry = Some(Duration::from_millis(millis));
             self
         }

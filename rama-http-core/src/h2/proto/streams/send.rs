@@ -11,7 +11,6 @@ use rama_http_types::proto::h2::frame::{self, Reason};
 use tokio::io::AsyncWrite;
 
 use std::cmp::Ordering;
-use std::io;
 use std::task::{Context, Poll, Waker};
 
 /// Manages state transitions related to outbound frames.
@@ -50,15 +49,15 @@ pub(crate) enum PollReset {
 
 impl Send {
     /// Create a new `Send`
-    pub(super) fn new(config: &Config) -> Self {
-        Self {
+    pub(super) fn try_new(config: &Config) -> Result<Self, crate::h2::proto::Error> {
+        Ok(Self {
             init_window_sz: config.remote_init_window_sz,
             max_stream_id: StreamId::MAX,
             next_stream_id: Ok(config.local_next_stream_id),
-            prioritize: Prioritize::new(config),
+            prioritize: Prioritize::try_new(config)?,
             is_push_enabled: true,
             is_extended_connect_protocol_enabled: false,
-        }
+        })
     }
 
     /// Returns the initial send window size
@@ -164,6 +163,39 @@ impl Send {
             task.wake();
         }
 
+        Ok(())
+    }
+
+    /// Send interim informational headers (1xx responses) without changing stream state.
+    /// This allows multiple interim informational responses to be sent before the final response.
+    pub fn send_interim_informational_headers<B>(
+        &mut self,
+        frame: frame::Headers,
+        buffer: &mut Buffer<Frame<B>>,
+        stream: &mut store::Ptr,
+        _counts: &mut Counts,
+        task: &mut Option<Waker>,
+    ) -> Result<(), UserError> {
+        tracing::trace!(
+            "send_interim_informational_headers; frame={frame:?}; stream_id={:?}",
+            frame.stream_id()
+        );
+
+        // Validate headers
+        Self::check_headers(frame.fields())?;
+        debug_assert!(
+            frame.is_informational(),
+            "Frame must be informational (1xx status code) at this point. Validation should happen at the public API boundary."
+        );
+        debug_assert!(
+            !frame.is_end_stream(),
+            "Informational frames must not have end_stream flag set. Validation should happen at the internal send informational header streams."
+        );
+
+        // Queue the frame for sending WITHOUT changing stream state
+        // This is the key difference from send_headers - we don't call stream.state.send_open()
+        self.prioritize
+            .queue_frame(frame.into(), buffer, stream, task);
         Ok(())
     }
 
@@ -298,7 +330,7 @@ impl Send {
         store: &mut Store,
         counts: &mut Counts,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -432,7 +464,7 @@ impl Send {
         counts: &mut Counts,
         task: &mut Option<Waker>,
     ) -> Result<(), Error> {
-        if let Some(val) = settings.is_extended_connect_protocol_enabled() {
+        if let Some(val) = settings.config.enable_connect_protocol.map(|v| v != 0) {
             self.is_extended_connect_protocol_enabled = val;
         }
 
@@ -453,7 +485,7 @@ impl Send {
         // track the negative flow-control window and MUST NOT send new
         // flow-controlled frames until it receives WINDOW_UPDATE frames that
         // cause the flow-control window to become positive.
-        if let Some(val) = settings.initial_window_size() {
+        if let Some(val) = settings.config.initial_window_size {
             let old_val = self.init_window_sz;
             self.init_window_sz = val;
 
@@ -541,7 +573,7 @@ impl Send {
             }
         }
 
-        if let Some(val) = settings.is_push_enabled() {
+        if let Some(val) = settings.config.enable_push.map(|v| v != 0) {
             self.is_push_enabled = val
         }
 

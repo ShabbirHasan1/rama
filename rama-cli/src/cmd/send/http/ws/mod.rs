@@ -1,4 +1,4 @@
-//! rama ws client
+//! rama websocket client
 
 use std::time::Duration;
 
@@ -7,6 +7,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     graceful::{self, Shutdown},
     http::{Request, Response},
+    utils::{collections::NonEmptySmallVec, str::NonEmptyStr},
 };
 use tokio::sync::oneshot;
 
@@ -16,10 +17,10 @@ mod tui;
 pub(super) async fn run<C>(
     req: Request,
     client: C,
-    protocols: Option<Vec<String>>,
+    protocols: Option<NonEmptySmallVec<3, NonEmptyStr>>,
 ) -> Result<(), BoxError>
 where
-    C: Service<Request, Response = Response, Error = BoxError>,
+    C: Service<Request, Output = Response, Error = BoxError>,
 {
     let app = tui::App::new(req, client, protocols)
         .await

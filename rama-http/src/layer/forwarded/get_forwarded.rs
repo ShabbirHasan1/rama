@@ -19,9 +19,9 @@ use std::marker::PhantomData;
 ///
 /// - [`GetForwardedHeaderLayer::forwarded`]: The standard [`Forwarded`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239).
 /// - [`GetForwardedHeaderLayer::via`]: The canonical [`Via`] header [`RFC 7230`](https://tools.ietf.org/html/rfc7230#section-5.7.1).
-/// - [`GetForwardedHeaderLayer::x_forwarded_for`]: The canonical [`X-Forwarded-For`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.2).
-/// - [`GetForwardedHeaderLayer::x_forwarded_host`]: The canonical [`X-Forwarded-Host`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.4).
-/// - [`GetForwardedHeaderLayer::x_forwarded_proto`]: The canonical [`X-Forwarded-Proto`] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.3).
+/// - [`GetForwardedHeaderLayer::x_forwarded_for`]: The canonical [`X-Forwarded-For`][XForwardedFor] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.2).
+/// - [`GetForwardedHeaderLayer::x_forwarded_host`]: The canonical [`X-Forwarded-Host`][XForwardedHost] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.4).
+/// - [`GetForwardedHeaderLayer::x_forwarded_proto`]: The canonical [`X-Forwarded-Proto`][XForwardedProto] header [`RFC 7239`](https://tools.ietf.org/html/rfc7239#section-5.3).
 ///
 /// Rama also has the following headers already implemented for you to use:
 ///
@@ -31,11 +31,11 @@ use std::marker::PhantomData;
 /// but you can use the [`GetForwardedHeaderLayer::new`] constructor and pass the header type as a type parameter,
 /// alone or in a tuple with other headers.
 ///
-/// [`X-Real-Ip`]: crate::headers::XRealIp
-/// [`X-Client-Ip`]: crate::headers::XClientIp
-/// [`Client-Ip`]: crate::headers::ClientIp
-/// [`CF-Connecting-Ip`]: crate::headers::CFConnectingIp
-/// [`True-Client-Ip`]: crate::headers::TrueClientIp
+/// [`X-Real-Ip`]: crate::headers::forwarded::XRealIp
+/// [`X-Client-Ip`]: crate::headers::forwarded::XClientIp
+/// [`Client-Ip`]: crate::headers::forwarded::ClientIp
+/// [`CF-Connecting-Ip`]: crate::headers::forwarded::CFConnectingIp
+/// [`True-Client-Ip`]: crate::headers::forwarded::TrueClientIp
 ///
 /// ## Example
 ///
@@ -75,7 +75,7 @@ pub struct GetForwardedHeaderLayer<T = rama_http_headers::forwarded::Forwarded> 
     _headers: PhantomData<fn() -> T>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for GetForwardedHeaderLayer<T> {
+impl<T> fmt::Debug for GetForwardedHeaderLayer<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("GetForwardedHeaderLayer")
             .field(
@@ -86,7 +86,7 @@ impl<T: fmt::Debug> fmt::Debug for GetForwardedHeaderLayer<T> {
     }
 }
 
-impl<T: Clone> Clone for GetForwardedHeaderLayer<T> {
+impl<T> Clone for GetForwardedHeaderLayer<T> {
     fn clone(&self) -> Self {
         Self {
             _headers: PhantomData,
@@ -130,7 +130,7 @@ impl GetForwardedHeaderLayer<Via> {
 
 impl GetForwardedHeaderLayer<XForwardedFor> {
     #[inline]
-    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`] header.
+    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`][XForwardedFor] header.
     #[must_use]
     pub fn x_forwarded_for() -> Self {
         Self::new()
@@ -139,7 +139,7 @@ impl GetForwardedHeaderLayer<XForwardedFor> {
 
 impl GetForwardedHeaderLayer<XForwardedHost> {
     #[inline]
-    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`] header.
+    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`][XForwardedHost] header.
     #[must_use]
     pub fn x_forwarded_host() -> Self {
         Self::new()
@@ -148,7 +148,7 @@ impl GetForwardedHeaderLayer<XForwardedHost> {
 
 impl GetForwardedHeaderLayer<XForwardedProto> {
     #[inline]
-    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`] header.
+    /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`][XForwardedProto] header.
     #[must_use]
     pub fn x_forwarded_proto() -> Self {
         Self::new()
@@ -220,7 +220,7 @@ impl<S> GetForwardedHeaderService<S, Via> {
 
 impl<S> GetForwardedHeaderService<S, XForwardedFor> {
     #[inline]
-    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-For`] header.
+    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-For`](XForwardedFor) header.
     pub fn x_forwarded_for(inner: S) -> Self {
         Self::new(inner)
     }
@@ -228,7 +228,7 @@ impl<S> GetForwardedHeaderService<S, XForwardedFor> {
 
 impl<S> GetForwardedHeaderService<S, XForwardedHost> {
     #[inline]
-    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-Host`] header.
+    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-Host`][XForwardedHost] header.
     pub fn x_forwarded_host(inner: S) -> Self {
         Self::new(inner)
     }
@@ -236,7 +236,7 @@ impl<S> GetForwardedHeaderService<S, XForwardedHost> {
 
 impl<S> GetForwardedHeaderService<S, XForwardedProto> {
     #[inline]
-    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-Proto`] header.
+    /// Create a new `GetForwardedHeaderService` for the canonical [`X-Forwarded-Proto`][XForwardedProto] header.
     pub fn x_forwarded_proto(inner: S) -> Self {
         Self::new(inner)
     }
@@ -248,13 +248,13 @@ where
     S: Service<Request<Body>>,
     Body: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         mut req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
 
         if let Some(header) = req.headers().typed_get::<H>() {
@@ -262,12 +262,25 @@ where
         }
 
         if !forwarded_elements.is_empty() {
-            if let Some(ref mut f) = req.extensions_mut().get_mut::<Forwarded>() {
-                f.extend(forwarded_elements);
+            let forwarded = if let Some(mut forwarded) = req
+                .extensions_mut()
+                .get::<rama_net::forwarded::Forwarded>()
+                .cloned()
+            {
+                forwarded.extend(forwarded_elements);
+                Some(forwarded)
             } else {
                 let mut it = forwarded_elements.into_iter();
-                let mut forwarded = rama_net::forwarded::Forwarded::new(it.next().unwrap());
-                forwarded.extend(it);
+                if let Some(first) = it.next() {
+                    let mut forwarded = rama_net::forwarded::Forwarded::new(first);
+                    forwarded.extend(it);
+                    Some(forwarded)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(forwarded) = forwarded {
                 req.extensions_mut().insert(forwarded);
             }
         }
@@ -349,7 +362,7 @@ mod tests {
                     .unwrap();
                 assert!(forwarded.client_ip().is_none());
                 assert_eq!(
-                    forwarded.iter().next().unwrap().ref_forwarded_by(),
+                    forwarded.iter().next().unwrap().forwarded_by(),
                     Some(&(IpAddr::from([12, 23, 34, 45]), 5000).into())
                 );
                 assert!(forwarded.client_proto().is_none());

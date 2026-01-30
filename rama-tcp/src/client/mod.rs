@@ -21,4 +21,4 @@ pub use pool::{
 mod request;
 #[cfg(feature = "http")]
 #[doc(inline)]
-pub use request::{Parts, Request};
+pub use request::Request;

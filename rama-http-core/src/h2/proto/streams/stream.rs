@@ -3,7 +3,7 @@ use crate::h2::Reason;
 use super::*;
 
 use rama_core::extensions::Extensions;
-use rama_core::telemetry::tracing;
+use rama_core::telemetry::tracing::{self, warn};
 use std::fmt;
 use std::task::{Context, Waker};
 use std::time::Instant;
@@ -144,7 +144,8 @@ impl fmt::Debug for Stream {
             .h2_field_some("next_open", &self.next_open)
             .h2_field_if("is_pending_open", self.is_pending_open)
             .h2_field_if("is_pending_push", self.is_pending_push)
-            .field("extensions", &self.extensions)
+            // DO NOT expose extensions as-is to debug, depending on what's there it can blow up logs
+            // .field("extensions", &self.extensions)
             .h2_field_some("next_pending_accept", &self.next_pending_accept)
             .h2_field_if("is_pending_accept", self.is_pending_accept)
             .field("recv_flow", &self.recv_flow)
@@ -198,27 +199,37 @@ pub(super) struct NextOpen;
 pub(super) struct NextResetExpire;
 
 impl Stream {
-    pub(super) fn new(
+    pub(super) fn try_new(
         id: StreamId,
         init_send_window: WindowSize,
         init_recv_window: WindowSize,
         extensions: Extensions,
-    ) -> Self {
+    ) -> Result<Self, Reason> {
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
 
-        recv_flow
-            .inc_window(init_recv_window)
-            .expect("invalid initial receive window");
-        // TODO: proper error handling?
-        let _res = recv_flow.assign_capacity(init_recv_window);
-        debug_assert!(_res.is_ok());
+        if let Err(reason) = recv_flow.inc_window(init_recv_window) {
+            warn!(
+                "h2 new stream creation: recv flow: invalid initail recv window size: reason = {reason}; library go away"
+            );
+            return Err(reason);
+        }
 
-        send_flow
-            .inc_window(init_send_window)
-            .expect("invalid initial send window size");
+        if let Err(reason) = recv_flow.assign_capacity(init_recv_window) {
+            warn!(
+                "h2 new stream creation: recv flow: assign initial capacity: reason = {reason}; library go away"
+            );
+            return Err(reason);
+        }
 
-        Self {
+        if let Err(reason) = send_flow.inc_window(init_send_window) {
+            warn!(
+                "h2 new stream creation: send flow: invalid initial send window size: reason = {reason}; library go away"
+            );
+            return Err(reason);
+        }
+
+        Ok(Self {
             id,
             state: State::default(),
             extensions,
@@ -255,18 +266,18 @@ impl Stream {
             push_task: None,
             pending_push_promises: store::Queue::new(),
             content_length: ContentLength::Omitted,
-        }
+        })
     }
 
     /// Increment the stream's ref count
     pub(super) fn ref_inc(&mut self) {
-        assert!(self.ref_count < usize::MAX);
+        debug_assert!(self.ref_count < usize::MAX);
         self.ref_count += 1;
     }
 
     /// Decrements the stream's ref count
     pub(super) fn ref_dec(&mut self) {
-        assert!(self.ref_count > 0);
+        debug_assert!(self.ref_count > 0);
         self.ref_count -= 1;
     }
 
@@ -333,14 +344,16 @@ impl Stream {
     }
 
     /// Current available stream send capacity
-    pub(super) fn capacity(&self, max_buffer_size: usize) -> WindowSize {
+    pub(super) fn capacity(&self, max_buffer_size: u32) -> WindowSize {
         let available = self.send_flow.available().as_size() as usize;
         let buffered = self.buffered_send_data;
 
-        available.min(max_buffer_size).saturating_sub(buffered) as WindowSize
+        available
+            .min(max_buffer_size as usize)
+            .saturating_sub(buffered) as WindowSize
     }
 
-    pub(super) fn assign_capacity(&mut self, capacity: WindowSize, max_buffer_size: usize) {
+    pub(super) fn assign_capacity(&mut self, capacity: WindowSize, max_buffer_size: u32) {
         let prev_capacity = self.capacity(max_buffer_size);
         debug_assert!(capacity > 0);
         // TODO: proper error handling
@@ -361,7 +374,7 @@ impl Stream {
         }
     }
 
-    pub(super) fn send_data(&mut self, len: WindowSize, max_buffer_size: usize) {
+    pub(super) fn send_data(&mut self, len: WindowSize, max_buffer_size: u32) {
         let prev_capacity = self.capacity(max_buffer_size);
 
         // TODO: proper error handling
@@ -442,12 +455,15 @@ impl Stream {
         }
     }
 
-    /// Set the stream's state to `Closed` with the given reason and initiator.
-    /// Notify the send and receive tasks, if they exist.
-    pub(super) fn set_reset(&mut self, reason: Reason, initiator: Initiator) {
-        self.state.set_reset(self.id, reason, initiator);
-        self.notify_push();
-        self.notify_recv();
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the stream's state to `Closed` with the given reason and initiator.
+        /// Notify the send and receive tasks, if they exist.
+        pub(super) fn reset(mut self, reason: Reason, initiator: Initiator) -> Self {
+            self.state.set_reset(self.id, reason, initiator);
+            self.notify_push();
+            self.notify_recv();
+            self
+        }
     }
 }
 

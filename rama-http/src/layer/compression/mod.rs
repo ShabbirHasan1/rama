@@ -1,5 +1,8 @@
 //! Middleware that compresses response bodies.
 //!
+//! If you require streaming compression (e.g. for SSE etc),
+//! you most likely want to use the compression middleware from [`stream`] instead.
+//!
 //! # Example
 //!
 //! Example showing how to respond with the compressed contents of a file.
@@ -35,7 +38,7 @@
 //!     });
 //!     // Convert the `Stream` into a `Body`.
 //!     let body = StreamBody::new(stream);
-//!     // Erase the type because its very hard to name in the function signature.
+//!     // Erase the type because it's very hard to name in the function signature.
 //!     let body = BodyExt::boxed(body);
 //!     // Create response.
 //!     Ok(Response::new(body))
@@ -74,6 +77,7 @@
 //!
 
 pub mod predicate;
+pub mod stream;
 
 pub(crate) mod body;
 mod layer;
@@ -127,7 +131,7 @@ mod tests {
     #[tokio::test]
     async fn gzip_works() {
         let svc = service_fn(handle);
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()
@@ -153,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn x_gzip_works() {
         let svc = service_fn(handle);
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()
@@ -189,7 +193,7 @@ mod tests {
     #[tokio::test]
     async fn zstd_works() {
         let svc = service_fn(handle);
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()
@@ -305,7 +309,7 @@ mod tests {
             }
         }
 
-        let svc = Compression::new(svc_fn).compress_when(EveryOtherResponse::default());
+        let svc = Compression::new(svc_fn).with_compress_predicate(EveryOtherResponse::default());
         let req = Request::builder()
             .header("accept-encoding", "br")
             .body(Body::empty())
@@ -393,7 +397,7 @@ mod tests {
             Ok::<_, std::io::Error>(resp)
         });
 
-        let svc = Compression::new(svc).quality(level);
+        let svc = Compression::new(svc).with_quality(level);
 
         // call the service
         let req = Request::builder()
@@ -437,7 +441,7 @@ mod tests {
             headers.insert(CONTENT_RANGE, "bytes 0-4/*".parse().unwrap());
             Ok::<_, std::io::Error>(res)
         });
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()
@@ -464,7 +468,7 @@ mod tests {
                 .insert(ACCEPT_RANGES, "bytes".parse().unwrap());
             Ok::<_, std::io::Error>(res)
         });
-        let svc = Compression::new(svc).compress_when(Always);
+        let svc = Compression::new(svc).with_compress_predicate(Always);
 
         // call the service
         let req = Request::builder()

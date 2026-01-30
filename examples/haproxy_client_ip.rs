@@ -34,15 +34,18 @@ use rama::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
-use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -54,8 +57,9 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(
-            AddRequiredResponseHeaders::new(Router::new().get(
+        let exec = Executor::graceful(guard);
+        let tcp_http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+            AddRequiredResponseHeaders::new(Router::new().with_get(
                 "/",
                 async |req: Request| -> Result<String, (StatusCode, String)> {
                     let client_ip = req
@@ -65,20 +69,19 @@ async fn main() {
                         .or_else(|| {
                             req.extensions()
                                 .get::<SocketInfo>()
-                                .map(|info| info.peer_addr().ip())
+                                .map(|info| info.peer_addr().ip_addr)
                         })
                         .context("failed to fetch client IP")
                         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
                     Ok(client_ip.to_string())
                 },
             )),
-        );
+        ));
 
-        TcpListener::bind("127.0.0.1:62025")
+        TcpListener::bind("127.0.0.1:62025", exec)
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(
-                guard,
+            .serve(
                 HaProxyLayer::new()
                     // by default [`HaProxyLayer`] is enforced,
                     // setting peek=true allows you to make it optional,

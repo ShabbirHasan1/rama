@@ -4,7 +4,7 @@ use rama::{
     http::{
         Request, Response, Version,
         proto::{
-            h1::Http1HeaderMap,
+            h1::{Http1HeaderMap, ext::ReasonPhrase},
             h2::{self, PseudoHeader, PseudoHeaderOrder},
         },
     },
@@ -12,38 +12,32 @@ use rama::{
 
 use super::VerboseLogs;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct ResponseHeaderLogger<S> {
     pub(super) inner: S,
     pub(super) show_headers: bool,
 }
 
-impl<S: Clone> Clone for ResponseHeaderLogger<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            show_headers: self.show_headers,
-        }
-    }
-}
-
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseHeaderLogger<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
     type Error = S::Error;
-    type Response = S::Response;
+    type Output = S::Output;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let res = self.inner.serve(req).await?;
         if self.show_headers || res.extensions().contains::<VerboseLogs>() {
             eprintln!(
                 "* {:?} {} {}",
                 res.version(),
                 res.status().as_u16(),
-                res.status().canonical_reason().unwrap_or_default()
+                match res.extensions().get::<ReasonPhrase>() {
+                    Some(reason) => String::from_utf8_lossy(reason.as_bytes()),
+                    None => res.status().canonical_reason().unwrap_or_default().into(),
+                },
             );
 
             if let Some(pseudo_headers) = res.extensions().get::<PseudoHeaderOrder>() {

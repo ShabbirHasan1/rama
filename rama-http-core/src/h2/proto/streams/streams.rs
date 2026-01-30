@@ -1,10 +1,11 @@
 use super::recv::RecvHeaderBlockError;
 use super::store::{self, Entry, Resolve, Store};
 use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
-use crate::h2::codec::{Codec, SendError, UserError};
+use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
+use parking_lot::Mutex;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
@@ -16,10 +17,11 @@ use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
+use rama_net::conn::{ConnectionHealth, ConnectionHealthStatus};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::Arc;
 use std::{fmt, io};
 
 #[derive(Debug)]
@@ -123,14 +125,17 @@ where
     B: Buf,
     P: Peer,
 {
-    pub(crate) fn new(config: Config, extensions: Extensions) -> Self {
+    pub(crate) fn try_new(
+        config: Config,
+        extensions: Extensions,
+    ) -> Result<Self, crate::h2::proto::Error> {
         let peer = P::r#dyn();
 
-        Self {
-            inner: Inner::new(peer, config, extensions),
+        Ok(Self {
+            inner: Inner::try_new(peer, config, extensions)?,
             send_buffer: Arc::new(SendBuffer::new()),
             _p: ::std::marker::PhantomData,
-        }
+        })
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -138,7 +143,7 @@ where
         &mut self,
         size: WindowSize,
     ) -> Result<(), Reason> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         me.actions
@@ -148,7 +153,7 @@ where
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn next_incoming(&mut self) -> Option<StreamRef<B>> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
         me.actions.recv.next_incoming(&mut me.store).map(|key| {
             let stream = &mut me.store.resolve(key);
@@ -182,12 +187,10 @@ where
     where
         T: AsyncWrite + Unpin,
     {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
-        if let Err(err) = ready!(me.actions.recv.send_pending_refusal(cx, dst)) {
-            return Poll::Ready(Err(err.into()));
-        }
+        ready!(me.actions.recv.send_pending_refusal(cx, dst))?;
 
         let next_stream_id = me.actions.send.peek_next_id();
         match me.early_frame_ctx.replay_next_frame(next_stream_id) {
@@ -196,9 +199,25 @@ where
                     frame::EarlyFrame::Priority(priority) => priority.into(),
                     frame::EarlyFrame::Settings(settings) => {
                         // NOTE: if ever issues, we might need to do something locally with settings as well
-                        return Poll::Ready(Ok((!settings.is_ack()).then_some(settings)));
+                        return Poll::Ready(Ok((!settings.flags.is_ack()).then_some(settings)));
                     }
-                    frame::EarlyFrame::WindowUpdate(window_update) => window_update.into(),
+                    // NOTE: this can cause issues in case regular logic would also send a windows update soon afterwards
+                    frame::EarlyFrame::WindowUpdate(window_update) => {
+                        tracing::trace!(
+                            "replay: increment h2 window update size w/ {}",
+                            window_update.size_increment
+                        );
+                        if let Err(reason) = me.actions.recv.set_target_connection_window(
+                            window_update.size_increment,
+                            &mut me.actions.task,
+                        ) {
+                            tracing::debug!(
+                                "h2 streams: failed to replay window update (set_target_connection_window): reason = {reason}; go away"
+                            );
+                            return Poll::Ready(Err(Error::library_go_away(reason)));
+                        }
+                        return Poll::Ready(Ok(None));
+                    }
                 };
                 Poll::Ready(match dst.buffer(frame) {
                     Ok(_) => Ok(None),
@@ -211,7 +230,7 @@ where
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn clear_expired_reset_streams(&mut self) {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
         me.actions
             .recv
@@ -223,11 +242,11 @@ where
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
     {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.poll_complete(&self.send_buffer, cx, dst)
     }
 
@@ -237,10 +256,10 @@ where
         frame: &frame::Settings,
         is_initial: bool,
     ) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
-        let mut send_buffer = self.send_buffer.inner.lock().unwrap();
+        let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         me.counts.apply_remote_settings(frame, is_initial);
@@ -258,7 +277,7 @@ where
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn record_remote_settings(&mut self, frame: &frame::Settings) {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.early_frame_ctx.record_settings_frame(frame);
     }
 
@@ -268,7 +287,7 @@ where
         frame: &frame::Settings,
         ack: &frame::Settings,
     ) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
 
         me.early_frame_ctx.record_settings_frame(ack);
 
@@ -283,7 +302,7 @@ where
         mut request: Request<()>,
         end_of_stream: bool,
         pending: Option<&OpaqueStreamRef>,
-    ) -> Result<(StreamRef<B>, bool), SendError> {
+    ) -> Result<(StreamRef<B>, bool), crate::h2::Error> {
         use super::stream::ContentLength;
         use rama_http_types::Method;
 
@@ -294,10 +313,10 @@ where
         // implicitly closes the earlier stream IDs.
         //
         // See: hyperium/h2#11
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
-        let mut send_buffer = self.send_buffer.inner.lock().unwrap();
+        let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         me.actions.ensure_no_conn_error()?;
@@ -342,12 +361,15 @@ where
             None,
         )?;
 
-        let mut stream = Stream::new(
+        let mut stream = Stream::try_new(
             stream_id,
             me.actions.send.init_window_sz(),
             me.actions.recv.init_window_sz(),
             extensions,
-        );
+        ).map_err(|err| {
+            tracing::warn!("failed to create stream for id {stream_id:?} in send_request: {err}; library GO AWAY");
+            Error::library_go_away(err)
+        })?;
 
         if is_content_length_head {
             stream.content_length = ContentLength::Head;
@@ -392,19 +414,18 @@ where
     pub(crate) fn is_extended_connect_protocol_enabled(&self) -> bool {
         self.inner
             .lock()
-            .unwrap()
             .actions
             .send
             .is_extended_connect_protocol_enabled()
     }
 
     pub(crate) fn current_max_send_streams(&self) -> usize {
-        let me = self.inner.lock().unwrap();
+        let me = self.inner.lock();
         me.counts.max_send_streams()
     }
 
     pub(crate) fn current_max_recv_streams(&self) -> usize {
-        let me = self.inner.lock().unwrap();
+        let me = self.inner.lock();
         me.counts.max_recv_streams()
     }
 }
@@ -420,19 +441,19 @@ impl<B> DynStreams<'_, B> {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_headers(&mut self, frame: frame::Headers) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.recv_headers(self.peer, self.send_buffer, frame)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_data(&mut self, frame: frame::Data) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.recv_data(self.peer, self.send_buffer, frame)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_reset(&mut self, frame: frame::Reset) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
 
         me.recv_reset(self.send_buffer, frame)
     }
@@ -440,43 +461,43 @@ impl<B> DynStreams<'_, B> {
     /// Notify all streams that a connection-level error happened.
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn handle_error(&mut self, err: proto::Error) -> StreamId {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.handle_error(self.send_buffer, err)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_go_away(&mut self, frame: &frame::GoAway) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.recv_go_away(self.send_buffer, frame)
     }
 
     pub(crate) fn last_processed_id(&self) -> StreamId {
-        self.inner.lock().unwrap().actions.recv.last_processed_id()
+        self.inner.lock().actions.recv.last_processed_id()
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_window_update(&mut self, frame: frame::WindowUpdate) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.early_frame_ctx.record_windows_update_frame(frame);
         me.recv_window_update(self.send_buffer, frame)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_priority(&mut self, frame: &frame::Priority) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.early_frame_ctx.record_priority_frame(frame);
         Ok(())
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_push_promise(&mut self, frame: frame::PushPromise) -> Result<(), Error> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.recv_push_promise(self.send_buffer, frame)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn recv_eof(&mut self, clear_pending_accept: bool) -> Result<(), ()> {
-        let mut me = self.inner.lock().map_err(|_| ())?;
+    pub(crate) fn recv_eof(&mut self, clear_pending_accept: bool) {
+        let mut me = self.inner.lock();
         me.recv_eof(self.send_buffer, clear_pending_accept)
     }
 
@@ -486,25 +507,29 @@ impl<B> DynStreams<'_, B> {
         id: StreamId,
         reason: Reason,
     ) -> Result<(), crate::h2::proto::error::GoAway> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.send_reset(self.send_buffer, id, reason)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_go_away(&mut self, last_processed_id: StreamId) {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         me.actions.recv.go_away(last_processed_id);
     }
 }
 
 impl Inner {
-    fn new(peer: peer::Dyn, config: Config, extensions: Extensions) -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self {
+    fn try_new(
+        peer: peer::Dyn,
+        config: Config,
+        extensions: Extensions,
+    ) -> Result<Arc<Mutex<Self>>, crate::h2::proto::Error> {
+        Ok(Arc::new(Mutex::new(Self {
             counts: Counts::new(peer, &config),
             extensions,
             actions: Actions {
-                recv: Recv::new(peer, &config),
-                send: Send::new(&config),
+                recv: Recv::try_new(peer, &config)?,
+                send: Send::try_new(&config)?,
                 task: None,
                 conn_error: None,
             },
@@ -512,7 +537,7 @@ impl Inner {
             refs: 1,
             headers_pseudo_order: config.headers_pseudo_order,
             early_frame_ctx: config.early_frame_ctx,
-        }))
+        })))
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -557,12 +582,16 @@ impl Inner {
 
                 match self.actions.recv.open(id, Open::Headers, &self.counts)? {
                     Some(stream_id) => {
-                        let stream = Stream::new(
+                        let stream = Stream::try_new(
                             stream_id,
                             self.actions.send.init_window_sz(),
                             self.actions.recv.init_window_sz(),
                             self.extensions.clone(),
-                        );
+                        )
+                        .map_err(|err| {
+                            tracing::warn!("failed to create recv stream for id {stream_id:?}: {err}; library GO AWAY");
+                            Error::library_go_away(err)
+                        })?;
 
                         e.insert(stream)
                     }
@@ -582,7 +611,7 @@ impl Inner {
         }
 
         let actions = &mut self.actions;
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         self.counts.transition(stream, |counts, stream| {
@@ -658,7 +687,7 @@ impl Inner {
                 let sz = frame.payload().len();
                 // This should have been enforced at the codec::FramedRead layer, so
                 // this is just a sanity check.
-                assert!(sz <= super::MAX_WINDOW_SIZE as usize);
+                debug_assert!(sz <= super::MAX_WINDOW_SIZE as usize);
                 let sz = sz as WindowSize;
 
                 self.actions.recv.ignore_data(sz)?;
@@ -670,7 +699,7 @@ impl Inner {
         };
 
         let actions = &mut self.actions;
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         self.counts.transition(stream, |counts, stream| {
@@ -722,15 +751,19 @@ impl Inner {
             return Ok(());
         };
 
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         let actions = &mut self.actions;
 
+        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+            health.set_status(ConnectionHealthStatus::Broken)
+        }
+
         self.counts.transition(stream, |counts, stream| {
             actions.recv.recv_reset(frame, stream, counts)?;
             actions.send.handle_error(send_buffer, stream, counts);
-            assert!(stream.state.is_closed());
+            debug_assert!(stream.state.is_closed());
             Ok(())
         })
     }
@@ -743,7 +776,7 @@ impl Inner {
     ) -> Result<(), Error> {
         let id = frame.stream_id;
 
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         if id.is_zero() {
@@ -787,10 +820,14 @@ impl Inner {
     fn handle_error<B>(&mut self, send_buffer: &SendBuffer<B>, err: proto::Error) -> StreamId {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         let last_processed_id = actions.recv.last_processed_id();
+
+        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+            health.set_status(ConnectionHealthStatus::Broken)
+        }
 
         self.store.for_each(|stream| {
             counts.transition(stream, |counts, stream| {
@@ -812,10 +849,14 @@ impl Inner {
     ) -> Result<(), Error> {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         let last_stream_id = frame.last_stream_id();
+
+        if let Some(health) = self.extensions.get::<ConnectionHealth>() {
+            health.set_status(ConnectionHealthStatus::Broken)
+        }
 
         actions.send.recv_go_away(last_stream_id)?;
 
@@ -894,12 +935,15 @@ impl Inner {
         let child_key: Option<store::Key> = {
             // Create state for the stream
             let stream = self.store.insert(promised_id, {
-                Stream::new(
+                Stream::try_new(
                     promised_id,
                     self.actions.send.init_window_sz(),
                     self.actions.recv.init_window_sz(),
                     self.extensions.clone(),
-                )
+                ).map_err(|err| {
+                    tracing::warn!("failed to create pushed stream for promised id {promised_id:?}: {err}; library GO AWAY");
+                    Error::library_go_away(err)
+                })?
             });
 
             let actions = &mut self.actions;
@@ -910,7 +954,7 @@ impl Inner {
                 if matches!(stream_valid, Ok(())) {
                     Ok(Some(stream.key()))
                 } else {
-                    let mut send_buffer = send_buffer.inner.lock().unwrap();
+                    let mut send_buffer = send_buffer.inner.lock();
                     actions
                         .reset_on_recv_stream_err(&mut *send_buffer, stream, counts, stream_valid)
                         .map(|()| None)
@@ -930,14 +974,10 @@ impl Inner {
         Ok(())
     }
 
-    fn recv_eof<B>(
-        &mut self,
-        send_buffer: &SendBuffer<B>,
-        clear_pending_accept: bool,
-    ) -> Result<(), ()> {
+    fn recv_eof<B>(&mut self, send_buffer: &SendBuffer<B>, clear_pending_accept: bool) {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         if actions.conn_error.is_none() {
@@ -963,7 +1003,6 @@ impl Inner {
         });
 
         actions.clear_queues(clear_pending_accept, &mut self.store, counts);
-        Ok(())
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -972,12 +1011,12 @@ impl Inner {
         send_buffer: &SendBuffer<B>,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
     {
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         // Send WINDOW_UPDATE frames first
@@ -1037,15 +1076,25 @@ impl Inner {
                     self.actions.recv.maybe_reset_next_stream_id(id);
                 }
 
-                let stream = Stream::new(id, 0, 0, self.extensions.clone());
-
-                e.insert(stream)
+                match Stream::try_new(id, 0, 0, self.extensions.clone()) {
+                    Ok(stream) => e.insert(stream),
+                    Err(reason) => {
+                        tracing::debug!(
+                            "h2 streams: failed to create new stream in send_reset: reason = {reason}; go away"
+                        );
+                        return Err(crate::h2::proto::error::GoAway {
+                            debug_data: Default::default(),
+                            reason,
+                        });
+                    }
+                }
             }
         };
 
         let stream = self.store.resolve(key);
-        let mut send_buffer = send_buffer.inner.lock().unwrap();
+        let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
+
         self.actions.send_reset(
             stream,
             reason,
@@ -1066,7 +1115,7 @@ where
         cx: &Context,
         pending: Option<&OpaqueStreamRef>,
     ) -> Poll<Result<(), crate::h2::Error>> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         me.actions.ensure_no_conn_error()?;
@@ -1102,40 +1151,38 @@ where
     }
 
     /// This function is safe to call multiple times.
-    ///
-    /// A `Result` is returned to avoid panicking if the mutex is poisoned.
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn recv_eof(&mut self, clear_pending_accept: bool) -> Result<(), ()> {
+    pub(crate) fn recv_eof(&mut self, clear_pending_accept: bool) {
         self.as_dyn().recv_eof(clear_pending_accept)
     }
 
     pub(crate) fn max_send_streams(&self) -> usize {
-        self.inner.lock().unwrap().counts.max_send_streams()
+        self.inner.lock().counts.max_send_streams()
     }
 
     pub(crate) fn max_recv_streams(&self) -> usize {
-        self.inner.lock().unwrap().counts.max_recv_streams()
+        self.inner.lock().counts.max_recv_streams()
     }
 
     #[cfg(feature = "unstable")]
     pub(crate) fn num_active_streams(&self) -> usize {
-        let me = self.inner.lock().unwrap();
+        let me = self.inner.lock();
         me.store.num_active_streams()
     }
 
     pub(crate) fn has_streams(&self) -> bool {
-        let me = self.inner.lock().unwrap();
+        let me = self.inner.lock();
         me.counts.has_streams()
     }
 
     pub(crate) fn has_streams_or_other_references(&self) -> bool {
-        let me = self.inner.lock().unwrap();
+        let me = self.inner.lock();
         me.counts.has_streams() || me.refs > 1
     }
 
     #[cfg(feature = "unstable")]
     pub(crate) fn num_wired_streams(&self) -> usize {
-        let me = self.inner.lock().unwrap();
+        let me = self.inner.lock();
         me.store.num_wired_streams()
     }
 }
@@ -1146,7 +1193,7 @@ where
     P: Peer,
 {
     fn clone(&self) -> Self {
-        self.inner.lock().unwrap().refs += 1;
+        self.inner.lock().refs += 1;
         Self {
             inner: self.inner.clone(),
             send_buffer: self.send_buffer.clone(),
@@ -1160,13 +1207,13 @@ where
     P: Peer,
 {
     fn drop(&mut self) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.refs -= 1;
-            if inner.refs == 1
-                && let Some(task) = inner.actions.task.take()
-            {
-                task.wake();
-            }
+        let mut inner = self.inner.lock();
+
+        inner.refs -= 1;
+        if inner.refs == 1
+            && let Some(task) = inner.actions.task.take()
+        {
+            task.wake();
         }
     }
 }
@@ -1179,12 +1226,12 @@ impl<B> StreamRef<B> {
     where
         B: Buf,
     {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let mut send_buffer = self.send_buffer.inner.lock().unwrap();
+        let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         me.counts.transition(stream, |counts, stream| {
@@ -1205,12 +1252,12 @@ impl<B> StreamRef<B> {
         trailers: HeaderMap,
         trailer_order: OriginalHttp1Headers,
     ) -> Result<(), UserError> {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let mut send_buffer = self.send_buffer.inner.lock().unwrap();
+        let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         me.counts.transition(stream, |counts, stream| {
@@ -1226,11 +1273,11 @@ impl<B> StreamRef<B> {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_reset(&mut self, reason: Reason) {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let stream = me.store.resolve(self.opaque.key);
-        let mut send_buffer = self.send_buffer.inner.lock().unwrap();
+        let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         match me
@@ -1250,6 +1297,43 @@ impl<B> StreamRef<B> {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn send_informational_headers(&mut self, frame: frame::Headers) -> Result<(), UserError> {
+        let mut me = self.opaque.inner.lock();
+        let me = &mut *me;
+
+        let stream = me.store.resolve(self.opaque.key);
+        let actions = &mut me.actions;
+        let mut send_buffer = self.send_buffer.inner.lock();
+        let send_buffer = &mut *send_buffer;
+
+        me.counts.transition(stream, |counts, stream| {
+            // For informational responses (1xx), we need to send headers without
+            // changing the stream state. This allows multiple informational responses
+            // to be sent before the final response.
+
+            // Validate that this is actually an informational response
+            debug_assert!(
+                frame.is_informational(),
+                "Frame must be informational after conversion from informational response"
+            );
+
+            // Ensure the frame is not marked as end_stream for informational responses
+            if frame.is_end_stream() {
+                return Err(UserError::UnexpectedFrameType);
+            }
+            // Send the interim informational headers directly to the buffer without state changes
+            // This bypasses the normal send_headers flow that would transition the stream state
+            actions.send.send_interim_informational_headers(
+                frame,
+                send_buffer,
+                stream,
+                counts,
+                &mut actions.task,
+            )
+        })
+    }
+
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_response(
         &mut self,
         response: Response<()>,
@@ -1258,12 +1342,12 @@ impl<B> StreamRef<B> {
         // We need to only drop extensions after we release our locks or there is risk for deadlocking
         let _extensions_ref = &mut Option::None;
 
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let stream = me.store.resolve(self.opaque.key);
         let actions = &mut me.actions;
-        let mut send_buffer = self.send_buffer.inner.lock().unwrap();
+        let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         me.counts.transition(stream, |counts, stream| {
@@ -1278,14 +1362,14 @@ impl<B> StreamRef<B> {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn send_push_promise(&mut self, request: Request<()>) -> Result<Self, UserError> {
+    pub(crate) fn send_push_promise(&mut self, request: Request<()>) -> Result<Self, Error> {
         // We need to keep extensions around so they are dropped after our locks or we risk deadlocking
         let _extensions_ref = request.extensions().clone();
 
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
-        let mut send_buffer = self.send_buffer.inner.lock().unwrap();
+        let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
         let actions = &mut me.actions;
@@ -1294,12 +1378,15 @@ impl<B> StreamRef<B> {
         let child_key = {
             let mut child_stream = me.store.insert(
                 promised_id,
-                Stream::new(
+                Stream::try_new(
                     promised_id,
                     actions.send.init_window_sz(),
                     actions.recv.init_window_sz(),
                     me.extensions.clone(),
-                ),
+                ).map_err(|err| {
+                    tracing::warn!("failed to create stream for promised id {promised_id:?} in send_push_promise: {err}; library GO AWAY");
+                    Error::library_go_away(err)
+                })?,
             );
             child_stream.state.reserve_local()?;
             child_stream.is_pending_push = true;
@@ -1321,7 +1408,7 @@ impl<B> StreamRef<B> {
             let mut child_stream = me.store.resolve(child_key);
             child_stream.unlink();
             child_stream.remove();
-            return Err(err);
+            return Err(err.into());
         }
 
         me.refs += 1;
@@ -1342,7 +1429,7 @@ impl<B> StreamRef<B> {
     ///
     /// This function panics if the request isn't present.
     pub(crate) fn take_request(&self) -> Request<()> {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.opaque.key);
@@ -1355,14 +1442,14 @@ impl<B> StreamRef<B> {
 
     /// Called by a client to see if the current stream is pending open
     pub(crate) fn is_pending_open(&self) -> bool {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         me.store.resolve(self.opaque.key).is_pending_open
     }
 
     /// Request capacity to send data
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn reserve_capacity(&mut self, capacity: WindowSize) {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.opaque.key);
@@ -1374,7 +1461,7 @@ impl<B> StreamRef<B> {
 
     /// Returns the stream's current send capacity.
     pub(crate) fn capacity(&self) -> WindowSize {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.opaque.key);
@@ -1388,7 +1475,7 @@ impl<B> StreamRef<B> {
         &mut self,
         cx: &Context,
     ) -> Poll<Option<Result<WindowSize, UserError>>> {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.opaque.key);
@@ -1403,7 +1490,7 @@ impl<B> StreamRef<B> {
         cx: &Context,
         mode: proto::PollReset,
     ) -> Poll<Result<Reason, crate::h2::Error>> {
-        let mut me = self.opaque.inner.lock().unwrap();
+        let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.opaque.key);
@@ -1445,12 +1532,26 @@ impl OpaqueStreamRef {
         &mut self,
         cx: &Context,
     ) -> Poll<Result<Response<()>, proto::Error>> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.key);
 
         me.actions.recv.poll_response(cx, &mut stream)
+    }
+
+    /// Called by a client to check for informational responses (1xx status codes)
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn poll_informational(
+        &mut self,
+        cx: &Context,
+    ) -> Poll<Option<Result<Response<()>, proto::Error>>> {
+        let mut me = self.inner.lock();
+        let me = &mut *me;
+
+        let mut stream = me.store.resolve(self.key);
+
+        me.actions.recv.poll_informational(cx, &mut stream)
     }
 
     /// Called by a client to check for a pushed request.
@@ -1459,7 +1560,7 @@ impl OpaqueStreamRef {
         &mut self,
         cx: &Context,
     ) -> Poll<Option<Result<(Request<()>, Self), proto::Error>>> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.key);
@@ -1474,7 +1575,7 @@ impl OpaqueStreamRef {
     }
 
     pub(crate) fn is_end_stream(&self) -> bool {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         let stream = me.store.resolve(self.key);
@@ -1484,7 +1585,7 @@ impl OpaqueStreamRef {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_data(&mut self, cx: &Context) -> Poll<Option<Result<Bytes, proto::Error>>> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.key);
@@ -1497,7 +1598,7 @@ impl OpaqueStreamRef {
         &mut self,
         cx: &Context,
     ) -> Poll<Option<Result<HeaderMap, proto::Error>>> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.key);
@@ -1506,7 +1607,7 @@ impl OpaqueStreamRef {
     }
 
     pub(crate) fn available_recv_capacity(&self) -> isize {
-        let me = self.inner.lock().unwrap();
+        let me = self.inner.lock();
         let me = &*me;
 
         let stream = &me.store[self.key];
@@ -1514,7 +1615,7 @@ impl OpaqueStreamRef {
     }
 
     pub(crate) fn used_recv_capacity(&self) -> WindowSize {
-        let me = self.inner.lock().unwrap();
+        let me = self.inner.lock();
         let me = &*me;
 
         let stream = &me.store[self.key];
@@ -1525,7 +1626,7 @@ impl OpaqueStreamRef {
     /// WINDOW_UPDATE frames on both the stream and connection.
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn release_capacity(&mut self, capacity: WindowSize) -> Result<(), UserError> {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.key);
@@ -1538,7 +1639,7 @@ impl OpaqueStreamRef {
     /// Clear the receive queue and set the status to no longer receive data frames.
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn clear_recv_buffer(&mut self) {
-        let mut me = self.inner.lock().unwrap();
+        let mut me = self.inner.lock();
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.key);
@@ -1547,28 +1648,22 @@ impl OpaqueStreamRef {
     }
 
     pub(crate) fn stream_id(&self) -> StreamId {
-        self.inner.lock().unwrap().store[self.key].id
+        self.inner.lock().store[self.key].id
     }
 }
 
 impl fmt::Debug for OpaqueStreamRef {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match self.inner.try_lock() {
-            Ok(me) => {
-                let stream = &me.store[self.key];
-                fmt.debug_struct("OpaqueStreamRef")
-                    .field("stream_id", &stream.id)
-                    .field("ref_count", &stream.ref_count)
-                    .finish()
-            }
-            Err(TryLockError::Poisoned(_)) => fmt
-                .debug_struct("OpaqueStreamRef")
-                .field("inner", &"<Poisoned>")
-                .finish(),
-            Err(TryLockError::WouldBlock) => fmt
-                .debug_struct("OpaqueStreamRef")
+        if let Some(me) = self.inner.try_lock() {
+            let stream = &me.store[self.key];
+            fmt.debug_struct("OpaqueStreamRef")
+                .field("stream_id", &stream.id)
+                .field("ref_count", &stream.ref_count)
+                .finish()
+        } else {
+            fmt.debug_struct("OpaqueStreamRef")
                 .field("inner", &"<Locked>")
-                .finish(),
+                .finish()
         }
     }
 }
@@ -1576,7 +1671,7 @@ impl fmt::Debug for OpaqueStreamRef {
 impl Clone for OpaqueStreamRef {
     fn clone(&self) -> Self {
         // Increment the ref count
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         inner.store.resolve(self.key).ref_inc();
         inner.refs += 1;
 
@@ -1595,14 +1690,7 @@ impl Drop for OpaqueStreamRef {
 
 // TODO: Move back in fn above
 fn drop_stream_ref(inner: &Mutex<Inner>, key: store::Key) {
-    let Ok(mut me) = inner.lock() else {
-        if ::std::thread::panicking() {
-            tracing::trace!("StreamRef::drop; mutex poisoned");
-            return;
-        } else {
-            panic!("StreamRef::drop; mutex poisoned");
-        }
-    };
+    let mut me = inner.lock();
 
     let me = &mut *me;
     me.refs -= 1;
@@ -1677,7 +1765,7 @@ impl<B> SendBuffer<B> {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        let buf = self.inner.lock().unwrap();
+        let buf = self.inner.lock();
         buf.is_empty()
     }
 }
@@ -1700,7 +1788,7 @@ impl Actions {
                 } else {
                     tracing::warn!(
                         "locally-reset streams reached limit ({:?})",
-                        counts.max_local_error_resets().unwrap(),
+                        counts.max_local_error_resets(),
                     );
                     return Err(crate::h2::proto::error::GoAway {
                         reason: Reason::ENHANCE_YOUR_CALM,
@@ -1748,7 +1836,7 @@ impl Actions {
             } else {
                 tracing::warn!(
                     "reset_on_recv_stream_err; locally-reset streams reached limit ({:?})",
-                    counts.max_local_error_resets().unwrap(),
+                    counts.max_local_error_resets(),
                 );
                 Err(Error::library_go_away_data(
                     Reason::ENHANCE_YOUR_CALM,

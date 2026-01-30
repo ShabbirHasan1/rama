@@ -1,7 +1,8 @@
 use rama_core::error::BoxError;
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
-use rama_net::address::{Authority, Host, SocketAddress};
+use rama_net::address::{Host, HostWithPort, SocketAddress};
+use rama_utils::collections::smallvec::smallvec;
 use std::fmt;
 
 use crate::{
@@ -182,12 +183,12 @@ impl Client {
     ///
     /// In case the handshake was sucessfull it will return
     /// the local address used by the Socks5 (proxy) server
-    /// to connect to the destination [`Authority`] on behalf of this [`Client`].
+    /// to connect to the destination [`HostWithPort`] on behalf of this [`Client`].
     pub async fn handshake_connect<S: Stream + Unpin>(
         &self,
         stream: &mut S,
-        destination: &Authority,
-    ) -> Result<Authority, HandshakeError> {
+        destination: &HostWithPort,
+    ) -> Result<HostWithPort, HandshakeError> {
         let selected_method = match self.auth.as_ref() {
             Some(auth) => self.handshake_headers_auth(stream, auth).await?,
             None => self.handshake_headers_no_auth(stream).await?,
@@ -268,7 +269,11 @@ impl Client {
                 .with_context("server responded with non-success reply"));
         }
 
-        let (select_host, selected_port) = server_reply.bind_address.into_parts();
+        let HostWithPort {
+            host: select_host,
+            port: selected_port,
+        } = server_reply.bind_address;
+
         let selected_addr = match select_host {
             Host::Name(domain) => {
                 tracing::debug!(
@@ -304,8 +309,10 @@ impl Client {
     /// Establish a connection with a Socks5 server making use of the [`Command::UdpAssociate`] flow.
     ///
     /// This method returns a [`UdpSocketRelayBinder`] that can be used
-    /// to bind to an interface as to get a [`UdpSocketRelay`] ready to to send udp packets through
+    /// to bind to an interface as to get a relay [`Service`] ready to to send udp packets through
     /// socks5 proxy server to the required.
+    ///
+    /// [`Service`]: rama_core::Service
     pub async fn handshake_udp<S: Stream + Unpin>(
         &self,
         mut stream: S,
@@ -405,7 +412,7 @@ impl Client {
         &self,
         stream: &mut S,
     ) -> Result<SocksMethod, HandshakeError> {
-        let header = Header::new(smallvec::smallvec![SocksMethod::NoAuthenticationRequired]);
+        let header = Header::new(smallvec![SocksMethod::NoAuthenticationRequired]);
         header.write_to(stream).await.map_err(|err| {
             HandshakeError::io(err).with_context("write client headers: no auth required")
         })?;
@@ -436,6 +443,7 @@ impl Client {
 mod tests {
     use super::*;
     use rama_net::{address::Host, user};
+    use rama_utils::str::non_empty_str;
 
     #[tokio::test]
     async fn test_client_handshake_connect_no_auth_failure_command_not_supported() {
@@ -452,7 +460,7 @@ mod tests {
 
         let client = Client::new();
         let err = client
-            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::CommandNotSupported);
@@ -469,7 +477,7 @@ mod tests {
 
         let client = Client::default();
         let err = client
-            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::GeneralServerFailure);
@@ -488,9 +496,12 @@ mod tests {
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ));
         let err = client
-            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::CommandNotSupported);
@@ -513,9 +524,12 @@ mod tests {
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ));
         let err = client
-            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::CommandNotSupported);
@@ -534,9 +548,12 @@ mod tests {
             .read(b"\x01\x01")
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ));
         let err = client
-            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::ConnectionNotAllowed);
@@ -553,7 +570,7 @@ mod tests {
 
         let client = Client::default();
         let err = client
-            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .handshake_connect(&mut stream, &HostWithPort::default_ipv4(0))
             .await
             .unwrap_err();
         assert_eq!(err.reply(), ReplyKind::GeneralServerFailure);
@@ -577,10 +594,10 @@ mod tests {
 
         let client = Client::default();
         let local_addr = client
-            .handshake_connect(&mut stream, &Authority::local_ipv6(1))
+            .handshake_connect(&mut stream, &HostWithPort::local_ipv6(1))
             .await
             .unwrap();
-        assert_eq!(local_addr, Authority::local_ipv4(65));
+        assert_eq!(local_addr, HostWithPort::local_ipv4(65));
     }
 
     #[tokio::test]
@@ -598,10 +615,10 @@ mod tests {
 
         let client = Client::default();
         let local_addr = client
-            .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
+            .handshake_connect(&mut stream, &HostWithPort::new(Host::EXAMPLE_NAME, 1))
             .await
             .unwrap();
-        assert_eq!(local_addr, Authority::local_ipv4(1));
+        assert_eq!(local_addr, HostWithPort::local_ipv4(1));
     }
 
     #[tokio::test]
@@ -621,12 +638,15 @@ mod tests {
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new(
+            non_empty_str!("john"),
+            non_empty_str!("secret"),
+        ));
         let local_addr = client
-            .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
+            .handshake_connect(&mut stream, &HostWithPort::new(Host::EXAMPLE_NAME, 1))
             .await
             .unwrap();
-        assert_eq!(local_addr, Authority::local_ipv4(1));
+        assert_eq!(local_addr, HostWithPort::local_ipv4(1));
     }
 
     #[tokio::test]
@@ -647,11 +667,11 @@ mod tests {
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
             .build();
 
-        let client = Client::default().with_auth(user::Basic::new_static_insecure("john"));
+        let client = Client::default().with_auth(user::Basic::new_insecure(non_empty_str!("john")));
         let local_addr = client
-            .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
+            .handshake_connect(&mut stream, &HostWithPort::example_domain_with_port(1))
             .await
             .unwrap();
-        assert_eq!(local_addr, Authority::local_ipv4(1));
+        assert_eq!(local_addr, HostWithPort::local_ipv4(1));
     }
 }

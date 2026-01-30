@@ -1,14 +1,16 @@
-use std::{fmt, io, time::Duration};
+use std::{io, time::Duration};
 
+use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream};
+use rama_net::address::HostWithPort;
 use rama_net::{
-    address::{Authority, Host, SocketAddress},
+    address::{Host, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
     socket::{Interface, SocketService},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
-use rama_utils::macros::generate_field_setters;
+use rama_utils::macros::generate_set_and_with;
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -30,9 +32,8 @@ impl<S, C> Socks5Binder<S> for C where C: Socks5BinderSeal<S> {}
 pub trait Socks5BinderSeal<S>: Send + Sync + 'static {
     fn accept_bind(
         &self,
-
         stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
@@ -40,10 +41,10 @@ impl<S> Socks5BinderSeal<S> for ()
 where
     S: Stream + Unpin,
 {
-    async fn accept_bind(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
+    async fn accept_bind(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::debug!(
-            server.address = %destination.host(),
-            server.port = %destination.port(),
+            server.address = %destination.host,
+            server.port = %destination.port,
             "socks5 server: abort: command not supported: Bind",
         );
 
@@ -70,6 +71,7 @@ pub type DefaultBinder = Binder<DefaultTimeout<DefaultAcceptorFactory>, StreamFo
 /// You can customise the [`Binder`] fully by creating it using [`Binder::new`]
 /// or overwrite any of the default components using either or both of [`Binder::with_acceptor`]
 /// and [`Binder::with_service`].
+#[derive(Debug, Clone)]
 pub struct Binder<A, S> {
     acceptor: A,
     service: S,
@@ -96,7 +98,7 @@ impl<A, S> Binder<A, S> {
 }
 
 impl<A, S> Binder<A, S> {
-    /// Overwrite the [`Binder`]'s [`AcceptorFactory`],
+    /// Overwrite the [`Binder`]'s factory [`Service`],
     /// used to open a listener, return the address and
     /// wait for an incoming connection which it will return.
     pub fn with_acceptor<T>(self, acceptor: T) -> Binder<T, S> {
@@ -114,7 +116,7 @@ impl<A, S> Binder<A, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context, ProxyRequest) -> ((), Into<BoxError>)
+    /// (ProxyRequest) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Binder<A, T> {
         Binder {
@@ -125,85 +127,54 @@ impl<A, S> Binder<A, S> {
         }
     }
 
-    /// Define the (network) [`Interface`] to bind to.
-    ///
-    /// By default it will use the client's requested bind address,
-    /// which is in many cases not what you want.
-    pub fn set_bind_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
-        self.bind_interface = Some(interface.into());
-        self
+    generate_set_and_with! {
+        /// Define the (network) [`Interface`] to bind to.
+        ///
+        /// By default it will use the client's requested bind address,
+        /// which is in many cases not what you want.
+        pub fn bind_interface(mut self, interface: impl Into<Interface>) -> Self {
+            self.bind_interface = Some(interface.into());
+            self
+        }
     }
 
-    /// Define the default (network) [`Interface`] to bind to (`0.0.0.0:0`).
-    ///
-    /// By default it will use the client's requested bind address,
-    /// which is in many cases not what you want.
-    pub fn set_default_bind_interface(&mut self) -> &mut Self {
-        self.bind_interface = Some(SocketAddress::default_ipv4(0).into());
-        self
+    generate_set_and_with! {
+        /// Define the default (network) [`Interface`] to bind to (`0.0.0.0:0`).
+        ///
+        /// By default it will use the client's requested bind address,
+        /// which is in many cases not what you want.
+        pub fn default_bind_interface(mut self) -> Self {
+            self.bind_interface = Some(SocketAddress::default_ipv4(0).into());
+            self
+        }
     }
 
-    /// Define the (network) [`Interface`] to bind to.
-    ///
-    /// By default it will use the client's requested bind address,
-    /// which is in many cases not what you want.
-    #[must_use]
-    pub fn with_bind_interface(mut self, interface: impl Into<Interface>) -> Self {
-        self.bind_interface = Some(interface.into());
-        self
-    }
-
-    /// Define the default (network) [`Interface`] to bind to (`0.0.0.0:0`).
-    ///
-    /// By default it will use the client's requested bind address,
-    /// which is in many cases not what you want.
-    #[must_use]
-    pub fn with_default_bind_interface(mut self) -> Self {
-        self.bind_interface = Some(SocketAddress::default_ipv4(0).into());
-        self
-    }
-
-    generate_field_setters!(accept_timeout, Duration);
-}
-
-impl<A: fmt::Debug, S: fmt::Debug> fmt::Debug for Binder<A, S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Binder")
-            .field("acceptor", &self.acceptor)
-            .field("service", &self.service)
-            .field("bind_interface", &self.bind_interface)
-            .field("accept_timeout", &self.accept_timeout)
-            .finish()
-    }
-}
-
-impl<A: Clone, S: Clone> Clone for Binder<A, S> {
-    fn clone(&self) -> Self {
-        Self {
-            acceptor: self.acceptor.clone(),
-            service: self.service.clone(),
-            bind_interface: self.bind_interface.clone(),
-            accept_timeout: self.accept_timeout,
+    generate_set_and_with! {
+        /// Define the accept timeout for this socks5 bind server.
+        pub fn accept_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.accept_timeout = timeout;
+            self
         }
     }
 }
 
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-/// Default [`AcceptorFactory`] used by [`DefaultBinder`].
-pub struct DefaultAcceptorFactory;
+/// Default factory [`Service`] used by [`DefaultBinder`].
+pub struct DefaultAcceptorFactory {
+    exec: Executor,
+}
 
 impl Service<Interface> for DefaultAcceptorFactory {
-    type Response = TcpListener;
+    type Output = TcpListener;
     type Error = BoxError;
 
-    async fn serve(&self, interface: Interface) -> Result<Self::Response, Self::Error> {
-        let acceptor = TcpListener::bind(interface).await?;
+    async fn serve(&self, interface: Interface) -> Result<Self::Output, Self::Error> {
+        let acceptor = TcpListener::bind(interface, self.exec.clone()).await?;
         Ok(acceptor)
     }
 }
 
-/// [`Acceptor`] created by an [`AcceptorFactory`] in function of a [`Binder`].
+/// [`Acceptor`] created by an factory [`Service`] in function of a bind [`Service`].
 pub trait Acceptor: Send + Sync + 'static {
     /// The [`Stream`] returned by this [`Acceptor`].
     type Stream: Stream;
@@ -226,8 +197,8 @@ impl Acceptor for TcpListener {
     async fn accept(self) -> Result<(Self::Stream, SocketAddress), Error> {
         let (stream, addr) = Self::accept(&self).await.map_err(Error::io)?;
         tracing::trace!(
-            network.peer.port = %addr.port(),
-            network.peer.address = %addr.ip_addr(),
+            network.peer.port = %addr.port,
+            network.peer.address = %addr.ip_addr,
             "accepted incoming TCP connection"
         );
         Ok((stream, addr))
@@ -249,18 +220,22 @@ where
     F: SocketService<Socket: Acceptor<Stream: Unpin>>,
     StreamService: Service<
             ProxyRequest<S, <F::Socket as Acceptor>::Stream>,
-            Response = (),
+            Output = (),
             Error: Into<BoxError>,
         >,
 {
     async fn accept_bind(
         &self,
         mut stream: S,
-        requested_bind_address: Authority,
+        requested_bind_address: HostWithPort,
     ) -> Result<(), Error> {
         tracing::trace!("socks5 server: bind: try to create acceptor @ {requested_bind_address}");
 
-        let (requested_host, requested_port) = requested_bind_address.into_parts();
+        let HostWithPort {
+            host: requested_host,
+            port: requested_port,
+        } = requested_bind_address;
+
         let requested_addr = match requested_host {
             Host::Name(domain) => {
                 tracing::debug!("bind command does not accept domain {domain} as bind address",);
@@ -402,6 +377,7 @@ pub(crate) use test::MockBinder;
 #[cfg(test)]
 mod test {
     use super::*;
+    use rama_net::address::HostWithPort;
     use std::{ops::DerefMut, sync::Arc};
     use tokio::sync::Mutex;
 
@@ -413,7 +389,7 @@ mod test {
     #[derive(Debug)]
     enum MockReply {
         Success {
-            bind_addr: Authority,
+            bind_addr: HostWithPort,
             second_reply: MockSecondReply,
         },
         Error(ReplyKind),
@@ -422,14 +398,14 @@ mod test {
     #[derive(Debug)]
     enum MockSecondReply {
         Success {
-            recv_addr: Authority,
+            recv_addr: HostWithPort,
             target: Option<Arc<Mutex<tokio_test::io::Mock>>>,
         },
         Error(ReplyKind),
     }
 
     impl MockBinder {
-        pub(crate) fn new(bind_addr: Authority, recv_addr: Authority) -> Self {
+        pub(crate) fn new(bind_addr: HostWithPort, recv_addr: HostWithPort) -> Self {
             Self {
                 reply: MockReply::Success {
                     bind_addr,
@@ -445,7 +421,7 @@ mod test {
                 reply: MockReply::Error(reply),
             }
         }
-        pub(crate) fn new_bind_err(bind_addr: Authority, reply: ReplyKind) -> Self {
+        pub(crate) fn new_bind_err(bind_addr: HostWithPort, reply: ReplyKind) -> Self {
             Self {
                 reply: MockReply::Success {
                     bind_addr,
@@ -483,7 +459,7 @@ mod test {
         async fn accept_bind(
             &self,
             mut stream: S,
-            _requested_bind_address: Authority,
+            _requested_bind_address: HostWithPort,
         ) -> Result<(), Error> {
             match &self.reply {
                 MockReply::Success {

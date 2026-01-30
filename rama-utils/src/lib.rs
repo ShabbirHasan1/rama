@@ -19,7 +19,11 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 #[doc(hidden)]
 #[macro_use]
@@ -28,6 +32,7 @@ pub mod macros;
 pub mod include_dir;
 
 pub mod backoff;
+pub mod collections;
 pub mod info;
 pub mod latency;
 pub mod octets;

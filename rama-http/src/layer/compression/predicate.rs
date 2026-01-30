@@ -1,14 +1,8 @@
 //! Predicates for disabling compression of responses.
-//!
-//! Predicates are applied with [`Compression::compress_when`] or
-//! [`CompressionLayer::compress_when`].
-//!
-//! [`Compression::compress_when`]: super::Compression::compress_when
-//! [`CompressionLayer::compress_when`]: super::CompressionLayer::compress_when
 
 use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
-use std::{fmt, sync::Arc};
+use rama_utils::str::arcstr::{ArcStr, arcstr};
 
 /// Predicate used to determine if a response should be compressed or not.
 pub trait Predicate: Clone {
@@ -45,6 +39,27 @@ where
         let headers = response.headers();
         let extensions = response.extensions();
         self(status, version, headers, extensions)
+    }
+}
+
+/// Predicate to _always_ compress.
+#[derive(Debug, Clone, Default, Copy)]
+#[non_exhaustive]
+pub struct Always;
+
+impl Always {
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Predicate for Always {
+    fn should_compress<B>(&self, _response: &rama_http_types::Response<B>) -> bool
+    where
+        B: StreamingBody,
+    {
+        true
     }
 }
 
@@ -99,6 +114,7 @@ where
 /// by combining types in this module:
 ///
 /// ```rust
+/// use rama_utils::str::arcstr::arcstr;
 /// use rama_http::layer::compression::predicate::{SizeAbove, NotForContentType, Predicate};
 ///
 /// // slightly large min size than the default 32
@@ -108,7 +124,7 @@ where
 ///     // still don't compress images
 ///     .and(NotForContentType::IMAGES)
 ///     // also don't compress JSON
-///     .and(NotForContentType::const_new("application/json"));
+///     .and(NotForContentType::new(arcstr!("application/json")));
 /// ```
 ///
 /// [`Compression`]: super::Compression
@@ -145,6 +161,33 @@ impl Predicate for DefaultPredicate {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DefaultStreamPredicate(And<SizeAbove, NotForContentType>);
+
+impl DefaultStreamPredicate {
+    /// Create a new `DefaultStreamPredicate`.
+    #[must_use]
+    pub fn new() -> Self {
+        let inner = SizeAbove::new(SizeAbove::DEFAULT_MIN_SIZE).and(NotForContentType::IMAGES);
+        Self(inner)
+    }
+}
+
+impl Default for DefaultStreamPredicate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Predicate for DefaultStreamPredicate {
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
+    where
+        B: StreamingBody,
+    {
+        self.0.should_compress(response)
+    }
+}
+
 /// [`Predicate`] that will only allow compression of responses above a certain size.
 #[derive(Clone, Copy, Debug)]
 pub struct SizeAbove(u16);
@@ -156,7 +199,7 @@ impl SizeAbove {
     /// `min_size_bytes`.
     ///
     /// The response will be compressed if the exact size cannot be determined through either the
-    /// `content-length` header or [`Body::size_hint`].
+    /// `content-length` header or [`StreamingBody::size_hint`].
     #[must_use]
     pub const fn new(min_size_bytes: u16) -> Self {
         Self(min_size_bytes)
@@ -192,37 +235,28 @@ impl Predicate for SizeAbove {
 /// Predicate that wont allow responses with a specific `content-type` to be compressed.
 #[derive(Clone, Debug)]
 pub struct NotForContentType {
-    content_type: Str,
-    exception: Option<Str>,
+    content_type: ArcStr,
+    exception: Option<ArcStr>,
 }
 
 impl NotForContentType {
     /// Predicate that wont compress gRPC responses.
-    pub const GRPC: Self = Self::const_new("application/grpc");
+    pub const GRPC: Self = Self::new(arcstr!("application/grpc"));
 
     /// Predicate that wont compress images.
     pub const IMAGES: Self = Self {
-        content_type: Str::Static("image/"),
-        exception: Some(Str::Static("image/svg+xml")),
+        content_type: arcstr!("image/"),
+        exception: Some(arcstr!("image/svg+xml")),
     };
 
     /// Predicate that wont compress Server-Sent Events (SSE) responses.
-    pub const SSE: Self = Self::const_new("text/event-stream");
+    pub const SSE: Self = Self::new(arcstr!("text/event-stream"));
 
     /// Create a new `NotForContentType`.
     #[must_use]
-    pub fn new(content_type: &str) -> Self {
+    pub const fn new(content_type: ArcStr) -> Self {
         Self {
-            content_type: Str::Shared(content_type.into()),
-            exception: None,
-        }
-    }
-
-    /// Create a new `NotForContentType` from a static string.
-    #[must_use]
-    pub const fn const_new(content_type: &'static str) -> Self {
-        Self {
-            content_type: Str::Static(content_type),
+            content_type,
             exception: None,
         }
     }
@@ -240,30 +274,6 @@ impl Predicate for NotForContentType {
         }
 
         !content_type(response).starts_with(self.content_type.as_str())
-    }
-}
-
-#[derive(Clone)]
-enum Str {
-    Static(&'static str),
-    Shared(Arc<str>),
-}
-
-impl Str {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Static(s) => s,
-            Self::Shared(s) => s,
-        }
-    }
-}
-
-impl fmt::Debug for Str {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Static(inner) => inner.fmt(f),
-            Self::Shared(inner) => inner.fmt(f),
-        }
     }
 }
 

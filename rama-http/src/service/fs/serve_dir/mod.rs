@@ -1,13 +1,14 @@
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
 use crate::mime::Mime;
+use crate::service::web::response::IntoResponse;
 use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
-use percent_encoding::percent_decode;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
+use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::include_dir::Dir;
 use std::fmt;
 use std::str::FromStr;
@@ -106,184 +107,103 @@ impl ServeDir<DefaultServeDirFallback> {
 }
 
 impl<F> ServeDir<F> {
-    /// Set the [`DirectoryServeMode`].
-    #[must_use]
-    pub fn with_directory_serve_mode(mut self, mode: DirectoryServeMode) -> Self {
-        match &mut self.variant {
-            ServeVariant::Directory { serve_mode } => {
-                *serve_mode = mode;
-                self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`DirectoryServeMode`].
+        pub fn directory_serve_mode(mut self, mode: DirectoryServeMode) -> Self {
+            match &mut self.variant {
+                ServeVariant::Directory { serve_mode } => {
+                    *serve_mode = mode;
+                    self
+                }
+                ServeVariant::SingleFile { mime: _ } => self,
             }
-            ServeVariant::SingleFile { mime: _ } => self,
         }
     }
 
-    /// Set the [`DirectoryServeMode`].
-    pub fn set_directory_serve_mode(&mut self, mode: DirectoryServeMode) -> &mut Self {
-        match &mut self.variant {
-            ServeVariant::Directory { serve_mode } => {
-                *serve_mode = mode;
-                self
-            }
-            ServeVariant::SingleFile { mime: _ } => self,
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a specific read buffer chunk size.
+        ///
+        /// The default capacity is 64kb.
+        pub fn buf_chunk_size(mut self, chunk_size: usize) -> Self {
+            self.buf_chunk_size = chunk_size;
+            self
         }
     }
 
-    /// Set a specific read buffer chunk size.
-    ///
-    /// The default capacity is 64kb.
-    #[must_use]
-    pub fn with_buf_chunk_size(mut self, chunk_size: usize) -> Self {
-        self.buf_chunk_size = chunk_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Informs the service that it should also look for a precompressed gzip
+        /// version of _any_ file in the directory.
+        ///
+        /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
+        /// a client with an `Accept-Encoding` header that allows the gzip encoding
+        /// will receive the file `dir/foo.txt.gz` instead of `dir/foo.txt`.
+        /// If the precompressed file is not available, or the client doesn't support it,
+        /// the uncompressed version will be served instead.
+        /// Both the precompressed version and the uncompressed version are expected
+        /// to be present in the directory. Different precompressed variants can be combined.
+        pub fn precompressed_gzip(mut self) -> Self {
+            self.precompressed_variants
+                .get_or_insert(Default::default())
+                .gzip = true;
+            self
+        }
     }
 
-    /// Set a specific read buffer chunk size.
-    ///
-    /// The default capacity is 64kb.
-    pub fn set_buf_chunk_size(&mut self, chunk_size: usize) -> &mut Self {
-        self.buf_chunk_size = chunk_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Informs the service that it should also look for a precompressed brotli
+        /// version of _any_ file in the directory.
+        ///
+        /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
+        /// a client with an `Accept-Encoding` header that allows the brotli encoding
+        /// will receive the file `dir/foo.txt.br` instead of `dir/foo.txt`.
+        /// If the precompressed file is not available, or the client doesn't support it,
+        /// the uncompressed version will be served instead.
+        /// Both the precompressed version and the uncompressed version are expected
+        /// to be present in the directory. Different precompressed variants can be combined.
+        pub fn precompressed_br(mut self) -> Self {
+            self.precompressed_variants
+                .get_or_insert_default()
+                .br = true;
+            self
+        }
     }
 
-    /// Informs the service that it should also look for a precompressed gzip
-    /// version of _any_ file in the directory.
-    ///
-    /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
-    /// a client with an `Accept-Encoding` header that allows the gzip encoding
-    /// will receive the file `dir/foo.txt.gz` instead of `dir/foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the directory. Different precompressed variants can be combined.
-    #[must_use]
-    pub fn precompressed_gzip(mut self) -> Self {
-        self.precompressed_variants
-            .get_or_insert(Default::default())
-            .gzip = true;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Informs the service that it should also look for a precompressed deflate
+        /// version of _any_ file in the directory.
+        ///
+        /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
+        /// a client with an `Accept-Encoding` header that allows the deflate encoding
+        /// will receive the file `dir/foo.txt.zz` instead of `dir/foo.txt`.
+        /// If the precompressed file is not available, or the client doesn't support it,
+        /// the uncompressed version will be served instead.
+        /// Both the precompressed version and the uncompressed version are expected
+        /// to be present in the directory. Different precompressed variants can be combined.
+        pub fn precompressed_deflate(mut self) -> Self {
+            self.precompressed_variants
+                .get_or_insert_default()
+                .deflate = true;
+            self
+        }
     }
 
-    /// Informs the service that it should also look for a precompressed gzip
-    /// version of _any_ file in the directory.
-    ///
-    /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
-    /// a client with an `Accept-Encoding` header that allows the gzip encoding
-    /// will receive the file `dir/foo.txt.gz` instead of `dir/foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the directory. Different precompressed variants can be combined.
-    pub fn set_precompressed_gzip(&mut self) -> &mut Self {
-        self.precompressed_variants
-            .get_or_insert(Default::default())
-            .gzip = true;
-        self
-    }
-
-    /// Informs the service that it should also look for a precompressed brotli
-    /// version of _any_ file in the directory.
-    ///
-    /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
-    /// a client with an `Accept-Encoding` header that allows the brotli encoding
-    /// will receive the file `dir/foo.txt.br` instead of `dir/foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the directory. Different precompressed variants can be combined.
-    #[must_use]
-    pub fn precompressed_br(mut self) -> Self {
-        self.precompressed_variants
-            .get_or_insert(Default::default())
-            .br = true;
-        self
-    }
-
-    /// Informs the service that it should also look for a precompressed brotli
-    /// version of _any_ file in the directory.
-    ///
-    /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
-    /// a client with an `Accept-Encoding` header that allows the brotli encoding
-    /// will receive the file `dir/foo.txt.br` instead of `dir/foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the directory. Different precompressed variants can be combined.
-    pub fn set_precompressed_br(&mut self) -> &mut Self {
-        self.precompressed_variants
-            .get_or_insert(Default::default())
-            .br = true;
-        self
-    }
-
-    /// Informs the service that it should also look for a precompressed deflate
-    /// version of _any_ file in the directory.
-    ///
-    /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
-    /// a client with an `Accept-Encoding` header that allows the deflate encoding
-    /// will receive the file `dir/foo.txt.zz` instead of `dir/foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the directory. Different precompressed variants can be combined.
-    #[must_use]
-    pub fn precompressed_deflate(mut self) -> Self {
-        self.precompressed_variants
-            .get_or_insert(Default::default())
-            .deflate = true;
-        self
-    }
-
-    /// Informs the service that it should also look for a precompressed deflate
-    /// version of _any_ file in the directory.
-    ///
-    /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
-    /// a client with an `Accept-Encoding` header that allows the deflate encoding
-    /// will receive the file `dir/foo.txt.zz` instead of `dir/foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the directory. Different precompressed variants can be combined.
-    pub fn set_precompressed_deflate(&mut self) -> &mut Self {
-        self.precompressed_variants
-            .get_or_insert(Default::default())
-            .deflate = true;
-        self
-    }
-
-    /// Informs the service that it should also look for a precompressed zstd
-    /// version of _any_ file in the directory.
-    ///
-    /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
-    /// a client with an `Accept-Encoding` header that allows the zstd encoding
-    /// will receive the file `dir/foo.txt.zst` instead of `dir/foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the directory. Different precompressed variants can be combined.
-    #[must_use]
-    pub fn precompressed_zstd(mut self) -> Self {
-        self.precompressed_variants
-            .get_or_insert(Default::default())
-            .zstd = true;
-        self
-    }
-
-    /// Informs the service that it should also look for a precompressed zstd
-    /// version of _any_ file in the directory.
-    ///
-    /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
-    /// a client with an `Accept-Encoding` header that allows the zstd encoding
-    /// will receive the file `dir/foo.txt.zst` instead of `dir/foo.txt`.
-    /// If the precompressed file is not available, or the client doesn't support it,
-    /// the uncompressed version will be served instead.
-    /// Both the precompressed version and the uncompressed version are expected
-    /// to be present in the directory. Different precompressed variants can be combined.
-    pub fn set_precompressed_zstd(&mut self) -> &mut Self {
-        self.precompressed_variants
-            .get_or_insert(Default::default())
-            .zstd = true;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Informs the service that it should also look for a precompressed zstd
+        /// version of _any_ file in the directory.
+        ///
+        /// Assuming the `dir` directory is being served and `dir/foo.txt` is requested,
+        /// a client with an `Accept-Encoding` header that allows the zstd encoding
+        /// will receive the file `dir/foo.txt.zst` instead of `dir/foo.txt`.
+        /// If the precompressed file is not available, or the client doesn't support it,
+        /// the uncompressed version will be served instead.
+        /// Both the precompressed version and the uncompressed version are expected
+        /// to be present in the directory. Different precompressed variants can be combined.
+        pub fn precompressed_zstd(mut self) -> Self {
+            self.precompressed_variants
+                .get_or_insert_default()
+                .zstd = true;
+            self
+        }
     }
 
     /// Set the fallback service.
@@ -311,21 +231,14 @@ impl<F> ServeDir<F> {
         self.fallback(SetStatus::new(new_fallback, StatusCode::NOT_FOUND))
     }
 
-    /// Customize whether or not to call the fallback for requests that aren't `GET` or `HEAD`.
-    ///
-    /// Defaults to not calling the fallback and instead returning `405 Method Not Allowed`.
-    #[must_use]
-    pub fn call_fallback_on_method_not_allowed(mut self, call_fallback: bool) -> Self {
-        self.call_fallback_on_method_not_allowed = call_fallback;
-        self
-    }
-
-    /// Customize whether or not to call the fallback for requests that aren't `GET` or `HEAD`.
-    ///
-    /// Defaults to not calling the fallback and instead returning `405 Method Not Allowed`.
-    pub fn set_call_fallback_on_method_not_allowed(&mut self, call_fallback: bool) -> &mut Self {
-        self.call_fallback_on_method_not_allowed = call_fallback;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Customize whether or not to call the fallback for requests that aren't `GET` or `HEAD`.
+        ///
+        /// Defaults to not calling the fallback and instead returning `405 Method Not Allowed`.
+        pub fn call_fallback_on_method_not_allowed(mut self, call_fallback: bool) -> Self {
+            self.call_fallback_on_method_not_allowed = call_fallback;
+            self
+        }
     }
 
     /// Call the service and get a future that contains any `std::io::Error` that might have
@@ -343,7 +256,7 @@ impl<F> ServeDir<F> {
         req: Request<ReqBody>,
     ) -> Result<Response, std::io::Error>
     where
-        F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
+        F: Service<Request<ReqBody>, Output = Response<FResBody>, Error = Infallible> + Clone,
         FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
@@ -418,22 +331,17 @@ impl<F> ServeDir<F> {
 impl<ReqBody, F, FResBody> Service<Request<ReqBody>> for ServeDir<F>
 where
     ReqBody: Send + 'static,
-    F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
+    F: Service<Request<ReqBody>, Output = Response<FResBody>, Error = Infallible> + Clone,
     FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let result = self.try_call(req).await;
         Ok(result.unwrap_or_else(|err| {
             tracing::error!("Failed to read file: {err:?}");
-
-            let body = Body::empty();
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(body)
-                .unwrap()
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }))
     }
 }
@@ -552,10 +460,10 @@ impl<ReqBody> Service<Request<ReqBody>> for DefaultServeDirFallback
 where
     ReqBody: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, _req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         match self.0 {}
     }
 }

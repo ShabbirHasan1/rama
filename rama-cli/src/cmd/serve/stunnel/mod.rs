@@ -30,7 +30,7 @@ use rama::{
     error::{BoxError, ErrorContext as _, OpaqueError},
     graceful::ShutdownGuard,
     net::{
-        address::{Authority, SocketAddress},
+        address::{HostWithPort, SocketAddress},
         socket::Interface,
         tls::{
             DataEncoding,
@@ -38,6 +38,7 @@ use rama::{
             server::{ServerAuth, ServerAuthData, ServerConfig},
         },
     },
+    rt::Executor,
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
@@ -48,13 +49,13 @@ use rama::{
         core::x509::{X509, store::X509StoreBuilder},
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
-    utils::str::NonEmptyString,
+    utils::str::NonEmptyStr,
 };
 
 use clap::{Args, Subcommand};
 use std::{path::PathBuf, sync::Arc};
 
-use crate::utils::tls::new_server_config;
+use crate::utils::tls::try_new_server_config;
 
 #[derive(Debug, Args)]
 /// rama stunnel service
@@ -110,7 +111,7 @@ pub struct EntryNodeArgs {
     ///   localhost:8443
     ///   example.com:8443
     ///   192.168.1.100:8443
-    pub connect: Authority,
+    pub connect: HostWithPort,
 
     #[arg(long, conflicts_with = "insecure")]
     /// path to CA certificate bundle for server verification (PEM format)
@@ -136,10 +137,16 @@ pub async fn run(guard: ShutdownGuard, cfg: StunnelCommand) -> Result<(), BoxErr
 }
 
 async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(), BoxError> {
-    let server_config = load_server_config(cfg.cert.as_ref(), cfg.key.as_ref())?;
+    let server_config = load_server_config(
+        cfg.cert.as_ref(),
+        cfg.key.as_ref(),
+        Executor::graceful(graceful.clone()),
+    )?;
     let acceptor_data = TlsAcceptorData::try_from(server_config)?;
 
-    let tcp_listener = TcpListener::bind(cfg.bind.clone())
+    let exec = Executor::graceful(graceful);
+
+    let tcp_listener = TcpListener::bind(cfg.bind.clone(), exec.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind stunnel exit node")?;
@@ -149,7 +156,7 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
         .context("get local addr of tcp listener")?;
     let forward_addr = cfg.forward;
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.clone().into_spawn_task(async move {
         tracing::info!("Stunnel exit node is running...");
         tracing::info!(
             "Listening on {} and forwarding to {}",
@@ -158,8 +165,8 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
         );
 
         let tcp_service =
-            TlsAcceptorLayer::new(acceptor_data).into_layer(Forwarder::new(forward_addr));
-        tcp_listener.serve_graceful(guard, tcp_service).await;
+            TlsAcceptorLayer::new(acceptor_data).into_layer(Forwarder::new(exec, forward_addr));
+        tcp_listener.serve(tcp_service).await;
     });
 
     Ok(())
@@ -168,16 +175,18 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
 async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(), BoxError> {
     let tls_connector_data = build_tls_connector(&cfg)?;
 
-    let tcp_listener = TcpListener::bind(cfg.bind.clone())
+    let exec = Executor::graceful(graceful);
+    let tcp_listener = TcpListener::bind(cfg.bind.clone(), exec.clone())
         .await
-        .expect("bind stunnel entry node");
+        .map_err(OpaqueError::from_boxed)
+        .context("bind stunnel entry node")?;
 
     let bind_address = tcp_listener
         .local_addr()
         .context("get local addr of tcp listener")?;
     let connect_authority = cfg.connect;
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.clone().into_spawn_task(async move {
         tracing::info!("Stunnel entry node is running...");
         tracing::info!(
             "Listening on {} and connecting to {}",
@@ -185,13 +194,13 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
             connect_authority
         );
 
-        let tcp_service = Forwarder::new(connect_authority).connector(
+        let tcp_service = Forwarder::new(exec.clone(), connect_authority).with_connector(
             TlsConnectorLayer::secure()
                 .with_connector_data(tls_connector_data)
-                .into_layer(TcpConnector::new()),
+                .into_layer(TcpConnector::new(exec)),
         );
 
-        tcp_listener.serve_graceful(guard, tcp_service).await;
+        tcp_listener.serve(tcp_service).await;
     });
 
     Ok(())
@@ -244,6 +253,7 @@ fn load_ca_certificate(
 fn load_server_config(
     cert_path: Option<&PathBuf>,
     key_path: Option<&PathBuf>,
+    exec: Executor,
 ) -> Result<ServerConfig, BoxError> {
     match (cert_path, key_path) {
         (Some(cert), Some(key)) => {
@@ -262,15 +272,15 @@ fn load_server_config(
                 ocsp: None,
             })))
         }
-        (None, None) => Ok(new_server_config(None)),
+        (None, None) => Ok(try_new_server_config(None, exec)?),
         _ => Err("Both certificate and key must be provided together, or neither".into()),
     }
 }
 
-fn read_pem_file(path: &PathBuf, file_type: &str) -> Result<NonEmptyString, BoxError> {
+fn read_pem_file(path: &PathBuf, file_type: &str) -> Result<NonEmptyStr, BoxError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {file_type} file: {e}"))?;
 
-    NonEmptyString::try_from(content)
+    NonEmptyStr::try_from(content)
         .map_err(|e| format!("Failed to parse {file_type} file: {e}").into())
 }

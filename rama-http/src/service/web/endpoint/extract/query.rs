@@ -1,6 +1,7 @@
 //! Module in function of the [`Query`] extractor.
 
-use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
+use super::{FromPartsStateRefPair, OptionalFromPartsStateRefPair};
+use crate::Uri;
 use crate::request::Parts;
 use crate::utils::macros::define_http_rejection;
 use serde::de::DeserializeOwned;
@@ -8,6 +9,7 @@ use serde::de::DeserializeOwned;
 /// Extractor that deserializes query strings into some type.
 ///
 /// `T` is expected to implement [`serde::Deserialize`].
+#[derive(Debug, Clone)]
 pub struct Query<T>(pub T);
 
 define_http_rejection! {
@@ -18,22 +20,17 @@ define_http_rejection! {
     pub struct FailedToDeserializeQueryString(Error);
 }
 
-impl<T: std::fmt::Debug> std::fmt::Debug for Query<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Query").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Query<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
 impl<T> Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
 {
+    /// Attempts to construct a [`Query`] from a reference to a [`Uri`].
+    #[inline(always)]
+    pub fn try_from_uri(value: &Uri) -> Result<Self, FailedToDeserializeQueryString> {
+        let query = value.query().unwrap_or_default();
+        Self::parse_query_str(query)
+    }
+
     /// Create a `Query<T>` directly from the query str,
     /// can be useful to combine this method as part of another extractor
     /// or otherwise impossible combination.
@@ -44,14 +41,14 @@ where
     }
 }
 
-impl<T, State> FromRequestContextRefPair<State> for Query<T>
+impl<T, State> FromPartsStateRefPair<State> for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync,
 {
     type Rejection = FailedToDeserializeQueryString;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
@@ -60,14 +57,14 @@ where
     }
 }
 
-impl<T, State> OptionalFromRequestContextRefPair<State> for Query<T>
+impl<T, State> OptionalFromPartsStateRefPair<State> for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync,
 {
     type Rejection = FailedToDeserializeQueryString;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Option<Self>, Self::Rejection> {
@@ -79,5 +76,41 @@ where
             }
             None => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[test]
+    fn test_try_from_uri() {
+        #[derive(Deserialize)]
+        struct TestQueryParams {
+            foo: Vec<String>,
+            bar: u32,
+        }
+        let uri: Uri = "http://example.com/path?foo=hello&bar=42&foo=goodbye"
+            .parse()
+            .unwrap();
+        let Query(TestQueryParams { foo, bar }) = Query::try_from_uri(&uri).unwrap();
+        assert_eq!(foo, [String::from("hello"), String::from("goodbye")]);
+        assert_eq!(bar, 42);
+    }
+
+    #[test]
+    fn test_try_from_uri_with_invalid_query() {
+        #[derive(Deserialize)]
+        struct TestQueryParams {
+            _foo: String,
+            _bar: u32,
+        }
+        let uri: Uri = "http://example.com/path?foo=hello&bar=invalid"
+            .parse()
+            .unwrap();
+        let result: Result<Query<TestQueryParams>, _> = Query::try_from_uri(&uri);
+
+        assert!(result.is_err());
     }
 }

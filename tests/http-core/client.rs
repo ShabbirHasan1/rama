@@ -17,6 +17,7 @@ use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::http::uri::PathAndQuery;
 use rama::http::{Method, Request, StatusCode, StreamingBody, Uri, Version};
 use rama::net::stream::Socket;
+use rama_net::address::SocketAddress;
 
 use super::support;
 
@@ -53,13 +54,13 @@ async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<TcpStream> {
 
 #[derive(Clone, Debug)]
 struct HttpInfo {
-    remote_addr: SocketAddr,
+    remote_addr: SocketAddress,
 }
 
 #[derive(Debug)]
 enum Error {
     Io(std::io::Error),
-    Hyper(rama::http::core::Error),
+    Core(rama::http::core::Error),
     AbsoluteUriRequired,
     UnsupportedVersion,
 }
@@ -67,28 +68,28 @@ enum Error {
 impl Error {
     fn is_incomplete_message(&self) -> bool {
         match self {
-            Self::Hyper(err) => err.is_incomplete_message(),
+            Self::Core(err) => err.is_incomplete_message(),
             Self::AbsoluteUriRequired | Self::Io(_) | Self::UnsupportedVersion => false,
         }
     }
 
     fn is_parse(&self) -> bool {
         match self {
-            Self::Hyper(err) => err.is_parse(),
+            Self::Core(err) => err.is_parse(),
             Self::AbsoluteUriRequired | Self::Io(_) | Self::UnsupportedVersion => false,
         }
     }
 
     fn is_parse_too_large(&self) -> bool {
         match self {
-            Self::Hyper(err) => err.is_parse_too_large(),
+            Self::Core(err) => err.is_parse_too_large(),
             Self::AbsoluteUriRequired | Self::Io(_) | Self::UnsupportedVersion => false,
         }
     }
 
     fn is_parse_status(&self) -> bool {
         match self {
-            Self::Hyper(err) => err.is_parse_status(),
+            Self::Core(err) => err.is_parse_status(),
             Self::AbsoluteUriRequired | Self::Io(_) | Self::UnsupportedVersion => false,
         }
     }
@@ -98,7 +99,7 @@ impl fmt::Display for Error {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(err) => err.fmt(fmt),
-            Self::Hyper(err) => err.fmt(fmt),
+            Self::Core(err) => err.fmt(fmt),
             Self::AbsoluteUriRequired => write!(fmt, "client requires absolute-form URIs"),
             Self::UnsupportedVersion => write!(fmt, "request has unsupported HTTP version"),
         }
@@ -113,7 +114,7 @@ impl From<std::io::Error> for Error {
 
 impl From<rama::http::core::Error> for Error {
     fn from(err: rama::http::core::Error) -> Self {
-        Self::Hyper(err)
+        Self::Core(err)
     }
 }
 
@@ -261,7 +262,7 @@ macro_rules! test {
 
         let res = async move {
             // Wrapper around hyper::client::conn::Builder with set_host field to mimic
-            // hyper::client::Builder.
+            // rama_http_core::client::Builder.
             struct Builder {
                 inner: rama::http::core::client::conn::http1::Builder,
                 set_host: bool,
@@ -277,17 +278,21 @@ macro_rules! test {
                     }
                 }
 
-                #[allow(unused)]
-                fn set_host(&mut self, val: bool) -> &mut Self {
-                    self.set_host = val;
-                    self
+                rama_utils::macros::generate_set_and_with! {
+                    #[allow(unused)]
+                    fn host(mut self, val: bool) -> Self {
+                        self.set_host = val;
+                        self
+                    }
                 }
 
-                #[allow(unused)]
-                fn http09_responses(&mut self, val: bool) -> &mut Self {
-                    self.http09_responses = val;
-                    self.inner.http09_responses(val);
-                    self
+                rama_utils::macros::generate_set_and_with! {
+                    #[allow(unused)]
+                    fn http09_responses(mut self, val: bool) -> Self {
+                        self.http09_responses = val;
+                        self.inner.set_http09_responses(val);
+                        self
+                    }
                 }
             }
 
@@ -1353,7 +1358,7 @@ test! {
 
     client:
         options: {
-            title_case_headers: true,
+            set_title_case_headers: true,
         },
         request: {
             method: GET,
@@ -1437,7 +1442,7 @@ test! {
 
     client:
         options: {
-            http09_responses: true,
+            set_http09_responses: true,
         },
         request: {
             method: GET,
@@ -1467,7 +1472,7 @@ test! {
 
     client:
         options: {
-            allow_obsolete_multiline_headers_in_responses: true,
+            set_allow_obsolete_multiline_headers_in_responses: true,
         },
         request: {
             method: GET,
@@ -1496,6 +1501,8 @@ mod conn {
     use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
+    use rama_http::proto::h1::ext::ReasonPhrase;
+    use rama_http::proto::h1::ext::informational::OnInformational;
     use tokio::io::{
         AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf,
     };
@@ -1509,7 +1516,7 @@ mod conn {
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::rt::Executor;
 
-    use super::{FutureHyperExt, concat, s, support, tcp_connect};
+    use super::{FutureExpectMsgExt, concat, s, support, tcp_connect};
 
     fn setup_duplex_test_server() -> (DuplexStream, DuplexStream, SocketAddr) {
         use std::net::{IpAddr, Ipv6Addr};
@@ -1616,7 +1623,7 @@ mod conn {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
             assert_eq!(
                 res.extensions()
-                    .get::<rama::http::core::ext::ReasonPhrase>()
+                    .get::<ReasonPhrase>()
                     .expect("custom reason phrase is present")
                     .as_bytes(),
                 &b"Alright"[..]
@@ -1750,7 +1757,7 @@ mod conn {
 
             // Notably:
             // - Still no Host header, since it wasn't set
-            let expected = "GET http://hyper.local/a HTTP/1.1\r\n\r\n";
+            let expected = "GET http://rama.local/a HTTP/1.1\r\n\r\n";
             assert_eq!(s(&buf[..n]), expected);
 
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
@@ -1766,7 +1773,7 @@ mod conn {
         rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
-            .uri("http://hyper.local/a")
+            .uri("http://rama.local/a")
             .body(Empty::<Bytes>::new())
             .unwrap();
 
@@ -2089,7 +2096,7 @@ mod conn {
         let tcp = ServiceInput::new(tcp);
 
         let (mut client, conn) = conn::http1::Builder::new()
-            .http09_responses(true)
+            .with_http09_responses(true)
             .handshake(tcp)
             .await
             .unwrap();
@@ -2138,10 +2145,11 @@ mod conn {
             .unwrap();
         let cnt = Arc::new(AtomicUsize::new(0));
         let cnt2 = cnt.clone();
-        rama_http_core::ext::on_informational(&mut req, move |res| {
-            assert_eq!(res.status(), 100);
-            cnt2.fetch_add(1, Ordering::Relaxed);
-        });
+        req.extensions_mut()
+            .insert(OnInformational::new_fn(move |res| {
+                assert_eq!(res.status(), 100);
+                cnt2.fetch_add(1, Ordering::Relaxed);
+            }));
         let _res = client.send_request(req).await.expect("send_request");
         assert_eq!(1, cnt.load(Ordering::Relaxed));
     }
@@ -2415,10 +2423,10 @@ mod conn {
 
         let io = ServiceInput::new(client_io);
         let (_client, conn) = conn::http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             // enable while idle since we aren't sending requests
-            .keep_alive_while_idle(true)
+            .with_keep_alive_while_idle(true)
             .handshake::<_, rama::http::core::body::Incoming>(io)
             .await
             .expect("http handshake");
@@ -2441,8 +2449,8 @@ mod conn {
 
         let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake::<_, rama::http::core::body::Incoming>(io)
             .await
             .expect("http handshake");
@@ -2470,8 +2478,8 @@ mod conn {
 
         let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2524,8 +2532,8 @@ mod conn {
 
         let io = ServiceInput::new(client_io);
         let (mut client, conn) = conn::http2::Builder::new(Executor::new())
-            .keep_alive_interval(Duration::from_secs(1))
-            .keep_alive_timeout(Duration::from_secs(1))
+            .with_keep_alive_interval(Duration::from_secs(1))
+            .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2829,11 +2837,11 @@ mod conn {
     }
 }
 
-trait FutureHyperExt: TryFuture {
+trait FutureExpectMsgExt: TryFuture {
     fn expect(self, msg: &'static str) -> Pin<Box<dyn Future<Output = Self::Ok>>>;
 }
 
-impl<F> FutureHyperExt for F
+impl<F> FutureExpectMsgExt for F
 where
     F: TryFuture + 'static,
     F::Error: std::fmt::Debug,

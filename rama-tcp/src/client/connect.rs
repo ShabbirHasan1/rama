@@ -6,14 +6,14 @@ use rama_core::{
     rt::Executor,
 };
 use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
+use rama_net::address::HostWithPort;
 use rama_net::{
-    address::{Authority, Domain, Host, SocketAddress},
+    address::{Domain, Host, SocketAddress},
     mode::{ConnectIpMode, DnsResolveIpMode},
     socket::SocketOptions,
 };
 use std::{
     net::{IpAddr, SocketAddr},
-    ops::Deref,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -28,7 +28,7 @@ use tokio::sync::{
 use crate::TcpStream;
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
-/// to actually establish the [`TcpStream`.]
+/// to actually establish the [`TcpStream`]
 pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
     /// Type of error that can occurr when establishing the connection failed.
     type Error;
@@ -76,7 +76,7 @@ impl TcpStreamConnector for SocketAddress {
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_addr = *self;
-        let opts = match bind_addr.ip_addr() {
+        let opts = match bind_addr.ip_addr {
             IpAddr::V4(_ip) => SocketOptions {
                 address: Some(bind_addr),
                 ..SocketOptions::default_tcp()
@@ -174,26 +174,28 @@ macro_rules! impl_stream_connector_either {
 ::rama_core::combinators::impl_either!(impl_stream_connector_either);
 
 #[inline]
-/// Establish a [`TcpStream`] connection for the given [`Authority`],
+/// Establish a [`TcpStream`] connection for the given [`HostWithPort`],
 /// using the default settings and no custom state.
 ///
 /// Use [`tcp_connect`] in case you want to customise any of these settings,
 /// or use a [`rama_net::client::ConnectorService`] for even more advanced possibilities.
 pub async fn default_tcp_connect(
     extensions: &Extensions,
-    authority: Authority,
+    address: HostWithPort,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
 {
-    tcp_connect(extensions, authority, GlobalDnsResolver::default(), ()).await
+    tcp_connect(extensions, address, GlobalDnsResolver::default(), (), exec).await
 }
 
-/// Establish a [`TcpStream`] connection for the given [`Authority`].
+/// Establish a [`TcpStream`] connection for the given [`HostWithPort`].
 pub async fn tcp_connect<Dns, Connector>(
     extensions: &Extensions,
-    authority: Authority,
+    address: HostWithPort,
     dns: Dns,
     connector: Connector,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     Dns: DnsResolver + Clone,
@@ -202,7 +204,7 @@ where
     let ip_mode = extensions.get().copied().unwrap_or_default();
     let dns_mode = extensions.get().copied().unwrap_or_default();
 
-    let (host, port) = authority.into_parts();
+    let HostWithPort { host, port } = address;
     let domain = match host {
         Host::Name(domain) => domain,
         Host::Address(ip) => {
@@ -228,35 +230,30 @@ where
         }
     };
 
-    if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>()
-        && let Ok(tuple) = tcp_connect_inner(
-            extensions,
+    if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>().cloned() {
+        tcp_connect_inner(
             domain.clone(),
             port,
             dns_mode,
-            dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
+            (dns_overwrite, dns),
             connector.clone(),
             ip_mode,
+            exec,
         )
         .await
-    {
-        return Ok(tuple);
+    } else {
+        tcp_connect_inner(domain, port, dns_mode, dns, connector, ip_mode, exec).await
     }
-
-    //... otherwise we'll try to establish a connection,
-    // with dual-stack parallel connections...
-
-    tcp_connect_inner(extensions, domain, port, dns_mode, dns, connector, ip_mode).await
 }
 
 async fn tcp_connect_inner<Dns, Connector>(
-    extensions: &Extensions,
     domain: Domain,
     port: u16,
     dns_mode: DnsResolveIpMode,
     dns: Dns,
     connector: Connector,
     connect_mode: ConnectIpMode,
+    exec: Executor,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     Dns: DnsResolver + Clone,
@@ -266,10 +263,8 @@ where
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
 
-    let executor = extensions.get::<Executor>().cloned().unwrap_or_default();
-
     if dns_mode.ipv4_supported() {
-        executor.spawn_task(
+        exec.spawn_task(
             tcp_connect_inner_branch(
                 dns_mode,
                 dns.clone(),
@@ -291,7 +286,7 @@ where
     }
 
     if dns_mode.ipv6_supported() {
-        executor.spawn_task(
+        exec.into_spawn_task(
             tcp_connect_inner_branch(
                 dns_mode,
                 dns.clone(),
@@ -346,7 +341,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_it = match ip_kind {
-        IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
+        IpKind::Ipv4 => match dns.ipv4_lookup(domain.clone()).await {
             Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
             Err(err) => {
                 let err = OpaqueError::from_boxed(err.into());
@@ -356,7 +351,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                 return;
             }
         },
-        IpKind::Ipv6 => match dns.ipv6_lookup(domain).await {
+        IpKind::Ipv6 => match dns.ipv6_lookup(domain.clone()).await {
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
                 let err = OpaqueError::from_boxed(err.into());
@@ -412,7 +407,15 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
 
         let connector = connector.clone();
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = match sem.acquire().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    tracing::trace!(
+                        "[{ip_kind:?}] #{index}: abort conn; failed to acquire permit: {err}"
+                    );
+                    return;
+                }
+            };
             if connected.load(Ordering::Acquire) {
                 tracing::trace!(
                     "[{ip_kind:?}] #{index}: abort spawned attempt to {addr} (connection already established)"
@@ -426,12 +429,14 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                 Ok(stream) => {
                     tracing::trace!("[{ip_kind:?}] #{index}: tcp connection stablished to {addr}");
                     if let Err(err) = tx.send((stream, addr)).await {
-                        tracing::trace!("[{ip_kind:?}] #{index}: failed to send resolved IP address: {err:?}");
+                        tracing::trace!(
+                            "[{ip_kind:?}] #{index}: failed to send resolved IP address {addr}: {err:?}"
+                        );
                     }
                 }
                 Err(err) => {
                     let err = OpaqueError::from_boxed(err.into());
-                    tracing::trace!("[{ip_kind:?}] #{index}: tcp connector failed to connect: {err:?}");
+                    tracing::trace!("[{ip_kind:?}] #{index}: tcp connector failed to connect to {addr}: {err:?}");
                 }
             };
         }.instrument(trace_span!(
@@ -439,6 +444,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
             otel.kind = "client",
             network.protocol.name = "tcp",
             network.peer.address = %ip,
+            server.address = %domain,
             %index,
         )));
     }

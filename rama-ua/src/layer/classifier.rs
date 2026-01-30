@@ -45,17 +45,17 @@ use rama_http::{
     headers::{self, HeaderMapExt},
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt::{self, Debug};
+use std::fmt::Debug;
 
 use crate::{UserAgent, UserAgentOverwrites};
 
 /// A [`Service`] that classifies the [`UserAgent`] of incoming [`Request`]s.
 ///
-/// The [`Extensions`] of the [`Context`] is updated with the [`UserAgent`]
+/// The [`Extensions`] is updated with the [`UserAgent`]
 /// if the [`Request`] contains a valid [`UserAgent`] header.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
-/// [`Context`]: rama_core::Context
+#[derive(Debug, Clone, Default)]
 pub struct UserAgentClassifier<S> {
     inner: S,
     overwrite_header: Option<HeaderName>,
@@ -73,53 +73,17 @@ impl<S> UserAgentClassifier<S> {
     define_inner_service_accessors!();
 }
 
-impl<S> Debug for UserAgentClassifier<S>
-where
-    S: Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("UserAgentClassifier")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<S> Clone for UserAgentClassifier<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            overwrite_header: self.overwrite_header.clone(),
-        }
-    }
-}
-
-impl<S> Default for UserAgentClassifier<S>
-where
-    S: Default,
-{
-    fn default() -> Self {
-        Self {
-            inner: S::default(),
-            overwrite_header: None,
-        }
-    }
-}
-
 impl<S, Body> Service<Request<Body>> for UserAgentClassifier<S>
 where
     S: Service<Request<Body>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
-
         mut req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let overwrites = self
             .overwrite_header
             .as_ref()
@@ -171,19 +135,13 @@ impl UserAgentClassifierLayer {
         }
     }
 
-    /// Define a custom header to allow overwriting certain
-    /// [`UserAgent`] information.
-    #[must_use]
-    pub fn overwrite_header(mut self, header: HeaderName) -> Self {
-        self.overwrite_header = Some(header);
-        self
-    }
-
-    /// Define a custom header to allow overwriting certain
-    /// [`UserAgent`] information.
-    pub fn set_overwrite_header(&mut self, header: HeaderName) -> &mut Self {
-        self.overwrite_header = Some(header);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define a custom header to allow overwriting certain
+        /// [`UserAgent`] information.
+        pub fn overwrite_header(mut self, header: HeaderName) -> Self {
+            self.overwrite_header = Some(header);
+            self
+        }
     }
 }
 
@@ -305,7 +263,7 @@ mod tests {
         }
 
         let service = UserAgentClassifierLayer::new()
-            .overwrite_header(HeaderName::from_static("x-proxy-ua"))
+            .with_overwrite_header(HeaderName::from_static("x-proxy-ua"))
             .into_layer(service_fn(handle));
 
         let _ = service
@@ -340,7 +298,7 @@ mod tests {
         }
 
         let service = UserAgentClassifierLayer::new()
-            .overwrite_header(HeaderName::from_static("x-proxy-ua"))
+            .with_overwrite_header(HeaderName::from_static("x-proxy-ua"))
             .into_layer(service_fn(handle));
 
         let _ = service

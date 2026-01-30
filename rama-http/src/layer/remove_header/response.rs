@@ -31,8 +31,7 @@
 use crate::{HeaderName, Request, Response};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use smol_str::SmolStr;
-use std::fmt;
+use rama_utils::str::smol_str::SmolStr;
 
 #[derive(Debug, Clone)]
 /// Layer that applies [`RemoveResponseHeader`] which removes response headers.
@@ -99,6 +98,7 @@ impl<S> Layer<S> for RemoveResponseHeaderLayer {
 }
 
 /// Middleware that removes response headers from a request.
+#[derive(Debug, Clone)]
 pub struct RemoveResponseHeader<S> {
     inner: S,
     mode: RemoveResponseHeaderMode,
@@ -130,34 +130,16 @@ impl<S> RemoveResponseHeader<S> {
     define_inner_service_accessors!();
 }
 
-impl<S: fmt::Debug> fmt::Debug for RemoveResponseHeader<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RemoveResponseHeader")
-            .field("inner", &self.inner)
-            .field("mode", &self.mode)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for RemoveResponseHeader<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            mode: self.mode.clone(),
-        }
-    }
-}
-
 impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveResponseHeader<S>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let mut resp = self.inner.serve(req).await?;
         match &self.mode {
             RemoveResponseHeaderMode::Hop => {
@@ -242,6 +224,33 @@ mod test {
         let req = Request::builder().body(Body::empty()).unwrap();
         let res = svc.serve(req).await.unwrap();
         assert!(res.headers().get("connection").is_none());
+        assert!(res.headers().get("keep-alive").is_none());
+        assert_eq!(
+            res.headers().get("foo").map(|v| v.to_str().unwrap()),
+            Some("bar")
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_response_header_hop_by_hop_with_headers_in_connect() {
+        let svc = RemoveResponseHeaderLayer::hop_by_hop().into_layer(service_fn(
+            async |_req: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("connection", "x-foo, x-bar")
+                        .header("keep-alive", "timeout=5")
+                        .header("x-foo", "1")
+                        .header("foo", "bar")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            },
+        ));
+        let req = Request::builder().body(Body::empty()).unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(res.headers().get("connection").is_none());
+        assert!(res.headers().get("x-foo").is_none());
+        assert!(res.headers().get("x-bar").is_none());
         assert!(res.headers().get("keep-alive").is_none());
         assert_eq!(
             res.headers().get("foo").map(|v| v.to_str().unwrap()),

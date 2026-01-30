@@ -1,7 +1,7 @@
 use crate::{Request, Uri};
 use rama_core::{combinators::Either, telemetry::tracing};
 use rama_net::http::RequestContext;
-use smallvec::SmallVec;
+use rama_utils::collections::smallvec::SmallVec;
 use std::borrow::Cow;
 use std::io::Write as _;
 
@@ -32,7 +32,7 @@ pub fn request_uri<Body>(req: &Request<Body>) -> Cow<'_, Uri> {
             "{}://{}{}",
             req_ctx.protocol,
             if req_ctx.authority_has_default_port() {
-                Either::A(req_ctx.authority.host())
+                Either::A(req_ctx.authority.host)
             } else {
                 Either::B(req_ctx.authority)
             },
@@ -76,7 +76,7 @@ mod tests {
             (
                 Request::builder()
                     .uri("/foo")
-                    .extension(Forwarded::new(ForwardedElement::forwarded_host(
+                    .extension(Forwarded::new(ForwardedElement::new_forwarded_host(
                         Domain::from_static("example.com"),
                     )))
                     .body(())

@@ -1,10 +1,9 @@
-use std::fmt;
-
 use crate::layer::har::service::HARExportService;
 use crate::layer::har::toggle::Toggle;
 use rama_core::Layer;
 
 #[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct HARExportLayer<R, T> {
     pub recorder: R,
     pub toggle: T,
@@ -13,24 +12,6 @@ pub struct HARExportLayer<R, T> {
 impl<R, T> HARExportLayer<R, T> {
     pub fn new(recorder: R, toggle: T) -> Self {
         Self { recorder, toggle }
-    }
-}
-
-impl<R: fmt::Debug, T: fmt::Debug> fmt::Debug for HARExportLayer<R, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HARExportLayer")
-            .field("recorder", &self.recorder)
-            .field("toggle", &self.toggle)
-            .finish()
-    }
-}
-
-impl<R: Clone, T: Clone> Clone for HARExportLayer<R, T> {
-    fn clone(&self) -> Self {
-        Self {
-            recorder: self.recorder.clone(),
-            toggle: self.toggle.clone(),
-        }
     }
 }
 
@@ -66,8 +47,9 @@ mod tests {
     use crate::layer::har::recorder::Recorder;
     use crate::layer::har::spec::Log;
     use crate::layer::har::toggle::mpsc_unbounded_toggle;
+    use parking_lot::Mutex;
     use std::future::ready;
-    use std::sync::{Arc, Mutex, atomic::Ordering};
+    use std::sync::{Arc, atomic::Ordering};
 
     // simple alternative implementation
 
@@ -86,7 +68,7 @@ mod tests {
 
     impl Recorder for InMemoryRecorder {
         async fn record(&self, log: Log) -> Option<Extensions> {
-            let mut lock = self.logs.lock().unwrap();
+            let mut lock = self.logs.lock();
             lock.push(log);
             None
         }
@@ -126,7 +108,7 @@ mod tests {
         assert!(!flag.load(Ordering::Relaxed));
 
         // Check that the recorder captured something
-        let data = layer.recorder.logs.lock().unwrap();
+        let data = layer.recorder.logs.lock();
         assert!(
             !data.is_empty(),
             "Expected recorder to have recorded at least one HAR log"

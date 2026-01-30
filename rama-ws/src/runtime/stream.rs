@@ -39,7 +39,6 @@ pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     /// `false` once start_send hits `WouldBlock` errors.
     /// `true` initially and after `flush`ing.
     ready: bool,
-    extensions: Extensions,
 }
 
 impl<S> AsyncWebSocket<S> {
@@ -47,7 +46,7 @@ impl<S> AsyncWebSocket<S> {
     /// handshake.
     pub async fn from_raw_socket(stream: S, role: Role, config: Option<WebSocketConfig>) -> Self
     where
-        S: Stream + Unpin,
+        S: Stream + Unpin + ExtensionsMut,
     {
         without_handshake(stream, move |allow_std| {
             WebSocket::from_raw_socket(allow_std, role, config)
@@ -64,7 +63,7 @@ impl<S> AsyncWebSocket<S> {
         config: Option<WebSocketConfig>,
     ) -> Self
     where
-        S: Stream + Unpin,
+        S: Stream + Unpin + ExtensionsMut,
     {
         without_handshake(stream, move |allow_std| {
             WebSocket::from_partially_read(allow_std, part, role, config)
@@ -78,7 +77,6 @@ impl<S> AsyncWebSocket<S> {
             closing: false,
             ended: false,
             ready: true,
-            extensions: Extensions::new(),
         }
     }
 
@@ -93,6 +91,11 @@ impl<S> AsyncWebSocket<S> {
             self.inner.get_mut().set_waker(kind, ctx.waker());
         }
         f(&mut self.inner)
+    }
+
+    /// Consumes the `WebSocketStream` and returns the underlying stream.
+    pub fn into_inner(self) -> S {
+        self.inner.into_inner().into_inner()
     }
 
     /// Returns a shared reference to the inner stream.
@@ -125,15 +128,15 @@ impl<S> AsyncWebSocket<S> {
     }
 }
 
-impl<S> ExtensionsRef for AsyncWebSocket<S> {
+impl<S: ExtensionsRef> ExtensionsRef for AsyncWebSocket<S> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        self.inner.extensions()
     }
 }
 
-impl<S> ExtensionsMut for AsyncWebSocket<S> {
+impl<S: ExtensionsMut> ExtensionsMut for AsyncWebSocket<S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        self.inner.extensions_mut()
     }
 }
 

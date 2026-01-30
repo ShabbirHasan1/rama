@@ -14,7 +14,11 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 pub mod address;
 pub mod asn;
@@ -25,6 +29,7 @@ pub mod mode;
 pub mod proxy;
 pub mod stream;
 pub mod test_utils;
+pub mod uri;
 pub mod user;
 
 pub(crate) mod proto;
@@ -52,3 +57,8 @@ pub mod fingerprint;
 pub mod https;
 
 pub mod socket;
+
+#[doc(hidden)]
+pub mod __private {
+    pub use ::rama_utils as utils;
+}

@@ -28,7 +28,9 @@ pub use execute_script::ExecuteScript;
 mod patch_signals;
 pub use patch_signals::{PatchSignals, PatchSignalsReader};
 
-use crate::sse::{Event, EventDataLineReader, EventDataMultiLineReader, EventDataRead};
+use crate::sse::{
+    Event, EventBuildError, EventDataLineReader, EventDataMultiLineReader, EventDataRead,
+};
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use std::marker::PhantomData;
@@ -43,7 +45,7 @@ pub enum EventData<T = String> {
     /// specialized for adding js scripts. Required by datastar
     /// to be part of all datastar SDKs.
     ExecuteScript(ExecuteScript),
-    /// [`RemoveFragments`]: patches signals into the signal store
+    /// [`PatchSignals`]: patches signals into the signal store
     PatchSignals(PatchSignals<T>),
 }
 
@@ -100,12 +102,11 @@ impl<T> EventData<T> {
     }
 
     /// Consume `self` as an [`Event`].
-    pub fn into_sse_event(self) -> Event<Self> {
+    pub fn try_into_sse_event(self) -> Result<Event<Self>, EventBuildError> {
         let event_type = self.event_type();
-        Event::new()
-            .try_with_event(event_type.as_smol_str())
-            .unwrap()
-            .with_data(self)
+        Ok(Event::new()
+            .try_with_event(event_type.as_smol_str())?
+            .with_data(self))
     }
 }
 
@@ -119,7 +120,7 @@ impl<T: crate::sse::EventDataWrite> crate::sse::EventDataWrite for EventData<T> 
     }
 }
 
-/// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`RemoveSignals`].
+/// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`EventData`].
 #[derive(Debug)]
 pub struct EventDataReader<T = String> {
     reader: EventDataMultiLineReader<String>,
@@ -183,6 +184,8 @@ impl<T: EventDataRead> EventDataLineReader for EventDataReader<T> {
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::str::non_empty_str;
+
     use crate::sse::EventDataWrite;
 
     use super::*;
@@ -198,8 +201,8 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_reflect() {
         let test_cases: Vec<EventData> = vec![
-            PatchElements::new("<div>\nHello, world!\n</div>")
-                .with_selector("#foo")
+            PatchElements::new(non_empty_str!("<div>\nHello, world!\n</div>"))
+                .with_selector(non_empty_str!("#foo"))
                 .with_mode(ElementPatchMode::Append)
                 .with_use_view_transition(true)
                 .into(),

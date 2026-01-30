@@ -11,12 +11,12 @@ use rama_http_types::{
         server::{KeepAlive, KeepAliveStream, SseResponseBody},
     },
 };
-use std::fmt;
 
 use super::{Headers, IntoResponse};
 
 /// An SSE response
 #[must_use]
+#[derive(Debug, Clone)]
 pub struct Sse<S> {
     stream: S,
 }
@@ -48,20 +48,6 @@ impl<S> Sse<S> {
     }
 }
 
-impl<S: Clone> Clone for Sse<S> {
-    fn clone(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for Sse<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Sse").field("stream", &self.stream).finish()
-    }
-}
-
 impl<S, E, T> IntoResponse for Sse<S>
 where
     S: Stream<Item = Result<Event<T>, E>> + Send + 'static,
@@ -88,16 +74,16 @@ mod tests {
     use crate::service::{client::HttpClientExt as _, web::Router};
     use ahash::{HashMap, HashMapExt as _};
     use rama_core::futures::stream;
+    use rama_core::stream::StreamExt as _;
     use rama_core::{Service as _, combinators::Either};
     use rama_http_types::sse::JsonEventData;
-    use smol_str::SmolStr;
+    use rama_utils::str::smol_str::SmolStr;
     use std::{convert::Infallible, time::Duration};
-    use tokio_stream::StreamExt as _;
 
     #[tokio::test]
     async fn basic() {
         let client = Router::new()
-            .get("/", async || {
+            .with_get("/", async || {
                 let stream = stream::iter(vec![
                     Event::default()
                         .with_data(Either::A("one"))
@@ -150,7 +136,7 @@ mod tests {
         const DELAY: Duration = Duration::from_secs(5);
 
         let client = Router::new()
-            .get("/", async || {
+            .with_get("/", async || {
                 let stream = stream::repeat_with(|| Event::default().with_data("msg"))
                     .map(Ok::<_, Infallible>)
                     .throttle(DELAY);
@@ -193,7 +179,7 @@ mod tests {
         const DELAY: Duration = Duration::from_secs(5);
 
         let client = Router::new()
-            .get("/", async || {
+            .with_get("/", async || {
                 let stream = stream::repeat_with(|| Event::default().with_data("msg"))
                     .map(Ok::<_, Infallible>)
                     .throttle(DELAY)

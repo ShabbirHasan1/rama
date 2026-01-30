@@ -1,13 +1,11 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use crate::dep::rcgen::{self, KeyPair};
-use crate::dep::rustls;
+use crate::dep::rcgen::{self, Issuer, KeyPair};
+use crate::dep::rustls::{self, ALL_VERSIONS};
 use crate::key_log::KeyLogFile;
-use ::rcgen::Issuer;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::Domain;
 use rama_net::tls::server::SelfSignedData;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
-use rustls::ALL_VERSIONS;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -102,7 +100,8 @@ where
 
 /// [`TlsAcceptorDataBuilder`] can be used to construct [`rustls::ServerConfig`] for most common use cases in Rama.
 ///
-/// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ServerConfig`]
+/// If this doesn't work for your use case, no problem,
+/// You can also use a [`rustls::ServerConfig`].
 pub struct TlsAcceptorDataBuilder {
     server_config: rustls::ServerConfig,
 }
@@ -134,7 +133,7 @@ impl TlsAcceptorDataBuilder {
 
     /// Create a [`TlsAcceptorDataBuilder`] support all tls versions, using no client auth, and a self
     /// generated certificate chain and private key
-    pub fn new_self_signed(data: SelfSignedData) -> Result<Self, OpaqueError> {
+    pub fn try_new_self_signed(data: SelfSignedData) -> Result<Self, OpaqueError> {
         let (cert_chain, key_der) = self_signed_server_auth(data)?;
         let config = rustls::ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_no_client_auth()
@@ -146,50 +145,37 @@ impl TlsAcceptorDataBuilder {
         })
     }
 
-    /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
-    /// and set it in the current config
-    pub fn set_env_key_logger(&mut self) -> Result<&mut Self, OpaqueError> {
-        if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
-            let key_logger = Arc::new(KeyLogFile::new(path)?);
-            self.server_config.key_log = key_logger;
-        };
-        Ok(self)
+    rama_utils::macros::generate_set_and_with! {
+        /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
+        /// and set it in the current config
+        pub fn env_key_logger(mut self) -> Result<Self, OpaqueError> {
+            if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
+                let key_logger = Arc::new(KeyLogFile::try_new(path)?);
+                self.server_config.key_log = key_logger;
+            };
+            Ok(self)
+        }
     }
 
-    /// Same as [`Self::set_env_key_logger`] but consuming self
-    pub fn with_env_key_logger(mut self) -> Result<Self, OpaqueError> {
-        self.set_env_key_logger()?;
-        Ok(self)
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`ApplicationProtocol`]s supported in alpn extension
+        pub fn alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
+            self.server_config.alpn_protocols = protos
+                .iter()
+                .map(|proto| proto.as_bytes().to_vec())
+                .collect();
+
+            self
+        }
     }
 
-    /// Set [`ApplicationProtocol`]s supported in alpn extension
-    pub fn set_alpn_protocols(&mut self, protos: &[ApplicationProtocol]) -> &mut Self {
-        self.server_config.alpn_protocols = protos
-            .iter()
-            .map(|proto| proto.as_bytes().to_vec())
-            .collect();
-
-        self
-    }
-
-    /// Same as [`Self::set_alpn_protocols`] but consuming self
-    #[must_use]
-    pub fn with_alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
-        self.set_alpn_protocols(protos);
-        self
-    }
-
-    /// Set alpn protocols to most commonly used http protocols: [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
-    pub fn set_alpn_protocols_http_auto(&mut self) -> &mut Self {
-        self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
-        self
-    }
-
-    /// Same as [`Self::set_alpn_protocols_http_auto`] but consuming self
-    #[must_use]
-    pub fn with_alpn_protocols_http_auto(mut self) -> Self {
-        self.set_alpn_protocols_http_auto();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set alpn protocols to most commonly used http protocols:
+        /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
+        pub fn alpn_protocols_http_auto(mut self) -> Self {
+            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+            self
+        }
     }
 
     /// Build [`TlsAcceptorData`] from the current config
@@ -229,7 +215,7 @@ pub fn self_signed_server_auth(
     );
     ca_params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, common_name.to_string().as_str());
+        .push(rcgen::DnType::CommonName, common_name.as_str());
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![
         rcgen::KeyUsagePurpose::KeyCertSign,

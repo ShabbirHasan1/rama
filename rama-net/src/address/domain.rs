@@ -1,7 +1,8 @@
-use super::Host;
 use rama_core::error::{ErrorContext, OpaqueError};
-use smol_str::SmolStr;
+use rama_utils::str::smol_str::{SmolStr, format_smolstr};
 use std::{cmp::Ordering, fmt, iter::repeat};
+
+use super::Host;
 
 /// A domain.
 ///
@@ -28,9 +29,17 @@ impl Domain {
         Self(SmolStr::new_static(s))
     }
 
+    /// Safety: callee ensures that the given string is a valid domain,
+    /// this can be useful in cases where we store a string but which
+    /// came from a Domain originally.
+    pub(crate) unsafe fn from_maybe_borrowed_unchecked(s: impl Into<SmolStr>) -> Self {
+        Self(s.into())
+    }
+
     /// Creates the example [`Domain].
     #[must_use]
-    pub fn example() -> Self {
+    #[inline(always)]
+    pub const fn example() -> Self {
         Self::from_static("example.com")
     }
 
@@ -41,19 +50,21 @@ impl Domain {
     ///
     /// In specific this means that it will match on any domain with the TLD `.internal`.
     #[must_use]
-    pub fn tld_private() -> Self {
+    #[inline(always)]
+    pub const fn tld_private() -> Self {
         Self::from_static("internal")
     }
 
     /// Creates the localhost [`Domain`].
     #[must_use]
-    pub fn tld_localhost() -> Self {
+    #[inline(always)]
+    pub const fn tld_localhost() -> Self {
         Self::from_static("localhost")
     }
 
     /// Consumes the domain as a host.
     #[must_use]
-    pub fn into_host(self) -> Host {
+    pub const fn into_host(self) -> Host {
         Host::Name(self)
     }
 
@@ -138,7 +149,7 @@ impl Domain {
     /// Try to create a subdomain from the current [`Domain`] with the given
     /// subdomain prefixed to it
     pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, OpaqueError> {
-        let sub = smol_str::format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
+        let sub = format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
         if !is_valid_name(sub.as_bytes()) {
             return Err(OpaqueError::from_display("invalid subdomain"));
         }
@@ -151,7 +162,7 @@ impl Domain {
     ///
     /// This can fail, e.g. because the domain becomes too long.
     pub fn try_as_wildcard(&self) -> Result<Self, OpaqueError> {
-        let sub = smol_str::format_smolstr!("*.{}", self.0);
+        let sub = format_smolstr!("*.{}", self.0);
         if !is_valid_name(sub.as_bytes()) {
             return Err(OpaqueError::from_display("invalid subdomain"));
         }
@@ -346,7 +357,7 @@ fn cmp_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> Ordering {
             (None, Some(_)) => Some(Ordering::Less),
             (None, None) => Some(Ordering::Equal),
         })
-        .unwrap() // should always be possible to find given we are in an infinite zip :)
+        .unwrap_or(Ordering::Equal)
 }
 
 impl PartialOrd<Self> for Domain {

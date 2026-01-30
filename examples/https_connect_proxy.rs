@@ -41,12 +41,16 @@ use rama::{
         proxy::ProxyTarget,
         stream::layer::http::BodyLimitLayer,
         tls::{SecureTransport, server::SelfSignedData},
-        user::Basic,
+        user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 #[cfg(feature = "boring")]
@@ -63,11 +67,10 @@ use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
 use std::convert::Infallible;
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -97,43 +100,44 @@ async fn main() {
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     let tls_service_data = {
-        TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
+        TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
         .expect("self signed acceptor data")
         .with_alpn_protocols_http_auto()
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env key logger")
         .build()
     };
 
     // create tls proxy
     shutdown.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+        let exec = Executor::graceful(guard);
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62016")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62016");
 
-        let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec.clone()).service(
             (
                 TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filter
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
+                    exec.clone(),
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
-                    ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
+                    ConsumeErrLayer::default().into_layer(Forwarder::ctx(exec)),
                 ),
             )
                 .into_layer(service_fn(http_plain_proxy)),
         );
 
         tcp_service
-            .serve_graceful(
-                guard,
+            .serve(
                 (
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
@@ -151,11 +155,11 @@ async fn main() {
 }
 
 async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
+    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
         Ok(authority) => {
             tracing::info!(
-                server.address = %authority.host(),
-                server.port = %authority.port(),
+                server.address = %authority.host,
+                server.port = authority.port,
                 "accept CONNECT (lazy): insert proxy target into context",
             );
             req.extensions_mut().insert(ProxyTarget(authority));

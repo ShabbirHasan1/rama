@@ -32,13 +32,13 @@ async fn test_http_mitm_proxy() {
             .unwrap();
     });
 
-    let data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
+    let data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
         organisation_name: Some("Example Server Acceptor".to_owned()),
         ..Default::default()
     })
     .expect("self signed acceptor data")
     .with_alpn_protocols_http_auto()
-    .with_env_key_logger()
+    .try_with_env_key_logger()
     .expect("with env key logger")
     .build();
 
@@ -54,7 +54,7 @@ async fn test_http_mitm_proxy() {
     ));
 
     tokio::spawn(async {
-        TcpListener::bind("127.0.0.1:63006")
+        TcpListener::bind("127.0.0.1:63006", Executor::default())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)

@@ -2,8 +2,7 @@ use crate::{Method, Request, Response, Uri};
 use rama_core::{
     Service,
     error::{BoxError, ErrorExt, OpaqueError},
-    extensions::Extensions,
-    extensions::ExtensionsMut,
+    extensions::{Extension, Extensions, ExtensionsMut},
 };
 use rama_http_headers::authorization::Credentials;
 
@@ -116,7 +115,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
 
 impl<S, Body> HttpClientExt for S
 where
-    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
     type ExecuteResponse = Response<Body>;
     type ExecuteError = S::Error;
@@ -375,7 +374,7 @@ mod private {
     pub trait HttpClientExtSealed {}
 
     impl<S, Body> HttpClientExtSealed for S where
-        S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>
+        S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>
     {
     }
 }
@@ -410,7 +409,7 @@ enum RequestBuilderState {
 
 impl<S, Body> RequestBuilder<'_, S, Response<Body>>
 where
-    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>,
 {
     /// Add a `Header` to this [`Request`].
     #[must_use]
@@ -472,7 +471,11 @@ where
     where
         H: crate::headers::HeaderEncode,
     {
-        self.header(H::name().clone(), header.encode_to_value())
+        if let Some(value) = header.encode_to_value() {
+            self.header(H::name().clone(), value)
+        } else {
+            self
+        }
     }
 
     /// Add all `Headers` from the [`HeaderMap`] to this [`Request`].
@@ -551,7 +554,11 @@ where
     where
         H: crate::headers::HeaderEncode,
     {
-        self.overwrite_header(H::name().clone(), header.encode_to_value())
+        if let Some(value) = header.encode_to_value() {
+            self.overwrite_header(H::name().clone(), value)
+        } else {
+            self
+        }
     }
 
     /// Enable HTTP authentication.
@@ -563,7 +570,10 @@ where
 
     /// Adds an extension to this builder
     #[must_use]
-    pub fn extension<T: Clone + Send + Sync + 'static>(mut self, extension: T) -> Self {
+    pub fn extension<T>(mut self, extension: T) -> Self
+    where
+        T: Extension + Clone,
+    {
         match self.state {
             RequestBuilderState::PreBody(builder) => {
                 let builder = builder.extension(extension);

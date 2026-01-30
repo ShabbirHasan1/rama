@@ -71,7 +71,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::{
         acme::{
             AcmeClient,
@@ -90,7 +94,6 @@ use rama::{
 
 use std::{convert::Infallible, time::Duration};
 use tokio::time::sleep;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Default directory url of pebble
 const TEST_DIRECTORY_URL: &str = "https://localhost:14000/dir";
@@ -99,7 +102,7 @@ const ADDR: &str = "0.0.0.0:5003";
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -114,16 +117,18 @@ async fn main() {
         .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
         .into_shared_builder();
 
-    let client = EasyHttpWebClient::builder()
+    let graceful = crate::graceful::Shutdown::default();
+
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
-        .with_default_http_connector()
-        .build()
+        .with_default_http_connector(Executor::graceful(graceful.guard()))
+        .build_client()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
+    let client = AcmeClient::try_new(TEST_DIRECTORY_URL, client)
         .await
         .expect("create acme client");
 
@@ -142,7 +147,7 @@ async fn main() {
         .expect("create account");
 
     let mut order = account
-        .new_order(NewOrderPayload {
+        .try_new_order(NewOrderPayload {
             identifiers: vec![Identifier::dns("example.com")],
             ..Default::default()
         })
@@ -156,8 +161,6 @@ async fn main() {
     let auth = &mut authz[0];
 
     tracing::info!("running service at: {ADDR}");
-
-    let graceful = crate::graceful::Shutdown::default();
 
     let challenge = auth
         .challenges
@@ -198,10 +201,10 @@ async fn main() {
         let tcp_service =
             TlsAcceptorLayer::new(acceptor_data).layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind("127.0.0.1:5001")
+        TcpListener::bind("127.0.0.1:5001", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener: tls")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 
@@ -255,10 +258,10 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind(ADDR)
+        TcpListener::bind(ADDR, Executor::graceful(guard))
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

@@ -1,7 +1,6 @@
-//! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
+//! Extract a header config from a request or response and insert it into [`Extensions`].
 //!
 //! [`Extensions`]: rama_core::extensions::Extensions
-//! [`Context`]: rama_core::Context
 //!
 //! # Example
 //!
@@ -24,7 +23,7 @@
 //! async fn main() {
 //!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
 //!         .into_layer(WebService::default()
-//!             .get("/", async |ext: Extensions| {
+//!             .with_get("/", async |ext: Extensions| {
 //!                 let cfg = ext.get::<Config>().unwrap();
 //!                 assert_eq!(cfg.s, "E&G");
 //!                 assert_eq!(cfg.n, 1);
@@ -48,7 +47,7 @@ use crate::{
     Request,
     utils::{HeaderValueErr, HeaderValueGetter},
 };
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{Extension, ExtensionsMut};
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
@@ -141,14 +140,14 @@ where
 impl<T, S, Body, E> Service<Request<Body>> for HeaderConfigService<T, S>
 where
     S: Service<Request<Body>, Error = E>,
-    T: DeserializeOwned + Clone + Send + Sync + 'static,
+    T: DeserializeOwned + Extension + Clone,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Output, Self::Error> {
         let config = match extract_header_config::<_, T, _>(&request, &self.header_name) {
             Ok(config) => config,
             Err(err) => {

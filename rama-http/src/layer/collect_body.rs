@@ -6,7 +6,6 @@ use rama_core::{
     error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// An http layer to collect the http `Body`
 #[derive(Debug, Clone, Default)]
@@ -30,6 +29,7 @@ impl<S> Layer<S> for CollectBodyLayer {
 }
 
 /// Service to collect the http `Body`
+#[derive(Debug, Clone)]
 pub struct CollectBody<S> {
     inner: S,
 }
@@ -45,17 +45,17 @@ impl<S> CollectBody<S> {
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CollectBody<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     ReqBody: Send + 'static,
     ResBody: StreamingBody<Data: Send, Error: std::error::Error + Send + Sync + 'static>
         + Send
         + Sync
         + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let resp = self
             .inner
             .serve(req)
@@ -66,27 +66,5 @@ where
         let bytes = body.collect().await.context("collect body")?.to_bytes();
         let body = Body::from(bytes);
         Ok(Response::from_parts(parts, body))
-    }
-}
-
-impl<S> fmt::Debug for CollectBody<S>
-where
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CollectBody")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<S> Clone for CollectBody<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
     }
 }

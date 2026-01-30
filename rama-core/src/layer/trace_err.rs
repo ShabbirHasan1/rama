@@ -1,36 +1,12 @@
 use crate::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
 /// Service which traces the error using [`tracing`],
 /// of the inner [`Service`].
+#[derive(Debug, Clone)]
 pub struct TraceErr<S> {
     inner: S,
     level: tracing::Level,
-}
-
-impl<S> fmt::Debug for TraceErr<S>
-where
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TraceErr")
-            .field("inner", &self.inner)
-            .field("level", &self.level)
-            .finish()
-    }
-}
-
-impl<S> Clone for TraceErr<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            level: self.level,
-        }
-    }
 }
 
 /// A [`Layer`] that produces [`TraceErr`] services.
@@ -55,18 +31,18 @@ impl<S> TraceErr<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, Request> Service<Request> for TraceErr<S>
+impl<S, Input> Service<Input> for TraceErr<S>
 where
-    Request: Send + 'static,
-    S: Service<Request, Error: std::fmt::Display + Send + Sync + 'static>,
+    Input: Send + 'static,
+    S: Service<Input, Error: std::fmt::Display + Send + Sync + 'static>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     #[inline]
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let level = self.level;
-        let res = self.inner.serve(req).await;
+        let res = self.inner.serve(input).await;
         if let Err(ref err) = res {
             match level {
                 tracing::Level::TRACE => tracing::trace!("rama service failed: {err}"),

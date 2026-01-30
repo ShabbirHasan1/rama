@@ -15,7 +15,11 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 #[non_exhaustive]
 /// CrateMarker type which is used to identify this crate when working around the orphan rule
@@ -54,16 +58,6 @@ pub mod dep {
         pub use rustls_pki_types::*;
     }
 
-    pub mod pemfile {
-        //! Re-export of the [`rustls-pemfile`] crate.
-        //!
-        //! A basic parser for .pem files containing cryptographic keys and certificates.
-        //!
-        //! [`rustls-pemfile`]: https://docs.rs/rustls-pemfile
-        #[doc(inline)]
-        pub use rustls_pemfile::*;
-    }
-
     pub mod native_certs {
         //! Re-export of the [`rustls-native-certs`] crate.
         //!
@@ -84,6 +78,15 @@ pub mod dep {
         pub use rcgen::*;
     }
 
+    pub mod x509_parser {
+        //! Re-export of the [`x509-parser`] crate.
+        //!
+        //! [`x509-parser`]: https://docs.rs/x509-parser
+
+        #[doc(inline)]
+        pub use x509_parser::*;
+    }
+
     pub mod rustls {
         //! Re-export of the [`rustls`] and  [`tokio-rustls`] crates.
         //!
@@ -91,7 +94,7 @@ pub mod dep {
         //!
         //! [`rustls`]: https://docs.rs/rustls
         //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
-        //! [`TlsAcceptorLayer`]: crate::rustls::server::TlsAcceptorLayer
+        //! [`TlsAcceptorLayer`]: crate::server::TlsAcceptorLayer
 
         #[doc(inline)]
         pub use rustls::*;

@@ -1,6 +1,6 @@
 //! Module in function of the [`Authority`] extractor.
 
-use super::FromRequestContextRefPair;
+use super::FromPartsStateRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_http_types::request::Parts;
 use rama_net::address;
@@ -9,9 +9,9 @@ use rama_utils::macros::impl_deref;
 
 /// Extractor that resolves the authority of the request.
 #[derive(Debug, Clone)]
-pub struct Authority(pub address::Authority);
+pub struct Authority(pub address::HostWithOptPort);
 
-impl_deref!(Authority: address::Authority);
+impl_deref!(Authority: address::HostWithOptPort);
 
 define_http_rejection! {
     #[status = BAD_REQUEST]
@@ -21,13 +21,13 @@ define_http_rejection! {
     pub struct MissingAuthority;
 }
 
-impl<State> FromRequestContextRefPair<State> for Authority
+impl<State> FromPartsStateRefPair<State> for Authority
 where
     State: Send + Sync,
 {
     type Rejection = MissingAuthority;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
@@ -57,7 +57,7 @@ mod tests {
         headers: Vec<(&HeaderName, &str)>,
     ) {
         let svc = GetForwardedHeaderService::x_forwarded_host(
-            WebService::default().get("/", async |Authority(authority): Authority| {
+            WebService::default().with_get("/", async |Authority(authority): Authority| {
                 authority.to_string()
             }),
         );

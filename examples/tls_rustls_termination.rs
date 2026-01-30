@@ -38,35 +38,42 @@
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
 // rama provides everything out of the box to build a TLS termination proxy
+
 use rama::{
     Layer,
     extensions::ExtensionsRef,
     graceful::Shutdown,
     layer::ConsumeErrLayer,
-    net::forwarded::Forwarded,
-    net::stream::SocketInfo,
-    net::tls::server::SelfSignedData,
+    net::{
+        address::HostWithPort, forwarded::Forwarded, stream::SocketInfo,
+        tls::server::SelfSignedData,
+    },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
+    rt::Executor,
     service::service_fn,
     stream::Stream,
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio
+
 use std::{convert::Infallible, time::Duration};
 use tokio::io::AsyncWriteExt;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -75,9 +82,9 @@ async fn main() {
         )
         .init();
 
-    let acceptor_data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData::default())
+    let acceptor_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData::default())
         .expect("tls acceptor with self signed data")
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env key logger")
         .build();
 
@@ -86,16 +93,21 @@ async fn main() {
     // create tls proxy
     shutdown.spawn_task_fn(async move |guard| {
         let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
-            Forwarder::new(([127, 0, 0, 1], 62800)).connector(
+            Forwarder::new(
+                Executor::graceful(guard.clone()),
+                HostWithPort::local_ipv4(62800),
+            )
+            .with_connector(
                 // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
+                HaProxyClientLayer::tcp()
+                    .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
             ),
         );
 
-        TcpListener::bind("127.0.0.1:63800")
+        TcpListener::bind("127.0.0.1:63800", Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener: tls")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 
@@ -104,10 +116,10 @@ async fn main() {
         let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
             .into_layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind("127.0.0.1:62800")
+        TcpListener::bind("127.0.0.1:62800", Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

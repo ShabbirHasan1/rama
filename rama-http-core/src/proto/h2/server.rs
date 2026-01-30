@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
@@ -5,9 +6,10 @@ use std::time::Duration;
 use crate::h2::server::{Connection, Handshake, SendResponse};
 use crate::h2::{Reason, RecvStream};
 use pin_project_lite::pin_project;
+use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_http::StreamingBody;
@@ -22,8 +24,6 @@ use crate::common::date;
 use crate::headers;
 use crate::proto::Dispatched;
 use crate::proto::h2::ping::Recorder;
-use crate::proto::h2::{H2Upgraded, UpgradedSendStream};
-use crate::service::HttpService;
 
 // Our defaults are chosen for the "majority" case, which usually are not
 // resource constrained, and so the spec default of 64kb can be too limiting
@@ -34,7 +34,7 @@ use crate::service::HttpService;
 const DEFAULT_CONN_WINDOW: u32 = 1024 * 1024; // 1mb
 const DEFAULT_STREAM_WINDOW: u32 = 1024 * 1024; // 1mb
 const DEFAULT_MAX_FRAME_SIZE: u32 = 1024 * 16; // 16kb
-const DEFAULT_MAX_SEND_BUF_SIZE: usize = 1024 * 400; // 400kb
+const DEFAULT_MAX_SEND_BUF_SIZE: u32 = 1024 * 400; // 400kb
 const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: u32 = 1024 * 16; // 16kb
 const DEFAULT_MAX_LOCAL_ERROR_RESET_STREAMS: usize = 1024;
 
@@ -50,7 +50,7 @@ pub(crate) struct Config {
     pub(crate) max_local_error_reset_streams: Option<usize>,
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) keep_alive_timeout: Duration,
-    pub(crate) max_send_buffer_size: usize,
+    pub(crate) max_send_buffer_size: u32,
     pub(crate) max_header_list_size: u32,
     pub(crate) date_header: bool,
 }
@@ -78,7 +78,7 @@ impl Default for Config {
 pin_project! {
     pub(crate) struct Server<T, S>
     where
-        S: HttpService<IncomingBody>,
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>
     {
         exec: Executor,
         service: S,
@@ -102,40 +102,40 @@ enum State<T> {
 struct Serving<T> {
     ping: Option<(ping::Recorder, ping::Ponger)>,
     conn: Connection<T, SendBuf<Bytes>>,
-    closing: Option<crate::Error>,
     date_header: bool,
 }
 
 impl<T, S> Server<T, S>
 where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
 {
     pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Self {
-        let mut builder = crate::h2::server::Builder::default();
-        builder
-            .initial_window_size(config.initial_stream_window_size)
-            .initial_connection_window_size(config.initial_conn_window_size)
-            .max_frame_size(config.max_frame_size)
-            .max_header_list_size(config.max_header_list_size)
-            .max_local_error_reset_streams(config.max_local_error_reset_streams)
-            .max_send_buffer_size(config.max_send_buffer_size);
+        let mut builder = crate::h2::server::Builder::default()
+            .with_initial_window_size(config.initial_stream_window_size)
+            .with_initial_connection_window_size(config.initial_conn_window_size)
+            .with_max_frame_size(config.max_frame_size)
+            .with_max_header_list_size(config.max_header_list_size)
+            .maybe_with_max_local_error_reset_streams(config.max_local_error_reset_streams)
+            .with_max_send_buffer_size(config.max_send_buffer_size);
+
         if let Some(max) = config.max_concurrent_streams {
-            builder.max_concurrent_streams(max);
+            builder.set_max_concurrent_streams(max);
         }
+
         if let Some(max) = config.max_pending_accept_reset_streams {
-            builder.max_pending_accept_reset_streams(max);
+            builder.set_max_pending_accept_reset_streams(max);
         }
+
         if config.enable_connect_protocol {
-            builder.enable_connect_protocol();
+            builder.set_enable_connect_protocol();
         }
+
         let handshake = builder.handshake(io);
 
-        let bdp = if config.adaptive_window {
-            Some(config.initial_stream_window_size)
-        } else {
-            None
-        };
+        let bdp = config
+            .adaptive_window
+            .then_some(config.initial_stream_window_size);
 
         let ping_config = ping::Config {
             bdp_initial_window: bdp,
@@ -165,9 +165,7 @@ where
                 self.close_pending = true;
             }
             State::Serving(ref mut srv) => {
-                if srv.closing.is_none() {
-                    srv.conn.graceful_shutdown();
-                }
+                srv.conn.graceful_shutdown();
             }
         }
     }
@@ -176,7 +174,7 @@ where
 impl<T, S> Future for Server<T, S>
 where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
-    S: HttpService<IncomingBody>,
+    S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
 {
     type Output = crate::Result<Dispatched>;
 
@@ -190,7 +188,12 @@ where
                 } => {
                     let mut conn = ready!(Pin::new(hs).poll(cx).map_err(crate::Error::new_h2))?;
                     let ping = if ping_config.is_enabled() {
-                        let pp = conn.ping_pong().expect("conn.ping_pong");
+                        let Some(pp) = conn.ping_pong() else {
+                            return Poll::Ready(Err(
+                                crate::Error::new_parse_internal()
+                                    .with_display("bug: report in rama crate: server: conn.ping_pong not available while ping config is enabled"),
+                            ));
+                        };
                         Some(ping::channel(pp, ping_config))
                     } else {
                         None
@@ -198,13 +201,12 @@ where
                     State::Serving(Serving {
                         ping,
                         conn,
-                        closing: None,
                         date_header: me.date_header,
                     })
                 }
                 State::Serving(ref mut srv) => {
                     // graceful_shutdown was called before handshaking finished,
-                    if me.close_pending && srv.closing.is_none() {
+                    if me.close_pending {
                         srv.conn.graceful_shutdown();
                     }
                     ready!(srv.poll_server(cx, &mut me.service, &me.exec))?;
@@ -228,106 +230,109 @@ where
         exec: &Executor,
     ) -> Poll<crate::Result<()>>
     where
-        S: HttpService<IncomingBody>,
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     {
-        if self.closing.is_none() {
-            loop {
-                self.poll_ping(cx);
+        loop {
+            self.poll_ping(cx);
 
-                match ready!(self.conn.poll_accept(cx)) {
-                    Some(Ok((req, mut respond))) => {
-                        trace!("incoming request");
-                        let content_length = headers::content_length_parse_all(req.headers());
-                        let ping = self
-                            .ping
-                            .as_ref()
-                            .map(|ping| ping.0.clone())
-                            .unwrap_or_else(ping::disabled);
+            match ready!(self.conn.poll_accept(cx)) {
+                Some(Ok((req, mut respond))) => {
+                    trace!("incoming request");
+                    let content_length = headers::content_length_parse_all(req.headers());
+                    let ping = self
+                        .ping
+                        .as_ref()
+                        .map(|ping| ping.0.clone())
+                        .unwrap_or_else(ping::disabled);
 
-                        // Record the headers received
-                        ping.record_non_data();
+                    // Record the headers received
+                    ping.record_non_data();
 
-                        let is_connect = req.method() == Method::CONNECT;
-                        let (mut parts, stream) = req.into_parts();
-                        let (req, connect_parts) = if !is_connect {
-                            (
-                                Request::from_parts(
-                                    parts,
-                                    IncomingBody::h2(stream, content_length.into(), ping),
-                                ),
-                                None,
-                            )
-                        } else {
-                            if content_length.is_some_and(|len| len != 0) {
-                                warn!("h2 connect request with non-zero body not supported");
-                                respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
-                                return Poll::Ready(Ok(()));
-                            }
-                            let (pending, upgrade) = upgrade::pending();
-                            parts.extensions.insert(upgrade);
-                            (
-                                Request::from_parts(parts, IncomingBody::empty()),
-                                Some(ConnectParts {
-                                    pending,
-                                    ping,
-                                    recv_stream: stream,
-                                }),
-                            )
-                        };
-
-                        let serve_span = trace_root_span!(
-                            "h2::stream",
-                            otel.kind = "server",
-                            http.request.method = %req.method().as_str(),
-                            url.full = %req.uri(),
-                            url.path = %req.uri().path(),
-                            url.query = req.uri().query().unwrap_or_default(),
-                            url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
-                            network.protocol.name = "http",
-                            network.protocol.version = version_as_protocol_version(req.version()),
-                        );
-
-                        let fut = H2Stream::new(
-                            service.serve_http(req),
-                            connect_parts,
-                            respond,
-                            self.date_header,
-                        );
-
-                        exec.spawn_task(fut.instrument(serve_span));
-                    }
-                    Some(Err(e)) => {
-                        return Poll::Ready(Err(crate::Error::new_h2(e)));
-                    }
-                    None => {
-                        // no more incoming streams...
-                        if let Some((ref ping, _)) = self.ping {
-                            ping.ensure_not_timed_out()?;
+                    let is_connect = req.method() == Method::CONNECT;
+                    let (mut parts, stream) = req.into_parts();
+                    let (req, connect_parts) = if !is_connect {
+                        (
+                            Request::from_parts(
+                                parts,
+                                IncomingBody::h2(stream, content_length.into(), ping),
+                            ),
+                            None,
+                        )
+                    } else {
+                        if content_length.is_some_and(|len| len != 0) {
+                            warn!("h2 connect request with non-zero body not supported");
+                            respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
+                            return Poll::Ready(Ok(()));
                         }
+                        let (pending, upgrade) = upgrade::pending();
+                        parts.extensions.insert(upgrade);
+                        (
+                            Request::from_parts(parts, IncomingBody::empty()),
+                            Some(ConnectParts {
+                                pending,
+                                ping,
+                                recv_stream: stream,
+                            }),
+                        )
+                    };
 
-                        trace!("incoming connection complete");
-                        return Poll::Ready(Ok(()));
+                    let serve_span = trace_root_span!(
+                        "h2::stream",
+                        otel.kind = "server",
+                        http.request.method = %req.method().as_str(),
+                        url.full = %req.uri(),
+                        url.path = %req.uri().path(),
+                        url.query = req.uri().query().unwrap_or_default(),
+                        url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        network.protocol.name = "http",
+                        network.protocol.version = version_as_protocol_version(req.version()),
+                    );
+
+                    let serve_fut = {
+                        let service = service.clone();
+                        async move { service.serve(req).await }
+                    };
+
+                    let fut = H2Stream::new(
+                        serve_fut,
+                        connect_parts,
+                        respond,
+                        self.date_header,
+                        exec.clone(),
+                    );
+
+                    exec.spawn_task(fut.instrument(serve_span));
+                }
+                Some(Err(e)) => {
+                    return Poll::Ready(Err(crate::Error::new_h2(e)));
+                }
+                None => {
+                    // no more incoming streams...
+                    if let Some((ref ping, _)) = self.ping {
+                        ping.ensure_not_timed_out()?;
                     }
+
+                    trace!("incoming connection complete");
+                    return Poll::Ready(Ok(()));
                 }
             }
         }
-
-        debug_assert!(
-            self.closing.is_some(),
-            "poll_server broke loop without closing"
-        );
-
-        ready!(self.conn.poll_closed(cx).map_err(crate::Error::new_h2))?;
-
-        Poll::Ready(Err(self.closing.take().expect("polled after error")))
     }
 
     fn poll_ping(&mut self, cx: &mut Context<'_>) {
         if let Some((_, ref mut estimator)) = self.ping {
             match estimator.poll(cx) {
                 Poll::Ready(ping::Ponged::SizeUpdate(wnd)) => {
-                    self.conn.set_target_window_size(wnd);
-                    let _ = self.conn.set_initial_window_size(wnd);
+                    if let Err(err) = self.conn.try_set_target_window_size(wnd) {
+                        let reason = err.reason().unwrap_or(crate::h2::Reason::INTERNAL_ERROR);
+                        debug!("target window size failed to update: {err}; reason = {reason}");
+                        self.conn.abrupt_shutdown(reason);
+                    }
+                    if let Err(err) = self.conn.try_set_initial_window_size(wnd) {
+                        let reason = err.reason().unwrap_or(crate::h2::Reason::INTERNAL_ERROR);
+                        trace!("initial window size failed to update: {err}; reason = {reason}");
+                        // this may fail for legit reasons...so we only log it
+                    }
                 }
                 Poll::Ready(ping::Ponged::KeepAliveTimedOut) => {
                     debug!("keep-alive timed out, closing connection");
@@ -355,6 +360,7 @@ pin_project! {
         #[pin]
         state: H2StreamState<F, B>,
         date_header: bool,
+        exec: Executor,
     }
 }
 
@@ -397,11 +403,13 @@ where
         connect_parts: Option<ConnectParts>,
         respond: SendResponse<SendBuf<B::Data>>,
         date_header: bool,
+        exec: Executor,
     ) -> Self {
         Self {
             reply: respond,
             state: H2StreamState::Service { fut, connect_parts },
             date_header,
+            exec,
         }
     }
 }
@@ -425,8 +433,8 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     E: Into<BoxError>,
 {
-    fn poll2(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
-        let mut me = self.project();
+    fn poll2(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
+        let mut me = self.as_mut().project();
         loop {
             let next = match me.state.as_mut().project() {
                 H2StreamStateProj::Service {
@@ -482,16 +490,18 @@ where
                                 "successful response to CONNECT request disallows content-length header"
                             );
                         }
+                        let extensions = res.extensions().clone();
                         let send_stream = reply!(me, res, false);
-                        connect_parts.pending.fulfill(Upgraded::new(
-                            H2Upgraded {
-                                ping: connect_parts.ping,
-                                recv_stream: connect_parts.recv_stream,
-                                send_stream: unsafe { UpgradedSendStream::new(send_stream) },
-                                buf: Bytes::new(),
-                            },
-                            Bytes::new(),
-                        ));
+                        let (h2_up, up_task) = super::upgrade::pair(
+                            send_stream,
+                            connect_parts.recv_stream,
+                            connect_parts.ping,
+                            extensions,
+                        );
+                        connect_parts
+                            .pending
+                            .fulfill(Upgraded::new(h2_up, Bytes::new()));
+                        self.exec.spawn_task(up_task);
                         return Poll::Ready(Ok(()));
                     }
 

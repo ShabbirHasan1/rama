@@ -23,14 +23,14 @@ use rama::{
     telemetry::tracing::{self, Instrument},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     ua::profile::UserAgentDatabase,
-    udp::UdpSocket,
+    udp::bind_udp,
 };
 
 use clap::{Args, ValueEnum};
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::sync::mpsc::Sender;
 
-use crate::utils::{http::HttpVersion, tls::new_server_config};
+use crate::utils::{http::HttpVersion, tls::try_new_server_config};
 
 #[derive(Debug, Clone, Args)]
 /// rama echo service (rich https echo or else raw tcp/udp bytes)
@@ -122,18 +122,21 @@ pub async fn run(
     etx: Sender<OpaqueError>,
     cfg: CliCommandEcho,
 ) -> Result<(), BoxError> {
-    let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https).then(|| {
-        tracing::info!("create tls server config...");
-        new_server_config(matches!(cfg.mode, Mode::Http | Mode::Https).then(|| {
-            match cfg.http_version {
-                HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                HttpVersion::Auto => {
-                    vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-                }
-            }
-        }))
-    });
+    let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https)
+        .then(|| {
+            tracing::info!("create tls server config...");
+            try_new_server_config(
+                matches!(cfg.mode, Mode::Http | Mode::Https).then(|| match cfg.http_version {
+                    HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+                    HttpVersion::Auto => {
+                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                    }
+                }),
+                Executor::graceful(graceful.clone()),
+            )
+        })
+        .transpose()?;
 
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
@@ -156,6 +159,7 @@ async fn bind_echo_http_service(
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
 ) -> Result<(), OpaqueError> {
+    let exec = Executor::graceful(graceful);
     let tcp_service = EchoServiceBuilder::new()
         .with_concurrent(cfg.concurrent.unwrap_or_default())
         .with_timeout(Duration::from_secs(cfg.timeout.unwrap_or(300)))
@@ -163,8 +167,8 @@ async fn bind_echo_http_service(
         .maybe_with_http_version(cfg.http_version.into())
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_config)
-        .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
-        .build(Executor::graceful(graceful.clone()))
+        .with_user_agent_database(Arc::new(UserAgentDatabase::try_embedded()?))
+        .build(exec.clone())
         .map_err(OpaqueError::from_boxed)
         .context("build http(s) echo service")?;
 
@@ -172,7 +176,7 @@ async fn bind_echo_http_service(
         "starting http(s) echo service: bind interface = {:?}",
         cfg.bind
     );
-    let tcp_listener = TcpListener::build()
+    let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -185,7 +189,7 @@ async fn bind_echo_http_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -193,7 +197,7 @@ async fn bind_echo_http_service(
         );
 
         tcp_listener
-            .serve_graceful(guard, tcp_service)
+            .serve(Arc::new(tcp_service))
             .instrument(span)
             .await;
     });
@@ -206,6 +210,7 @@ async fn bind_echo_tcp_service(
     cfg: CliCommandEcho,
     maybe_tls_config: Option<ServerConfig>,
 ) -> Result<(), OpaqueError> {
+    let exec = Executor::graceful(graceful);
     if cfg.ws {
         return Err(OpaqueError::from_display(
             "websocket support is only possible in http(s) mode",
@@ -262,7 +267,7 @@ async fn bind_echo_tcp_service(
     let echo_svc = middleware.into_layer(EchoService::new());
 
     tracing::info!("starting TCP echo service: bind interface = {:?}", cfg.bind);
-    let tcp_listener = TcpListener::build()
+    let tcp_listener = TcpListener::build(exec.clone())
         .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
@@ -275,17 +280,14 @@ async fn bind_echo_tcp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "tcp");
 
-    graceful.into_spawn_task_fn(async move |guard| {
+    exec.spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
             "tcp echo service ready: bind interface = {}", cfg.bind,
         );
 
-        tcp_listener
-            .serve_graceful(guard, echo_svc)
-            .instrument(span)
-            .await;
+        tcp_listener.serve(echo_svc).instrument(span).await;
     });
 
     Ok(())
@@ -324,7 +326,7 @@ async fn bind_echo_udp_service(
     }
 
     tracing::info!("starting UDP echo service: bind interface = {:?}", cfg.bind);
-    let udp_socket = UdpSocket::bind(cfg.bind.clone())
+    let udp_socket = bind_udp(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind UDP echo service socket")?;
@@ -360,9 +362,13 @@ async fn bind_echo_udp_service(
                 let permit = match semaphore.acquire().await {
                     Ok(permit) => permit,
                     Err(err) => {
-                        etx.send(err.context("acquire concurrency permit"))
-                            .await
-                            .unwrap();
+                        let err_str = err.to_string();
+                        if let Err(err) = etx.send(err.context("acquire concurrency permit")).await
+                        {
+                            tracing::error!(
+                                "failed to send 'concurrency permit' error ('{err_str}') over channel: err = {err}"
+                            );
+                        }
                         return;
                     }
                 };
@@ -373,9 +379,13 @@ async fn bind_echo_udp_service(
                         (len, addr)
                     }
                     Err(err) => {
-                        etx.send(err.context("receive bytes from udp socket"))
-                            .await
-                            .unwrap();
+                        let err_str = err.to_string();
+                        if let Err(err) = etx.send(err.context("receive bytes from udp socket"))
+                            .await {
+                                tracing::error!(
+                                    "failed to send 'udp socket I/O on recv' error ('{err_str}') over channel: err = {err}"
+                                );
+                            }
                         return;
                     }
                 };

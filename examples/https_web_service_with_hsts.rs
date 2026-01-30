@@ -38,7 +38,11 @@ use rama::{
     net::tls::server::SelfSignedData,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 #[cfg(feature = "boring")]
@@ -53,12 +57,11 @@ use rama::{
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
-use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -88,26 +91,26 @@ async fn main() {
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     let tls_service_data = {
-        TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
+        TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
         .expect("self signed acceptor data")
         .with_alpn_protocols_http_auto()
-        .with_env_key_logger()
+        .try_with_env_key_logger()
         .expect("with env key logger")
         .build()
     };
 
     // create http service
     shutdown.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+        let exec = Executor::graceful(guard);
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62043")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62043");
 
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
                 AddRequiredResponseHeadersLayer::default(),
@@ -115,33 +118,32 @@ async fn main() {
                 .into_layer(RedirectHttpToHttps::new().with_overwrite_port(62044)),
         );
 
-        tcp_service.serve_graceful(guard, http_service).await;
+        tcp_service.serve(http_service).await;
     });
 
     // create https service
     shutdown.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+        let exec = Executor::graceful(guard);
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62044")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62044");
 
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(exec).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 AddRequiredResponseHeadersLayer::default(),
                 SetResponseHeaderLayer::if_not_present_typed(
-                    StrictTransportSecurity::excluding_subdomains(Duration::from_secs(31536000)),
+                    StrictTransportSecurity::excluding_subdomains_for_max_seconds(31536000),
                 ),
             )
-                .into_layer(Router::new().get("/", Html(r##"<h1>Hello HSTS</h1>"##.to_owned()))),
-        );
+                .into_layer(
+                    Router::new().with_get("/", Html(r##"<h1>Hello HSTS</h1>"##.to_owned())),
+                ),
+        ));
 
         tcp_service
-            .serve_graceful(
-                guard,
-                TlsAcceptorLayer::new(tls_service_data).into_layer(http_service),
-            )
+            .serve(TlsAcceptorLayer::new(tls_service_data).into_layer(http_service))
             .await;
     });
 

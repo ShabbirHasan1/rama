@@ -31,16 +31,22 @@
 //! ```
 
 use rama::{
-    net::user::Basic, proxy::socks5::Socks5Acceptor, tcp::server::TcpListener,
-    telemetry::tracing::level_filters::LevelFilter,
+    net::user::credentials::basic,
+    proxy::socks5::Socks5Acceptor,
+    rt::Executor,
+    tcp::server::TcpListener,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -50,13 +56,14 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62021")
+    let tcp_service = TcpListener::bind("127.0.0.1:62021", exec)
         .await
         .expect("bind proxy to 127.0.0.1:62021");
-    let socks5_acceptor = Socks5Acceptor::default()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
-    graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, socks5_acceptor));
+    let socks5_acceptor =
+        Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
+    graceful.spawn_task(tcp_service.serve(socks5_acceptor));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(30))

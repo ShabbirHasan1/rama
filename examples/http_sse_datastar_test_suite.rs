@@ -1,8 +1,6 @@
 //! Rama's implementation of the Datastar SDK Test suite,
 //! used to verify if the rama datastar module is datastar-spec compliant.
 //!
-//! Learn more at <https://github.com/starfederation/datastar/tree/main/sdk/test>.
-//!
 //! ```sh
 //! cargo run --example http_sse_datastar_test_suite --features=http-full
 //! ```
@@ -11,6 +9,20 @@
 //!
 //! The server will start and listen on `:62036`.
 //! With this setup you can now run the test suite runners from the datastar repo.
+//!
+//! You can run all tests, assuming Go (the language) is installed
+//! on your machine as follows:
+//!
+//! ```sh
+//! go run \
+//!     github.com/starfederation/datastar/sdk/tests/cmd/datastar-sdk-tests@latest \
+//!     -server http://localhost:62036
+//! ```
+//!
+//! If all is well it will end with process exit code `0`
+//! and output the message "PASS".
+//!
+//! Learn more at <https://github.com/starfederation/datastar/tree/main/sdk/tests>.
 
 use rama::{
     Layer,
@@ -32,15 +44,18 @@ use rama::{
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -50,8 +65,9 @@ async fn main() {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+    let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62036))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62036), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -62,19 +78,15 @@ async fn main() {
         "http's tcp listener ready to serve",
     );
 
-    graceful.spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard.clone());
-
-        let router = Arc::new(Router::new().match_route(
+    graceful.spawn_task(async {
+        let router = Arc::new(Router::new().with_match_route(
             "/test",
             HttpMatcher::method_get().or_method_post(),
             handlers::test,
         ));
 
         let app = (TraceLayer::new_for_http()).into_layer(router);
-        listener
-            .serve_graceful(guard, HttpServer::auto(exec).service(app))
-            .await;
+        listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
     graceful
@@ -89,6 +101,7 @@ pub mod handlers {
         ElementPatchMode, ExecuteScript, PatchElements,
         execute_script::{ScriptAttribute, ScriptType},
     };
+    use rama_utils::str::NonEmptyStr;
     use serde::Deserialize;
     use serde_json::{Map, Value};
 
@@ -104,7 +117,7 @@ pub mod handlers {
     pub enum TestCaseEvent {
         #[serde(alias = "executeScript")]
         ExecuteScript {
-            script: String,
+            script: NonEmptyStr,
             #[serde(alias = "eventId")]
             event_id: Option<String>,
             #[serde(alias = "retryDuration")]
@@ -115,12 +128,12 @@ pub mod handlers {
         },
         #[serde(rename = "patchElements")]
         PatchElements {
-            elements: Option<String>,
+            elements: Option<NonEmptyStr>,
             #[serde(alias = "eventId")]
             event_id: Option<String>,
             #[serde(alias = "retryDuration")]
             retry_duration: Option<u64>,
-            selector: Option<String>,
+            selector: Option<NonEmptyStr>,
             mode: Option<String>,
             #[serde(alias = "useViewTransition")]
             use_view_transition: Option<bool>,
@@ -144,7 +157,7 @@ pub mod handlers {
             KeepAlive::new(),
             stream_fn(async |mut yielder| {
                 for event in test_case.events {
-                    let sse_event = match event {
+                    let sse_event_result = match event {
                         TestCaseEvent::ExecuteScript {
                             script,
                             event_id,
@@ -152,8 +165,8 @@ pub mod handlers {
                             attributes,
                             auto_remove,
                         } => {
-                            let mut event = ExecuteScript {
-                                script: script.into(),
+                            ExecuteScript {
+                                script,
                                 auto_remove,
                                 attributes: attributes.map(|attributes| {
                                     attributes.into_iter().filter_map(|(key, value)| match key.as_str() {
@@ -185,16 +198,18 @@ pub mod handlers {
                                         _ => Some(ScriptAttribute::Custom { key, value: Some(value.to_string().trim_matches('"').to_owned()) }),
                                     }).collect()
                                 }),
-                            }.into_datastar_event();
-                            if let Some(id) = event_id
-                                && let Err(err) = event.try_set_id(id)
-                            {
-                                tracing::error!("failed to set id of event: {err}");
-                            }
-                            if let Some(retry) = retry_duration {
-                                event.set_retry(retry);
-                            }
-                            event
+                            }.try_into_datastar_event()
+                            .map(|mut event| {
+                                if let Some(id) = event_id
+                                    && let Err(err) = event.try_set_id(id)
+                                {
+                                    tracing::error!("failed to set id of event: {err}");
+                                }
+                                if let Some(retry) = retry_duration {
+                                    event.set_retry(retry);
+                                }
+                                event
+                            })
                         }
                         TestCaseEvent::PatchElements {
                             elements,
@@ -204,9 +219,9 @@ pub mod handlers {
                             selector,
                             use_view_transition,
                         } => {
-                            let mut event = PatchElements {
-                                elements: elements.map(Into::into),
-                                selector: selector.map(Into::into),
+                            PatchElements {
+                                elements,
+                                selector,
                                 mode: match mode.as_deref().unwrap_or_default() {
                                     "inner" => ElementPatchMode::Inner,
                                     "remove" => ElementPatchMode::Remove,
@@ -219,16 +234,18 @@ pub mod handlers {
                                 },
                                 use_view_transition: use_view_transition.unwrap_or_default(),
                             }
-                            .into_datastar_event();
-                            if let Some(id) = event_id
-                                && let Err(err) = event.try_set_id(id)
-                            {
-                                tracing::error!("failed to set id of event: {err}");
-                            }
-                            if let Some(retry) = retry_duration {
-                                event.set_retry(retry);
-                            }
-                            event
+                            .try_into_datastar_event()
+                            .map(|mut event| {
+                                if let Some(id) = event_id
+                                    && let Err(err) = event.try_set_id(id)
+                                {
+                                    tracing::error!("failed to set id of event: {err}");
+                                }
+                                if let Some(retry) = retry_duration {
+                                    event.set_retry(retry);
+                                }
+                                event
+                            })
                         }
                         TestCaseEvent::PatchSignals {
                             signals,
@@ -236,18 +253,18 @@ pub mod handlers {
                             event_id,
                             retry_duration,
                             only_if_missing,
-                        } => {
-                            let mut event = PatchSignals {
-                                signals: signals_raw.unwrap_or_else(|| {
-                                    signals
-                                        .map(|signals| {
-                                            serde_json::to_string(&signals).unwrap_or_default()
-                                        })
-                                        .unwrap_or_default()
-                                }),
-                                only_if_missing: only_if_missing.unwrap_or_default(),
-                            }
-                            .into_datastar_event();
+                        } => PatchSignals {
+                            signals: signals_raw.unwrap_or_else(|| {
+                                signals
+                                    .map(|signals| {
+                                        serde_json::to_string(&signals).unwrap_or_default()
+                                    })
+                                    .unwrap_or_default()
+                            }),
+                            only_if_missing: only_if_missing.unwrap_or_default(),
+                        }
+                        .try_into_datastar_event()
+                        .map(|mut event| {
                             if let Some(id) = event_id
                                 && let Err(err) = event.try_set_id(id)
                             {
@@ -257,10 +274,10 @@ pub mod handlers {
                                 event.set_retry(retry);
                             }
                             event
-                        }
+                        }),
                     };
 
-                    yielder.yield_item(Ok::<_, Infallible>(sse_event)).await;
+                    yielder.yield_item(sse_event_result).await;
                 }
             }),
         ))

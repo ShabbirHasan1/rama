@@ -14,20 +14,24 @@
 
 use rama::{
     extensions::Extensions,
-    net::{address::SocketAddress, user::Basic},
+    net::{address::SocketAddress, user::credentials::basic},
     proxy::socks5::{
         Socks5Acceptor, Socks5Client, client::bind::BindOutput, server::DefaultBinder,
     },
+    rt::Executor,
     tcp::{client::default_tcp_connect, server::TcpListener},
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
 };
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -39,11 +43,12 @@ async fn main() {
     let socks5_socket_addr = spawn_socks5_server().await;
 
     let ext = Extensions::default();
-    let (proxy_client_stream, _) = default_tcp_connect(&ext, socks5_socket_addr.into())
-        .await
-        .expect("establish connection to socks5 server (from client)");
+    let (proxy_client_stream, _) =
+        default_tcp_connect(&ext, socks5_socket_addr.into(), Executor::default())
+            .await
+            .expect("establish connection to socks5 server (from client)");
 
-    let socks5_client = Socks5Client::new().with_auth(Basic::new_static("john", "secret"));
+    let socks5_client = Socks5Client::new().with_auth(basic!("john", "secret"));
 
     let binder = socks5_client
         .handshake_bind(proxy_client_stream, None)
@@ -55,7 +60,7 @@ async fn main() {
     tokio::spawn(async move {
         // the server application is supposed to do this,
         // after it received the selected bind address from the client
-        let (mut stream, _) = default_tcp_connect(&ext, bind_addr.into())
+        let (mut stream, _) = default_tcp_connect(&ext, bind_addr.into(), Executor::default())
             .await
             .expect("establish connection to socks5 server (from server)");
 
@@ -103,7 +108,7 @@ async fn main() {
 }
 
 async fn spawn_socks5_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(63010))
+    let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(63010), Executor::default())
         .await
         .expect("bind socks5 BIND proxy on open port");
 
@@ -112,8 +117,8 @@ async fn spawn_socks5_server() -> SocketAddress {
         .expect("get bind address of socks5 proxy server")
         .into();
 
-    let socks5_acceptor = Socks5Acceptor::new()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer())
+    let socks5_acceptor = Socks5Acceptor::new(Executor::default())
+        .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_binder(DefaultBinder::default().with_bind_interface(SocketAddress::local_ipv4(0)));
 
     tokio::spawn(tcp_service.serve(socks5_acceptor));

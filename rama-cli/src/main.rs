@@ -2,7 +2,11 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 use clap::{Parser, Subcommand};
 
@@ -51,21 +55,39 @@ async fn main() {
     #[allow(clippy::print_stdout)]
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        Err(err) if err.kind() == clap::error::ErrorKind::DisplayHelp => {
-            if err.render().to_string().contains("rama <COMMAND>") {
-                let _ = err.print();
-                println!();
-                println!("When invoked without a subcommand, `rama` executes the `send` command.");
-                println!("Refer to the `send` command section below.");
-                println!();
-                CliDefault::parse_from(["rama", "--help"]);
-                unreachable!("previous statement should exit");
-            } else {
-                err.exit()
+        Err(err) => match err.kind() {
+            clap::error::ErrorKind::DisplayHelp => {
+                if err.render().to_string().contains("rama <COMMAND>") {
+                    let _ = err.print();
+                    println!();
+                    println!(
+                        "When invoked without a subcommand, `rama` executes the `send` command."
+                    );
+                    println!("Refer to the `send` command section below.");
+                    println!();
+                    CliDefault::parse_from(["rama", "--help"]);
+                    unreachable!("previous statement should exit");
+                } else {
+                    err.exit()
+                }
             }
-        }
-        Err(_) => Cli {
-            cmds: CliCommands::Send(CliDefault::parse().cmd),
+            clap::error::ErrorKind::DisplayVersion => err.exit(),
+            _ => {
+                if std::env::args()
+                    .nth(1)
+                    .map(|s| {
+                        ["-V", "--version", "-h", "--help", "send", "serve", "probe"]
+                            .contains(&s.trim())
+                    })
+                    .unwrap_or_default()
+                {
+                    err.exit()
+                } else {
+                    Cli {
+                        cmds: CliCommands::Send(CliDefault::parse().cmd),
+                    }
+                }
+            }
         },
     };
 

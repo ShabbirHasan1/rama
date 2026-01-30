@@ -1,4 +1,5 @@
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use rama_core::telemetry::tracing;
 use rama_http_types::header;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address::Host;
@@ -48,7 +49,12 @@ impl HeaderDecode for XForwardedHost {
 impl HeaderEncode for XForwardedHost {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
-        values.extend(Some(HeaderValue::try_from(s).unwrap()))
+        match HeaderValue::try_from(s) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode x-forwarded-host as header value: {err}")
+            }
+        }
     }
 }
 
@@ -57,14 +63,14 @@ impl XForwardedHost {
     /// Get a reference to the [`Host`] of this [`XForwardedHost`].
     #[must_use]
     pub fn host(&self) -> &Host {
-        self.0.host()
+        &self.0.0.host
     }
 
     #[inline]
     /// Get a copy of the `port` of this [`XForwardedHost`] if it is set.
     #[must_use]
     pub fn port(&self) -> Option<u16> {
-        self.0.port()
+        self.0.0.port
     }
 
     /// Return a reference to the inner data of this header.
@@ -95,7 +101,7 @@ impl super::ForwardHeader for XForwardedHost {
         I: IntoIterator<Item = &'a ForwardedElement>,
     {
         let el = input.into_iter().next()?;
-        let host = el.ref_forwarded_host().cloned()?;
+        let host = el.forwarded_host().cloned()?;
         Some(Self(host))
     }
 }
@@ -108,7 +114,7 @@ impl Iterator for XForwardedHostIterator {
     type Item = ForwardedElement;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.take().map(ForwardedElement::forwarded_host)
+        self.0.take().map(ForwardedElement::new_forwarded_host)
     }
 }
 

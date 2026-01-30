@@ -48,6 +48,7 @@
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy with a dynamic rustls config
+
 use rama::{
     Layer,
     error::{ErrorContext, OpaqueError},
@@ -57,26 +58,26 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::level_filters::LevelFilter,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::rustls::{
-        dep::{
-            pemfile,
-            pki_types::{CertificateDer, PrivateKeyDer},
-        },
+        dep::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
         server::DynamicConfigProvider,
         server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },
 };
 
-use tokio::time::sleep;
-
 // everything else is provided by the standard library, community crates or tokio
-use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
+use std::{convert::Infallible, sync::Arc, time::Duration};
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -91,7 +92,7 @@ async fn main() {
     // create http server
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(http_service));
+        let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service = (
             ConsumeErrLayer::default(),
@@ -99,10 +100,10 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind("127.0.0.1:64804")
+        TcpListener::bind("127.0.0.1:64804", exec)
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 
@@ -136,7 +137,7 @@ impl DynamicConfigProvider for DynamicConfig {
         let config = TlsAcceptorDataBuilder::new(cert_chain, key_der)
             .unwrap()
             .with_alpn_protocols_http_auto()
-            .with_env_key_logger()
+            .try_with_env_key_logger()
             .expect("with env key logger")
             .into_rustls_config();
 
@@ -168,13 +169,11 @@ fn parse_certificate(
     cert_chain: &[u8],
     private_key: &[u8],
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
-    let cert_chain = pemfile::certs(&mut BufReader::new(cert_chain))
+    let cert_chain = CertificateDer::pem_slice_iter(cert_chain)
         .collect::<Result<Vec<_>, _>>()
         .context("collect cert chain")?;
 
-    let priv_key_der = pemfile::private_key(&mut BufReader::new(private_key))
-        .context("load private key")?
-        .context("non empty key")?;
+    let priv_key_der = PrivateKeyDer::from_pem_slice(private_key).context("load private key")?;
 
     Ok((cert_chain, priv_key_der))
 }

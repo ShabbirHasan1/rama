@@ -1,4 +1,5 @@
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
+use rama_core::telemetry::tracing;
 use rama_http_types::header;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::forwarded::ForwardedElement;
@@ -56,7 +57,13 @@ impl HeaderEncode for XForwardedFor {
                 util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
             })
         );
-        values.extend(Some(HeaderValue::try_from(s).unwrap()))
+
+        match HeaderValue::try_from(s) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!("failed to encode x-forwarded-for as header value: {err}")
+            }
+        }
     }
 }
 
@@ -76,7 +83,7 @@ impl super::ForwardHeader for XForwardedFor {
     {
         let vec: Vec<_> = input
             .into_iter()
-            .filter_map(|el| el.ref_forwarded_for()?.ip())
+            .filter_map(|el| el.forwarded_for()?.ip())
             .collect();
         if vec.is_empty() {
             None
@@ -110,7 +117,7 @@ impl Iterator for XForwardedForIterator {
     type Item = ForwardedElement;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(ForwardedElement::forwarded_for)
+        self.0.next().map(ForwardedElement::new_forwarded_for)
     }
 }
 

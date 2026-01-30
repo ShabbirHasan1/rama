@@ -15,9 +15,15 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 pub mod body;
+use std::sync::Arc;
+
 pub use body::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
 };
@@ -26,7 +32,6 @@ pub mod request;
 pub mod response;
 pub use crate::dep::hyperium::http::method;
 pub use crate::dep::hyperium::http::status;
-pub use crate::dep::hyperium::http::uri;
 pub use crate::dep::hyperium::http::version;
 
 #[doc(inline)]
@@ -42,9 +47,17 @@ pub use crate::response::Response;
 #[doc(inline)]
 pub use crate::status::StatusCode;
 #[doc(inline)]
-pub use crate::uri::{Scheme, Uri};
-#[doc(inline)]
 pub use crate::version::Version;
+
+#[derive(Debug, Clone)]
+/// Extension type that can be inserted in case a Uri is modified as part of nested routers
+pub struct OriginalRouterUri(pub Arc<Uri>);
+
+pub mod uri;
+#[doc(inline)]
+pub use uri::{Scheme, Uri, try_to_strip_path_prefix_from_uri};
+
+// TODO: move URI to rama-net :) Somehow...
 
 pub mod proto;
 
@@ -91,6 +104,12 @@ pub mod header {
         "client-ip",
         "x-client-ip",
         "x-real-ip",
+    ];
+
+    // extra access control headers
+    static_header![
+        "access-control-allow-private-network",
+        "access-control-request-private-network",
     ];
 
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.

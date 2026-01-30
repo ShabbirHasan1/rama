@@ -1,8 +1,8 @@
-//! Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
+//! Middleware to hijack an input to a [`Service`] which match using a [`Matcher`].
 //!
-//! Common usecases for hijacking requests are:
-//! - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
-//! - Block requests based on the conditions specified in the [`Matcher`] (and thus act like a Firewall).
+//! Common usecases for hijacking inputs are:
+//! - Redirecting inputs to a different service based on the conditions specified in the [`Matcher`].
+//! - Block inputs based on the conditions specified in the [`Matcher`] (and thus act like a Firewall).
 //!
 //! [`Service`]: crate
 //! [`Matcher`]: crate::matcher::Matcher
@@ -10,39 +10,19 @@
 use crate::{Layer, Service, extensions::Extensions, extensions::ExtensionsMut, matcher::Matcher};
 use rama_utils::macros::define_inner_service_accessors;
 
-/// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
+/// Middleware to hijack inputs to a [`Service`] which match using a [`Matcher`].
 ///
-/// Common usecases for hijacking requests are:
-/// - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
-/// - Block requests based on the conditions specified in the [`Matcher`] (and thus act like a Firewall).
+/// Common usecases for hijacking inputs are:
+/// - Redirecting inputs to a different service based on the conditions specified in the [`Matcher`].
+/// - Block inputs based on the conditions specified in the [`Matcher`] (and thus act like a Firewall).
 ///
 /// [`Service`]: crate
 /// [`Matcher`]: crate::matcher::Matcher
+#[derive(Debug, Clone)]
 pub struct HijackService<S, H, M> {
     inner: S,
     hijack: H,
     matcher: M,
-}
-
-impl<S, H, M> std::fmt::Debug for HijackService<S, H, M> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HijackService").finish()
-    }
-}
-
-impl<S, H, M> Clone for HijackService<S, H, M>
-where
-    S: Clone,
-    H: Clone,
-    M: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            hijack: self.hijack.clone(),
-            matcher: self.matcher.clone(),
-        }
-    }
 }
 
 impl<S, H, M> HijackService<S, H, M> {
@@ -58,60 +38,42 @@ impl<S, H, M> HijackService<S, H, M> {
     define_inner_service_accessors!();
 }
 
-impl<S, H, M, Request> Service<Request> for HijackService<S, H, M>
+impl<S, H, M, Input> Service<Input> for HijackService<S, H, M>
 where
-    S: Service<Request>,
-    H: Service<Request, Response: Into<S::Response>, Error: Into<S::Error>>,
-    M: Matcher<Request>,
-    Request: Send + ExtensionsMut + 'static,
+    S: Service<Input>,
+    H: Service<Input, Output: Into<S::Output>, Error: Into<S::Error>>,
+    M: Matcher<Input>,
+    Input: Send + ExtensionsMut + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
         let mut ext = Extensions::new();
-        if self.matcher.matches(Some(&mut ext), &req) {
-            req.extensions_mut().extend(ext);
-            match self.hijack.serve(req).await {
+        if self.matcher.matches(Some(&mut ext), &input) {
+            input.extensions_mut().extend(ext);
+            match self.hijack.serve(input).await {
                 Ok(response) => Ok(response.into()),
                 Err(err) => Err(err.into()),
             }
         } else {
-            self.inner.serve(req).await
+            self.inner.serve(input).await
         }
     }
 }
 
-/// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
+/// Middleware to hijack an inputs to a [`Service`] which match using a [`Matcher`].
 ///
-/// Common usecases for hijacking requests are:
-/// - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
-/// - Block requests based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
+/// Common usecases for hijacking inputs are:
+/// - Redirecting inputs to a different service based on the conditions specified in the [`Matcher`].
+/// - Block inputs based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
 ///
 /// [`Service`]: crate
 /// [`Matcher`]: crate::matcher::Matcher
+#[derive(Debug, Clone)]
 pub struct HijackLayer<H, M> {
     hijack: H,
     matcher: M,
-}
-
-impl<H, M> std::fmt::Debug for HijackLayer<H, M> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HijackLayer").finish()
-    }
-}
-
-impl<H, M> Clone for HijackLayer<H, M>
-where
-    H: Clone,
-    M: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            hijack: self.hijack.clone(),
-            matcher: self.matcher.clone(),
-        }
-    }
 }
 
 impl<H, M> HijackLayer<H, M> {

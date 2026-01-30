@@ -11,6 +11,46 @@ pub struct AcceptEncoding {
 
 impl AcceptEncoding {
     #[must_use]
+    pub fn new_gzip() -> Self {
+        Self {
+            gzip: true,
+            deflate: false,
+            br: false,
+            zstd: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_deflate() -> Self {
+        Self {
+            gzip: false,
+            deflate: true,
+            br: false,
+            zstd: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_br() -> Self {
+        Self {
+            gzip: false,
+            deflate: false,
+            br: true,
+            zstd: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_zstd() -> Self {
+        Self {
+            gzip: false,
+            deflate: false,
+            br: false,
+            zstd: true,
+        }
+    }
+
+    #[must_use]
     pub fn maybe_to_header_value(self) -> Option<HeaderValue> {
         let accept = match (self.gzip(), self.deflate(), self.br(), self.zstd()) {
             (true, true, true, false) => "gzip,deflate,br",
@@ -33,44 +73,32 @@ impl AcceptEncoding {
         Some(HeaderValue::from_static(accept))
     }
 
-    pub fn set_gzip(&mut self, enable: bool) {
-        self.gzip = enable;
+    rama_utils::macros::generate_set_and_with! {
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.gzip = enable;
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_gzip(mut self, enable: bool) -> Self {
-        self.gzip = enable;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.deflate = enable;
+            self
+        }
     }
 
-    pub fn set_deflate(&mut self, enable: bool) {
-        self.deflate = enable;
+    rama_utils::macros::generate_set_and_with! {
+        pub fn br(mut self, enable: bool) -> Self {
+            self.br = enable;
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_deflate(mut self, enable: bool) -> Self {
-        self.deflate = enable;
-        self
-    }
-
-    pub fn set_br(&mut self, enable: bool) {
-        self.br = enable;
-    }
-
-    #[must_use]
-    pub fn with_br(mut self, enable: bool) -> Self {
-        self.br = enable;
-        self
-    }
-
-    pub fn set_zstd(&mut self, enable: bool) {
-        self.zstd = enable;
-    }
-
-    #[must_use]
-    pub fn with_zstd(mut self, enable: bool) -> Self {
-        self.zstd = enable;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.zstd = enable;
+            self
+        }
     }
 }
 

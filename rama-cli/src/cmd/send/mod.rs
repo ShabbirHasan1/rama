@@ -1,6 +1,7 @@
 use rama::{
     error::{BoxError, OpaqueError},
-    utils::str::starts_with_ignore_ascii_case,
+    net::{address::ProxyAddress, user::Basic},
+    utils::str::{NonEmptyStr, starts_with_ignore_ascii_case},
 };
 
 use clap::Args;
@@ -9,6 +10,7 @@ use std::path::PathBuf;
 pub mod http;
 
 mod arg;
+mod layer;
 
 pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     if cfg.uri.is_empty() {
@@ -89,11 +91,11 @@ pub struct SendCommand {
 
     #[arg(long, short = 'x')]
     /// upstream proxy to use (can also be specified using PROXY env variable)
-    proxy: Option<String>,
+    proxy: Option<ProxyAddress>,
 
     #[arg(long, short = 'U')]
     /// upstream proxy user credentials to use (or overwrite)
-    proxy_user: Option<String>,
+    proxy_user: Option<Basic>,
 
     #[arg(long, short = 'u')]
     /// (HTTP) client authentication: `USER[:PASS]` | TOKEN,
@@ -219,6 +221,17 @@ pub struct SendCommand {
     /// for compatibility purposes. macOS is known to do this.
     ipv6: bool,
 
+    #[arg(long, value_name = "[host]|:[port]:addr[,addr]...")]
+    /// Provide custom address(es) to overwrite the DNS with.
+    ///
+    /// - if Host is empty or equal to `*` it will resolve _any_ host to the given Ips
+    /// - if Port is empty or equal to `*` it will use the dns overwrites for any port
+    /// - at least one Ip address is required (ipv4/ipv6), multiple are allowed as well
+    ///
+    /// Using this, you can make the requests(s) use a specified address and
+    /// prevent the otherwise normally resolved address to be used.
+    resolve: Option<arg::ResolveArg>,
+
     #[arg(long, short = 'H')]
     /// (HTTP) Extra header to include in information sent.
     /// When used within an HTTP request, it is added to the regular request headers.
@@ -242,5 +255,5 @@ pub struct SendCommand {
 
     #[arg(long, value_delimiter = ',')]
     /// (WebSocket) sub protocols to use
-    subprotocol: Option<Vec<String>>,
+    subprotocol: Option<Vec<NonEmptyStr>>,
 }

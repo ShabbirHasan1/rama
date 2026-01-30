@@ -13,7 +13,7 @@ use crate::net::tls::{
 };
 use crate::rt::Executor;
 use crate::telemetry::tracing;
-use crate::utils::str::NonEmptyString;
+use crate::utils::str::NonEmptyStr;
 use crate::{Service, combinators::Either, service::BoxService};
 
 use base64::Engine;
@@ -53,13 +53,16 @@ enum DomainAllowMode {
 
 impl CertIssuerHttpClient {
     /// Create a new [`CertIssuerHttpClient`] using the default [`EasyHttpWebClient`].
-    pub fn new(endpoint: Uri) -> Self {
-        Self::new_with_client(endpoint, EasyHttpWebClient::default().boxed())
+    pub fn new(exec: Executor, endpoint: Uri) -> Self {
+        Self::new_with_client(
+            endpoint,
+            EasyHttpWebClient::default_with_executor(exec).boxed(),
+        )
     }
 
     #[cfg(feature = "boring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
-    pub fn try_from_env() -> Result<Self, OpaqueError> {
+    pub fn try_from_env(exec: Executor) -> Result<Self, OpaqueError> {
         use crate::{
             Layer as _,
             http::{headers::Authorization, layer::set_header::SetRequestHeaderLayer},
@@ -76,35 +79,36 @@ impl CertIssuerHttpClient {
         let mut tls_config = TlsConnectorDataBuilder::new_http_auto();
 
         if let Ok(remote_ca_raw) = std::env::var("RAMA_TLS_REMOTE_CA") {
-            let mut store_builder = X509StoreBuilder::new().expect("build x509 store builder");
+            let mut store_builder = X509StoreBuilder::new().context("build x509 store builder")?;
             store_builder
                 .add_cert(
                     X509::from_pem(
                         &ENGINE
                             .decode(remote_ca_raw)
-                            .expect("base64 decode RAMA_TLS_REMOTE_CA")[..],
+                            .context("base64 decode RAMA_TLS_REMOTE_CA")?[..],
                     )
-                    .expect("load CA cert"),
+                    .context("load CA cert")?,
                 )
-                .expect("add CA cert to store builder");
+                .context("add CA cert to store builder")?;
             let store = store_builder.build();
             tls_config.set_server_verify_cert_store(Arc::new(store));
         }
 
-        let client = EasyHttpWebClient::builder()
+        let client = EasyHttpWebClient::connector_builder()
             .with_default_transport_connector()
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_boringssl(Some(Arc::new(tls_config)))
-            .with_default_http_connector()
-            .build();
+            .with_default_http_connector(exec)
+            .build_client();
 
-        let uri: Uri = uri_raw.parse().expect("RAMA_TLS_REMOTE to be a valid URI");
+        let uri: Uri = uri_raw.parse().context("parse RAMA_TLS_REMOTE as URI")?;
         let mut client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {
             Self::new_with_client(
                 uri,
                 SetRequestHeaderLayer::overriding_typed(Authorization::new(
-                    Bearer::new(auth_raw).expect("RAMA_TLS_REMOTE_AUTH to be a valid Bearer token"),
+                    Bearer::try_from(auth_raw)
+                        .context("try to create Bearer using RAMA_TLS_REMOTE_AUTH")?,
                 ))
                 .into_layer(client)
                 .boxed(),
@@ -115,7 +119,7 @@ impl CertIssuerHttpClient {
 
         if let Ok(allow_cn_csv_raw) = std::env::var("RAMA_TLS_REMOTE_CN_CSV") {
             for raw_cn_str in allow_cn_csv_raw.split(',') {
-                let cn: Domain = raw_cn_str.parse().expect("CN to be a valid domain");
+                let cn: Domain = raw_cn_str.parse().context("parse CN as a a valid domain")?;
                 client.set_allow_domain(cn);
             }
         }
@@ -145,9 +149,7 @@ impl CertIssuerHttpClient {
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
         pub fn allow_domain(mut self, domain: impl AsDomainRef) -> Self {
-            if let Some(parent) = domain.as_wildcard_parent() {
-                // unwrap should be fine given we were a wildcard to begin with
-                let domain = parent.try_as_wildcard().unwrap();
+            if let Some(parent) = domain.as_wildcard_parent() && let Ok(domain) = parent.try_as_wildcard() {
                 self.allow_list.get_or_insert_default().insert_domain(parent, DomainAllowMode::Parent(domain));
             } else {
                 self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Exact);
@@ -302,13 +304,13 @@ async fn fetch_certs(
 
     Ok(ServerAuthData {
         cert_chain: DataEncoding::Pem(
-            NonEmptyString::try_from(
+            NonEmptyStr::try_from(
                 String::from_utf8(crt).context("concert crt pem to utf8 string")?,
             )
             .context("convert crt utf8 string to non-empty")?,
         ),
         private_key: DataEncoding::Pem(
-            NonEmptyString::try_from(
+            NonEmptyStr::try_from(
                 String::from_utf8(key).context("concert private key pem to utf8 string")?,
             )
             .context("convert privatek key pem utf8 string to non-empty")?,
@@ -323,8 +325,9 @@ mod tests {
 
     #[test]
     fn test_issuer_kind_norm_cn() {
-        let issuer = CertIssuerHttpClient::new(Uri::from_static("http://example.com"))
-            .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
+        let issuer =
+            CertIssuerHttpClient::new(Executor::default(), Uri::from_static("http://example.com"))
+                .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
         for (input, expected) in [
             ("example.com", None),
             ("www.foo.com", Some("*.foo.com")),

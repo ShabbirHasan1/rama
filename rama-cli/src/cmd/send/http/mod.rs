@@ -1,6 +1,7 @@
 use rama::{
     Service,
     error::{BoxError, ErrorContext as _, OpaqueError},
+    utils::collections::NonEmptySmallVec,
 };
 
 use std::time::Duration;
@@ -39,7 +40,18 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
     let request = request::build(cfg, is_ws).await?;
 
     if is_ws {
-        ws::run(request, https_client, cfg.subprotocol.clone()).await?;
+        ws::run(
+            request,
+            https_client,
+            cfg.subprotocol
+                .clone()
+                .map(|p| {
+                    NonEmptySmallVec::from_slice(&p)
+                        .context("create non-empty-vec of sub protocols")
+                })
+                .transpose()?,
+        )
+        .await?;
     } else {
         let resp = https_client.serve(request).await?;
 

@@ -6,7 +6,6 @@ use rama_core::{
     stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
-use std::fmt;
 use tokio::io::AsyncReadExt;
 
 /// A [`Service`] router that can be used to support
@@ -14,6 +13,7 @@ use tokio::io::AsyncReadExt;
 ///
 /// By default non-tls traffic is rejected using [`RejectService`].
 /// Use [`TlsPeekRouter::with_fallback`] to configure the fallback service.
+#[derive(Debug, Clone)]
 pub struct TlsPeekRouter<T, F = RejectService<(), NoTlsRejectError>> {
     tls_acceptor: T,
     fallback: F,
@@ -42,35 +42,17 @@ impl<T> TlsPeekRouter<T> {
     }
 }
 
-impl<T: Clone, F: Clone> Clone for TlsPeekRouter<T, F> {
-    fn clone(&self) -> Self {
-        Self {
-            tls_acceptor: self.tls_acceptor.clone(),
-            fallback: self.fallback.clone(),
-        }
-    }
-}
-
-impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for TlsPeekRouter<T, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TlsPeekRouter")
-            .field("tls_acceptor", &self.tls_acceptor)
-            .field("fallback", &self.fallback)
-            .finish()
-    }
-}
-
-impl<Stream, Response, T, F> Service<Stream> for TlsPeekRouter<T, F>
+impl<Stream, Output, T, F> Service<Stream> for TlsPeekRouter<T, F>
 where
     Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
-    Response: Send + 'static,
-    T: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    Output: Send + 'static,
+    T: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
+    F: Service<TlsPeekStream<Stream>, Output = Output, Error: Into<BoxError>>,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)

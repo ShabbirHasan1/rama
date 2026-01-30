@@ -38,7 +38,7 @@
 //! You can for example test it using:
 //!
 //! ```sh
-//! rama ws -k \
+//! rama -k \
 //!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
 //!     wss://echo.ramaproxy.org
 //! ```
@@ -46,7 +46,7 @@
 //! Or use one of alternative sub protocols available in the echo server:
 //!
 //! ```sh
-//! rama ws -k \
+//! rama -k \
 //!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
 //!     --protocols echo-upper wss://echo.ramaproxy.org
 //! ```
@@ -58,22 +58,23 @@ use rama::{
     extensions::{ExtensionsMut, ExtensionsRef},
     futures::SinkExt,
     http::{
-        Body, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         headers::{
-            HeaderEncode, HeaderMapExt as _, SecWebSocketExtensions, TypedHeader,
+            HeaderMapExt as _, SecWebSocketExtensions, TypedHeader as _,
             sec_websocket_extensions::Extension,
         },
         io::upgrade,
         layer::{
-            compress_adapter::CompressAdaptLayer,
+            compression::CompressionLayer,
+            decompression::DecompressionLayer,
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
-            traffic_writer::{self, RequestWriterInspector},
+            traffic_writer::{self, RequestWriterLayer},
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
@@ -86,7 +87,7 @@ use rama::{
             protocol::{Role, WebSocketConfig},
         },
     },
-    layer::{AddExtensionLayer, ConsumeErrLayer},
+    layer::{AddInputExtensionLayer, ConsumeErrLayer},
     matcher::Matcher,
     net::{
         http::RequestContext,
@@ -97,19 +98,23 @@ use rama::{
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
-        user::Basic,
+        user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::{
         client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer,
         },
         profile::UserAgentDatabase,
@@ -118,17 +123,17 @@ use rama::{
 
 use itertools::Itertools;
 use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone)]
 struct State {
     mitm_tls_service_data: TlsAcceptorData,
     ua_db: Arc<UserAgentDatabase>,
+    exec: Executor,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -138,44 +143,45 @@ async fn main() -> Result<(), BoxError> {
         .init();
 
     let mitm_tls_service_data =
-        new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
-
-    let state = State {
-        mitm_tls_service_data,
-        ua_db: Arc::new(UserAgentDatabase::embedded()),
-    };
+        try_new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
 
     let graceful = rama::graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+    let exec = Executor::graceful(graceful.guard());
+    let state = State {
+        mitm_tls_service_data,
+        ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
+        exec: exec.clone(),
+    };
+
+    graceful.spawn_task(async {
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62017")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
 
-        let exec = Executor::graceful(guard.clone());
-
         let http_mitm_service = new_http_mitm_proxy(&state);
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 UpgradeLayer::new(
+                    exec,
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
                 ),
             )
                 .into_layer(http_mitm_service),
-        );
+        ));
 
         tcp_service
-            .serve_graceful(
-                guard,
+            .serve(
                 (
-                    AddExtensionLayer::new(state),
+                    AddInputExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                 )
@@ -193,11 +199,11 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
+    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
         Ok(authority) => {
             tracing::info!(
-                server.address = %authority.host(),
-                server.port = %authority.port(),
+                server.address = %authority.host,
+                server.port = authority.port,
                 "accept CONNECT (lazy): insert proxy target into context",
             );
             req.extensions_mut().insert(ProxyTarget(authority));
@@ -226,14 +232,10 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
-    let executor = upgraded
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let executor = state.exec.clone();
 
     let mut http_tp = HttpServer::auto(executor);
-    http_tp.h2_mut().enable_connect_protocol();
+    http_tp.h2_mut().set_enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
 
@@ -241,26 +243,30 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
-    https_service.serve(upgraded).await.expect("infallible");
+    if let Err(err) = https_service.serve(upgraded).await {
+        tracing::error!("https service failed with an error: {err}");
+    }
 
     Ok(())
 }
 
 fn new_http_mitm_proxy(
     state: &State,
-) -> impl Service<Request, Response = Response, Error = Infallible> {
-    (
-        MapResponseBodyLayer::new(Body::new),
-        TraceLayer::new_for_http(),
-        ConsumeErrLayer::default(),
-        UserAgentEmulateLayer::new(state.ua_db.clone())
-            .try_auto_detect_user_agent(true)
-            .optional(true),
-        CompressAdaptLayer::default(),
-        AddRequiredRequestHeadersLayer::new(),
-        EmulateTlsProfileLayer::new(),
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+    Arc::new(
+        (
+            MapResponseBodyLayer::new(Body::new),
+            TraceLayer::new_for_http(),
+            ConsumeErrLayer::default(),
+            UserAgentEmulateLayer::new(state.ua_db.clone())
+                .with_try_auto_detect_user_agent(true)
+                .with_is_optional(true),
+            CompressionLayer::new(),
+            AddRequiredRequestHeadersLayer::new(),
+            EmulateTlsProfileLayer::new(),
+        )
+            .into_layer(service_fn(http_mitm_proxy)),
     )
-        .into_layer(service_fn(http_mitm_proxy))
 }
 
 async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
@@ -283,36 +289,36 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
-    let executor = req
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let state = req.extensions().get::<State>().unwrap();
+    let executor = state.exec.clone();
 
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
     // but instead have a pre-built one as a struct local
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
-        .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
+        .with_tls_support_using_boringssl_and_default_http_version(
+            Some(Arc::new(base_tls_config)),
+            Version::HTTP_11,
+        )
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector()
-        .with_svc_req_inspector((
-            UserAgentEmulateHttpRequestModifier::default(),
+        .with_default_http_connector(executor.clone())
+        .build_client()
+        .with_jit_layer((
+            UserAgentEmulateHttpRequestModifierLayer::default(),
             // these layers are for example purposes only,
             // best not to print requests like this in production...
             //
             // If you want to see the request that actually is send to the server
             // you also usually do not want it as a layer, but instead plug the inspector
             // directly JIT-style into your http (client) connector.
-            RequestWriterInspector::stdout_unbounded(
+            RequestWriterLayer::stdout_unbounded(
                 &executor,
                 Some(traffic_writer::WriterMode::Headers),
             ),
-        ))
-        .build();
+        ));
 
     if WebSocketMatcher::new().matches(None, &req) {
         return Ok(mitm_websocket(&client, req).await);
@@ -322,6 +328,8 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     let client = (
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
+        MapResponseBodyLayer::new(Body::new),
+        DecompressionLayer::new(),
     )
         .into_layer(client);
 
@@ -337,7 +345,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+fn try_new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_2,
@@ -355,7 +363,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
 
 async fn mitm_websocket<S>(client: &S, req: Request) -> Response
 where
-    S: Service<Request, Response = Response, Error = OpaqueError>,
+    S: Service<Request, Output = Response, Error: Into<BoxError>>,
 {
     tracing::debug!("detected websocket request: starting MITM WS upgrade...");
 
@@ -363,11 +371,10 @@ where
     let parts_copy = parts.clone();
 
     let req = Request::from_parts(parts, body);
-    let guard = req
-        .extensions()
-        .get::<Executor>()
-        .and_then(|exec| exec.guard())
-        .cloned();
+
+    let state = req.extensions().get::<State>().unwrap();
+    let guard = state.exec.guard().cloned();
+
     let cancel = async move {
         match guard {
             Some(guard) => guard.downgrade().into_cancelled().await,
@@ -420,7 +427,7 @@ where
     let mut ingress_socket_cfg: WebSocketConfig = Default::default();
     if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
         tracing::debug!("ingress request contains sec-websocket-extensions header");
-        if let Some(accept_pmd_cfg) = ingress_header.iter().find_map(|ext| {
+        if let Some(accept_pmd_cfg) = ingress_header.0.iter().find_map(|ext| {
             if let Extension::PerMessageDeflate(cfg) = ext {
                 Some(cfg.clone())
             } else {
@@ -429,10 +436,8 @@ where
         }) {
             tracing::debug!("use deflate ext for ingress ws cfg: {accept_pmd_cfg:?}");
             ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
-            let _ = response_parts.headers.insert(
-                SecWebSocketExtensions::name(),
-                SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg)
-                    .encode_to_value(),
+            response_parts.headers.typed_insert(
+                SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg),
             );
         } else {
             tracing::debug!(
@@ -454,17 +459,8 @@ where
 
         let ingress_socket = match upgrade::handle_upgrade(&request).await {
             Ok(upgraded) => {
-                let socket = AsyncWebSocket::from_raw_socket(
-                    upgraded,
-                    Role::Server,
-                    Some(ingress_socket_cfg),
-                )
-                .await;
-                // TODO in a place like this we dont really want to extend but instead prepend
-                // which probably means we should do it here, but it should have already happened
-                // socket.extensions_mut().extend(request.extensions().clone());
-                #[allow(clippy::let_and_return)]
-                socket
+                AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
+                    .await
             }
             Err(err) => {
                 tracing::error!("error in upgrading ingress websocket: {err:?}");

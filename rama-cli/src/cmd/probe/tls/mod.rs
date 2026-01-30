@@ -3,9 +3,10 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     net::{
-        address::Authority,
+        Protocol,
+        address::{HostWithOptPort, HostWithPort},
         client::{ConnectorService, EstablishedClientConnection},
         stream::Socket,
         tls::{
@@ -13,6 +14,7 @@ use rama::{
             client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
+    rt::Executor,
     tcp::{
         TcpStream,
         client::{Request, service::TcpConnector},
@@ -32,7 +34,7 @@ pub struct CliCommandTls {
     /// The address to connect to
     /// e.g. "example.com" or "example.com:8443"
     /// if no port is provided, the default port 443 will be used
-    address: String, // TODO: in future we need a rama-net type for something with opt-port
+    address: HostWithOptPort,
 
     #[arg(long, short = 'k')]
     /// Wether to skip certificate verification
@@ -41,19 +43,16 @@ pub struct CliCommandTls {
 
 /// Run the tls command
 pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
-    let address = cfg.address.trim();
-    let authority = if cfg.address.contains(':') {
-        address
-            .parse()
-            .context("parse config address as authority")?
-    } else {
-        let host = address.parse().context("parse config address as host")?;
-        Authority::new(host, 443)
-    };
+    let HostWithOptPort {
+        host,
+        port: maybe_port,
+    } = cfg.address;
+    let port = maybe_port.unwrap_or(Protocol::HTTPS_DEFAULT_PORT);
+    let authority = HostWithPort { host, port };
 
     tracing::info!(
-        server.address = %authority.host(),
-        server.port = %authority.port(),
+        server.address = %authority.host,
+        server.port = authority.port,
         "connecting to server",
     );
 
@@ -62,21 +61,20 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .with_store_server_certificate_chain(true)
         .into_shared_builder();
 
-    let tcp_connector = TcpConnector::new();
+    let tcp_connector = TcpConnector::new(Executor::default());
     let loggin_service = LoggingLayer.layer(tcp_connector);
 
     let tls_connector = TlsConnectorLayer::secure()
         .with_connector_data(tls_conn_data)
         .layer(loggin_service);
 
-    let EstablishedClientConnection { conn, .. } = tls_connector
-        .connect(Request::new(authority, Extensions::new()))
-        .await?;
+    let EstablishedClientConnection { conn, .. } =
+        tls_connector.connect(Request::new(authority)).await?;
 
     let params = conn
         .extensions()
         .get::<NegotiatedTlsParameters>()
-        .expect("NegotiatedTlsParameters to be available in connector context");
+        .context("NegotiatedTlsParameters missing connector context")?;
 
     if let Some(ref raw_pem_data) = params.peer_certificate_chain {
         let x509_stack = match raw_pem_data {
@@ -120,24 +118,24 @@ struct LoggingService<S> {
     inner: S,
 }
 
-impl<S, Req> Service<Req> for LoggingService<S>
+impl<S, Input> Service<Input> for LoggingService<S>
 where
-    S: Service<Req, Response = EstablishedClientConnection<TcpStream, Req>>,
+    S: Service<Input, Output = EstablishedClientConnection<TcpStream, Input>>,
     S::Error: Send + 'static,
-    Req: Send + 'static,
+    Input: Send + 'static,
 {
-    type Response = EstablishedClientConnection<TcpStream, Req>;
+    type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = S::Error;
 
-    async fn serve(&self, req: Req) -> Result<Self::Response, Self::Error> {
-        let result = self.inner.serve(req).await;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let result = self.inner.serve(input).await;
 
         if let Ok(ref established_conn) = result
             && let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some)
         {
             tracing::info!(
-                network.peer.address = %peer_addr.ip(),
-                network.peer.port = %peer_addr.port(),
+                network.peer.address = %peer_addr.ip_addr,
+                network.peer.port = %peer_addr.port,
                 "TCP connection established",
             );
         }

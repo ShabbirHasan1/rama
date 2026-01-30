@@ -7,6 +7,7 @@ use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 use rama_core::futures::ready;
 use rama_core::stream::io::StreamReader;
+use std::io::ErrorKind;
 use std::{
     io,
     pin::Pin,
@@ -49,7 +50,7 @@ pin_project! {
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {
-    const INTERNAL_BUF_CAPACITY: usize = 4096;
+    const INTERNAL_BUF_CAPACITY: usize = 8096;
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {
@@ -111,11 +112,16 @@ where
                     return Poll::Ready(Some(Ok(Frame::data(chunk))));
                 }
                 Err(err) => {
-                    let body_error: Option<B::Error> = M::get_pin_mut(this.read)
+                    let body_error: Option<B::Error> = M::get_pin_mut(this.read.as_mut())
                         .get_pin_mut()
                         .project()
                         .error
                         .take();
+
+                    let read_some_data = M::get_pin_mut(this.read.as_mut())
+                        .get_pin_mut()
+                        .project()
+                        .read_some_data;
 
                     if let Some(body_error) = body_error {
                         return Poll::Ready(Some(Err(body_error.into())));
@@ -123,21 +129,41 @@ where
                         // SENTINEL_ERROR_CODE only gets used when storing
                         // an underlying body error
                         unreachable!()
-                    } else {
-                        return Poll::Ready(Some(Err(err.into())));
+                    } else if *read_some_data {
+                        if err.kind() == ErrorKind::UnexpectedEof
+                            && M::get_pin_mut(this.read.as_mut())
+                                .get_pin_mut()
+                                .inner
+                                .yielded_all_data
+                        {
+                            *this.read_all_data = true;
+                        } else {
+                            return Poll::Ready(Some(Err(err.into())));
+                        }
                     }
                 }
             }
         }
+
         // poll any remaining frames, such as trailers
         let body = M::get_pin_mut(this.read).get_pin_mut().get_pin_mut();
-        body.poll_frame(cx).map(|option| {
-            option.map(|result| {
-                result
-                    .map(|frame| frame.map_data(|mut data| data.copy_to_bytes(data.remaining())))
-                    .map_err(|err| err.into())
-            })
-        })
+        match ready!(body.poll_frame(cx)) {
+            Some(Ok(frame)) if frame.is_trailers() => Poll::Ready(Some(Ok(
+                frame.map_data(|mut data| data.copy_to_bytes(data.remaining()))
+            ))),
+            Some(Ok(frame)) => {
+                if let Ok(bytes) = frame.into_data()
+                    && bytes.has_remaining()
+                {
+                    return Poll::Ready(Some(Err(
+                        "there are extra bytes after body has been decompressed".into(),
+                    )));
+                }
+                Poll::Ready(None)
+            }
+            Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
+            None => Poll::Ready(None),
+        }
     }
 }
 
@@ -258,12 +284,17 @@ pin_project! {
         #[pin]
         inner: S,
         error: Option<E>,
+        read_some_data: bool,
     }
 }
 
 impl<S, E> StreamErrorIntoIoError<S, E> {
     pub(crate) fn new(inner: S) -> Self {
-        Self { inner, error: None }
+        Self {
+            inner,
+            error: None,
+            read_some_data: false,
+        }
     }
 
     /// Get a pinned mutable reference to the inner inner
@@ -282,7 +313,10 @@ where
         let this = self.project();
         match ready!(this.inner.poll_next(cx)) {
             None => Poll::Ready(None),
-            Some(Ok(value)) => Poll::Ready(Some(Ok(value))),
+            Some(Ok(value)) => {
+                *this.read_some_data = true;
+                Poll::Ready(Some(Ok(value)))
+            }
             Some(Err(err)) => {
                 *this.error = Some(err);
                 Poll::Ready(Some(Err(io::Error::from_raw_os_error(SENTINEL_ERROR_CODE))))
@@ -316,6 +350,7 @@ pub enum CompressionLevel {
 }
 
 use async_compression::Level as AsyncCompressionLevel;
+use compression_core::Level as CompressionCoreLevel;
 
 impl CompressionLevel {
     #[allow(dead_code)]
@@ -326,6 +361,20 @@ impl CompressionLevel {
             Self::Default => AsyncCompressionLevel::Default,
             Self::Precise(quality) => {
                 AsyncCompressionLevel::Precise(quality.try_into().unwrap_or(i32::MAX))
+            }
+        }
+    }
+}
+
+impl CompressionLevel {
+    #[allow(dead_code)]
+    pub(crate) fn into_compression_core(self) -> CompressionCoreLevel {
+        match self {
+            Self::Fastest => CompressionCoreLevel::Fastest,
+            Self::Best => CompressionCoreLevel::Best,
+            Self::Default => CompressionCoreLevel::Default,
+            Self::Precise(quality) => {
+                CompressionCoreLevel::Precise(quality.try_into().unwrap_or(i32::MAX))
             }
         }
     }

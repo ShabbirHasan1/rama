@@ -1,143 +1,58 @@
-//! Middleware that clones a value into the incoming input extensions
+//! Middleware that clones a value into an incoming input's or an output's extensions
 //!
-//! # Example
-//!
-//! ```
-//! use std::{sync::Arc, convert::Infallible};
-//!
-//! use rama_core::{extensions::{Extensions, ExtensionsRef}, Service, Layer, service::service_fn};
-//! use rama_core::layer::add_extension::AddExtensionLayer;
-//! use rama_core::error::BoxError;
-//!
-//! # struct DatabaseConnectionPool;
-//! # impl DatabaseConnectionPool {
-//! #     fn new() -> DatabaseConnectionPool { DatabaseConnectionPool }
-//! # }
-//! #
-//! // Shared state across all request handlers --- in this case, a pool of database connections.
-//! struct State {
-//!     pool: DatabaseConnectionPool,
-//! }
-//!
-//! // Request can be any type that implements [`ExtensionsRef`]
-//! async fn handle(req: Extensions) -> Result<(), Infallible>
-//! {
-//!     // Grab the state from the request extensions.
-//!     let state = req.extensions().get::<Arc<State>>().unwrap();
-//!
-//!     Ok(())
-//! }
-//!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), BoxError> {
-//! // Construct the shared state.
-//! let state = State {
-//!     pool: DatabaseConnectionPool::new(),
-//! };
-//!
-//! let mut service = (
-//!     // Share an `Arc<State>` with all requests.
-//!     AddExtensionLayer::new(Arc::new(state)),
-//! ).into_layer(service_fn(handle));
-//!
-//! // Call the service.
-//! let response = service
-//!     .serve(Extensions::new())
-//!     .await?;
-//! # Ok(())
-//! # }
-//! ```
+//! Note though that extensions are best not used for State that you expect to be there,
+//! but instead use extensions for optional behaviour to change. Static typed state
+//! is better embedded in service structs or as state for routers.
 
-use crate::{Layer, Service, extensions::ExtensionsMut};
+use crate::{
+    Layer, Service,
+    extensions::{Extension, ExtensionsMut},
+};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 
-/// [`Layer`] for adding some shareable value to incoming [Context].
-///
-/// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
-pub struct AddExtensionLayer<T> {
+/// [`Layer`] for adding some shareable value to incoming input's extensions.
+#[derive(Debug, Clone)]
+pub struct AddInputExtensionLayer<T> {
     value: T,
 }
 
-impl<T: fmt::Debug> std::fmt::Debug for AddExtensionLayer<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AddExtensionLayer")
-            .field("value", &self.value)
-            .finish()
-    }
-}
-
-impl<T> Clone for AddExtensionLayer<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            value: self.value.clone(),
-        }
-    }
-}
-
-impl<T> AddExtensionLayer<T> {
-    /// Create a new [`AddExtensionLayer`].
+impl<T> AddInputExtensionLayer<T> {
+    /// Create a new [`AddInputExtensionLayer`].
     pub const fn new(value: T) -> Self {
         Self { value }
     }
 }
 
-impl<S, T> Layer<S> for AddExtensionLayer<T>
+impl<S, T> Layer<S> for AddInputExtensionLayer<T>
 where
     T: Clone,
 {
-    type Service = AddExtension<S, T>;
+    type Service = AddInputExtension<S, T>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        AddExtension {
+        AddInputExtension {
             inner,
             value: self.value.clone(),
         }
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        AddExtension {
+        AddInputExtension {
             inner,
             value: self.value,
         }
     }
 }
 
-/// Middleware for adding some shareable value to incoming [Context].
-///
-/// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
-pub struct AddExtension<S, T> {
+/// Middleware for adding some shareable value to incoming input's extensions.
+#[derive(Debug, Clone)]
+pub struct AddInputExtension<S, T> {
     inner: S,
     value: T,
 }
 
-impl<S: fmt::Debug, T: fmt::Debug> std::fmt::Debug for AddExtension<S, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AddExtension")
-            .field("inner", &self.inner)
-            .field("value", &self.value)
-            .finish()
-    }
-}
-
-impl<S, T> Clone for AddExtension<S, T>
-where
-    S: Clone,
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            value: self.value.clone(),
-        }
-    }
-}
-
-impl<S, T> AddExtension<S, T> {
-    /// Create a new [`AddExtension`].
+impl<S, T> AddInputExtension<S, T> {
+    /// Create a new [`AddInputExtension`].
     pub const fn new(inner: S, value: T) -> Self {
         Self { inner, value }
     }
@@ -145,22 +60,84 @@ impl<S, T> AddExtension<S, T> {
     define_inner_service_accessors!();
 }
 
-impl<Request, S, T> Service<Request> for AddExtension<S, T>
+impl<Input, S, T> Service<Input> for AddInputExtension<S, T>
 where
-    Request: Send + ExtensionsMut + 'static,
-    S: Service<Request>,
-    T: Clone + Send + Sync + 'static,
+    Input: Send + ExtensionsMut + 'static,
+    S: Service<Input>,
+    T: Extension + Clone,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    fn serve(
-        &self,
+    async fn serve(&self, mut input: Input) -> Result<Self::Output, Self::Error> {
+        input.extensions_mut().insert(self.value.clone());
+        self.inner.serve(input).await
+    }
+}
 
-        mut req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        req.extensions_mut().insert(self.value.clone());
-        self.inner.serve(req)
+/// [`Layer`] for adding some shareable value to an output's extensions.
+#[derive(Debug, Clone)]
+pub struct AddOutputExtensionLayer<T> {
+    value: T,
+}
+
+impl<T> AddOutputExtensionLayer<T> {
+    /// Create a new [`AddOutputExtensionLayer`].
+    pub const fn new(value: T) -> Self {
+        Self { value }
+    }
+}
+
+impl<S, T> Layer<S> for AddOutputExtensionLayer<T>
+where
+    T: Clone,
+{
+    type Service = AddOutputExtension<S, T>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        AddOutputExtension {
+            inner,
+            value: self.value.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        AddOutputExtension {
+            inner,
+            value: self.value,
+        }
+    }
+}
+
+/// Middleware for adding some shareable value to an output's extensions.
+#[derive(Debug, Clone)]
+pub struct AddOutputExtension<S, T> {
+    inner: S,
+    value: T,
+}
+
+impl<S, T> AddOutputExtension<S, T> {
+    /// Create a new [`AddOutputExtension`].
+    pub const fn new(inner: S, value: T) -> Self {
+        Self { inner, value }
+    }
+
+    define_inner_service_accessors!();
+}
+
+impl<Input, S, T> Service<Input> for AddOutputExtension<S, T>
+where
+    Input: Send + 'static,
+    S: Service<Input, Output: Send + ExtensionsMut + 'static>,
+    T: Extension + Clone,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let mut res = self.inner.serve(input).await?;
+        res.extensions_mut().insert(self.value.clone());
+        Ok(res)
     }
 }
 
@@ -168,22 +145,36 @@ where
 mod tests {
     use super::*;
     use crate::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
-    use std::{convert::Infallible, sync::Arc};
+    use std::convert::Infallible;
 
-    struct State(i32);
+    #[derive(Debug, Clone, Copy)]
+    struct Counter(i32);
 
     #[tokio::test]
-    async fn basic() {
-        let state = Arc::new(State(1));
-
-        let svc =
-            AddExtensionLayer::new(state).into_layer(service_fn(async |req: ServiceInput<()>| {
-                let state = req.extensions().get::<Arc<State>>().unwrap();
-                Ok::<_, Infallible>(state.0)
-            }));
+    async fn basic_input() {
+        let svc = AddInputExtensionLayer::new(Counter(42)).into_layer(service_fn(
+            async |req: ServiceInput<()>| {
+                let Counter(n) = req.extensions().get().copied().unwrap();
+                assert_eq!(42, n);
+                Ok::<_, Infallible>(ServiceInput::new(()))
+            },
+        ));
 
         let res = svc.serve(ServiceInput::new(())).await.unwrap();
+        assert!(res.extensions.get::<Counter>().is_none());
+    }
 
-        assert_eq!(1, res);
+    #[tokio::test]
+    async fn basic_output() {
+        let svc = AddOutputExtensionLayer::new(Counter(42)).into_layer(service_fn(
+            async |req: ServiceInput<()>| {
+                assert!(req.extensions.get::<Counter>().is_none());
+                Ok::<_, Infallible>(ServiceInput::new(()))
+            },
+        ));
+
+        let res = svc.serve(ServiceInput::new(())).await.unwrap();
+        let Counter(n) = res.extensions().get().copied().unwrap();
+        assert_eq!(42, n);
     }
 }

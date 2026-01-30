@@ -10,14 +10,14 @@
 //!
 //! You are responsible for any other pre-requisites to establish an upgrade,
 //! such as sending the appropriate headers, methods, and status codes. You can
-//! then use [`on`][] to grab a `Future` which will resolve to the upgraded
+//! then use [`handle_upgrade`] to grab a `Future` which will resolve to the upgraded
 //! connection object, or an error if the upgrade fails.
 //!
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
 //!
 //! # Client
 //!
-//! Sending an HTTP upgrade from the [`client`](super::client) involves setting
+//! Sending an HTTP upgrade from the client involves setting
 //! either the appropriate method, if wanting to `CONNECT`, or headers such as
 //! `Upgrade` and `Connection`, on the `http::Request`. Once receiving the
 //! `http::Response` back, you must check for the specific information that the
@@ -36,8 +36,12 @@ use std::any::TypeId;
 use std::fmt;
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use parking_lot::Mutex;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::oneshot;
 
 use rama_core::bytes::Bytes;
 use rama_core::error::OpaqueError;
@@ -47,14 +51,12 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::stream::Stream;
 use rama_core::stream::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::oneshot;
 
 /// An upgraded HTTP connection.
 ///
 /// This type holds a trait object internally of the original IO that
 /// was used to speak HTTP before the upgrade. It can be used directly
-/// as a [`Read`] or [`Write`] for convenience.
+/// as a [`AsyncRead`] or [`AsyncWrite`] for convenience.
 ///
 /// Alternatively, if the exact type is known, this can be deconstructed
 /// into its parts.
@@ -95,16 +97,36 @@ pub struct Parts<T> {
 
 /// Gets a pending HTTP upgrade from this message and handles it.
 ///
-/// This can be called on the following types:
+/// This can be called on types implementing [`ExtensionsRef`]:
 ///
+/// Some notable examples are:
 /// - `http::Request<B>`
 /// - `http::Response<B>`
 /// - `&rama_http::Request<B>`
 /// - `&rama_http::Response<B>`
-pub fn handle_upgrade<T: sealed::HandleUpgrade>(
+pub fn handle_upgrade<T: ExtensionsRef>(
     msg: T,
-) -> impl Future<Output = Result<Upgraded, OpaqueError>> {
-    msg.handle_upgrade()
+) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+    let on_upgrade = match msg.extensions().get::<OnUpgrade>().cloned() {
+        Some(on_upgrade) => {
+            trace!("upgrading this: {:?}", on_upgrade);
+            if on_upgrade.has_handled_upgrade() {
+                Err(OpaqueError::from_display(
+                    "upgraded has already been handled",
+                ))
+            } else {
+                Ok(on_upgrade)
+            }
+        }
+        None => Err(OpaqueError::from_display("no pending update found")),
+    };
+
+    async {
+        match on_upgrade {
+            Ok(on_upgrade) => on_upgrade.await,
+            Err(err) => Err(err),
+        }
+    }
 }
 
 /// A pending upgrade, created with [`pending`].
@@ -131,11 +153,11 @@ impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
-        T: Stream + Unpin,
+        T: Stream + Unpin + ExtensionsMut,
     {
         Self {
+            extensions: io.extensions().clone(),
             io: Rewind::new_buffered(Box::new(io), read_buf),
-            extensions: Extensions::new(),
         }
     }
 
@@ -258,7 +280,7 @@ impl OnUpgrade {
     /// Returns true if there was an upgrade and the upgrade has already been handled
     #[must_use]
     pub fn has_handled_upgrade(&self) -> bool {
-        self.rx.lock().unwrap().is_terminated()
+        self.rx.lock().is_terminated()
     }
 }
 
@@ -266,7 +288,7 @@ impl Future for OnUpgrade {
     type Output = Result<Upgraded, OpaqueError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut *self.rx.lock().unwrap())
+        Pin::new(&mut *self.rx.lock())
             .poll(cx)
             .map(|res| match res {
                 Ok(Ok(upgraded)) => Ok(upgraded),
@@ -280,7 +302,7 @@ impl Future for OnUpgrade {
 
 impl fmt::Debug for OnUpgrade {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OnUpgrade").finish()
+        f.debug_struct("OnUpgrade").field("rx", &self.rx).finish()
     }
 }
 
@@ -303,81 +325,19 @@ impl Pending {
     }
 }
 
-mod sealed {
-    use rama_core::{extensions::ExtensionsRef, telemetry::tracing::trace};
-    use rama_error::OpaqueError;
-    use rama_http_types::{Request, Response};
-
-    use crate::io::upgrade::Upgraded;
-
-    use super::OnUpgrade;
-
-    pub trait HandleUpgrade {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static;
-    }
-
-    fn handle_upgrade<T: ExtensionsRef>(
-        obj: T,
-    ) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-        let on_upgrade = match obj.extensions().get::<OnUpgrade>().cloned() {
-            Some(on_upgrade) => {
-                trace!("upgrading this: {:?}", on_upgrade);
-                if on_upgrade.has_handled_upgrade() {
-                    Err(OpaqueError::from_display(
-                        "upgraded has already been handled",
-                    ))
-                } else {
-                    Ok(on_upgrade)
-                }
-            }
-            None => Err(OpaqueError::from_display("no pending update found")),
-        };
-
-        async {
-            match on_upgrade {
-                Ok(on_upgrade) => on_upgrade.await,
-                Err(err) => Err(err),
-            }
-        }
-    }
-
-    impl<B> HandleUpgrade for Request<B> {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for &Request<B> {
-        #[inline(always)]
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for Response<B> {
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-
-    impl<B> HandleUpgrade for &Response<B> {
-        #[inline(always)]
-        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-            handle_upgrade(self)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use rama_core::ServiceInput;
     use tokio_test::io::{Builder, Mock};
 
     use super::*;
 
     #[test]
     fn upgraded_downcast() {
-        let upgraded = Upgraded::new(Builder::default().build(), Bytes::new());
+        let io = Builder::default().build();
+        let io = ServiceInput::new(io);
+        let upgraded = Upgraded::new(io, Bytes::new());
         let upgraded = upgraded.downcast::<std::io::Cursor<Vec<u8>>>().unwrap_err();
-        upgraded.downcast::<Mock>().unwrap();
+        upgraded.downcast::<ServiceInput<Mock>>().unwrap();
     }
 }

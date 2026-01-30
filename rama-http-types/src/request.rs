@@ -1,11 +1,10 @@
-use std::any::Any;
 use std::fmt;
 
 use crate::Result;
 use crate::dep::hyperium::http::Extensions as HyperExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 
 /// Represents an HTTP request.
 ///
@@ -217,6 +216,12 @@ impl Request<()> {
     #[inline]
     pub fn builder() -> Builder {
         Builder::new()
+    }
+
+    #[inline]
+    /// Same as [`Request::builder`] but with the given [`Extensions`] to start from.
+    pub fn builder_with_extensions(ext: Extensions) -> Builder {
+        Builder::new_with_extensions(ext)
     }
 
     /// Creates a new `Builder` initialized with a GET method and the given URI.
@@ -736,6 +741,20 @@ impl Builder {
         Self::default()
     }
 
+    #[inline]
+    /// Same as [`Self::new`] but with the given [`Extensions`] to start from.
+    pub fn new_with_extensions(ext: Extensions) -> Self {
+        Self {
+            inner: Ok(Parts {
+                method: Method::default(),
+                uri: Uri::default(),
+                version: Version::default(),
+                headers: HeaderMap::default(),
+                extensions: ext,
+            }),
+        }
+    }
+
     /// Set the HTTP method for this request.
     ///
     /// By default this is `GET`.
@@ -956,7 +975,7 @@ impl Builder {
     /// ```
     pub fn extension<T>(self, extension: T) -> Self
     where
-        T: Clone + Any + Send + Sync + 'static,
+        T: Extension + Clone,
     {
         self.and_then(move |mut head| {
             head.extensions.insert(extension);
@@ -1049,8 +1068,8 @@ impl Default for Builder {
 /// In those places we need to support using [`HttpRequest`] and [`Parts`]. By using
 /// this trait we can support both types behind a single generic that implements this trait.
 ///
-/// [`ReqBody`]: crate::dep::http_body::Body
-/// [`HttpRequest`]: crate::dep::http::Request
+/// [`ReqBody`]: crate::body::StreamingBody
+/// [`HttpRequest`]: crate::Request
 pub trait HttpRequestParts: ExtensionsRef {
     fn method(&self) -> &Method;
     fn uri(&self) -> &Uri;

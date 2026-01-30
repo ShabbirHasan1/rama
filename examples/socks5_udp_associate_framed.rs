@@ -16,7 +16,7 @@ use rama::{
     bytes::Bytes,
     extensions::Extensions,
     futures::{FutureExt, SinkExt, StreamExt},
-    net::{address::SocketAddress, user::Basic},
+    net::{address::SocketAddress, user::credentials::basic},
     proxy::socks5::{
         Socks5Acceptor, Socks5Client,
         server::{
@@ -24,19 +24,22 @@ use rama::{
             udp::{RelayDirection, UdpInspectAction},
         },
     },
+    rt::Executor,
     stream::codec::BytesCodec,
-    tcp::client::default_tcp_connect,
-    tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
-    udp::UdpSocket,
+    tcp::{client::default_tcp_connect, server::TcpListener},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
+    udp::{UdpFramed, bind_udp},
 };
 
 use std::convert::Infallible;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -48,18 +51,19 @@ async fn main() {
     let socks5_socket_addr = spawn_socks5_server().await;
 
     let ext = Extensions::default();
-    let (proxy_client_stream, _) = default_tcp_connect(&ext, socks5_socket_addr.into())
-        .await
-        .expect("establish connection to socks5 server (from client)");
+    let (proxy_client_stream, _) =
+        default_tcp_connect(&ext, socks5_socket_addr.into(), Executor::default())
+            .await
+            .expect("establish connection to socks5 server (from client)");
 
-    let socks5_client = Socks5Client::new().with_auth(Basic::new_static("john", "secret"));
+    let socks5_client = Socks5Client::new().with_auth(basic!("john", "secret"));
 
     let udp_binder = socks5_client
         .handshake_udp(proxy_client_stream)
         .await
         .expect("initiate socks5 UDP Associate handshake");
 
-    let udp_server = UdpSocket::bind(SocketAddress::local_ipv4(0))
+    let udp_server = bind_udp(SocketAddress::local_ipv4(0))
         .await
         .expect("bind udp server");
 
@@ -69,15 +73,15 @@ async fn main() {
         .into();
 
     tracing::info!(
-        network.local.address = %udp_server_addr.ip_addr(),
-        network.local.port = %udp_server_addr.port(),
+        network.local.address = %udp_server_addr.ip_addr,
+        network.local.port = %udp_server_addr.port,
         "server: socket created",
     );
 
     tokio::spawn(async move {
         tracing::info!("server: ready");
 
-        let mut fs = udp_server.into_framed(BytesCodec::new());
+        let mut fs = UdpFramed::new(udp_server, BytesCodec::new());
 
         let (bytes, client_addr) = fs
             .next()
@@ -137,7 +141,7 @@ async fn main() {
 }
 
 async fn spawn_socks5_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(0))
+    let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(0), Executor::default())
         .await
         .expect("bind socks5 UDP Associate proxy on open port");
 
@@ -146,8 +150,8 @@ async fn spawn_socks5_server() -> SocketAddress {
         .expect("get bind address of socks5 proxy server")
         .into();
 
-    let socks5_acceptor = Socks5Acceptor::new()
-        .with_authorizer(Basic::new_static("john", "secret").into_authorizer())
+    let socks5_acceptor = Socks5Acceptor::new(Executor::default())
+        .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_udp_associator(
             DefaultUdpRelay::default()
                 .with_bind_interface(SocketAddress::local_ipv4(0))

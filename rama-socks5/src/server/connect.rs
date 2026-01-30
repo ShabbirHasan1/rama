@@ -1,9 +1,10 @@
-use rama_core::extensions::{Extensions, ExtensionsMut};
+use rama_core::extensions::ExtensionsMut;
+use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Service, error::BoxError, stream::Stream};
+use rama_net::address::HostWithPort;
 use rama_net::client::ConnectorService;
 use rama_net::{
-    address::Authority,
     client::EstablishedClientConnection,
     proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
     stream::Socket,
@@ -12,8 +13,8 @@ use rama_tcp::client::{
     Request as TcpRequest,
     service::{DefaultForwarder, TcpConnector},
 };
-use rama_utils::macros::generate_field_setters;
-use std::{fmt, time::Duration};
+use rama_utils::macros::generate_set_and_with;
+use std::time::Duration;
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -39,7 +40,7 @@ pub trait Socks5ConnectorSeal<S>: Send + Sync + 'static {
         &self,
 
         stream: S,
-        destination: Authority,
+        destination: HostWithPort,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
@@ -47,7 +48,7 @@ impl<S> Socks5ConnectorSeal<S> for ()
 where
     S: Stream + Unpin,
 {
-    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: abort: command not supported: Connect",
         );
@@ -70,7 +71,7 @@ pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
 /// which actually is able to accept connect requests and process them.
 ///
 /// The [`Default`] implementation establishes a connection for the requested
-/// destination [`Authority`] and pipes the incoming [`Stream`] with the established
+/// destination [`HostWithPort`] and pipes the incoming [`Stream`] with the established
 /// outgoing [`Stream`] by copying the bytes without doing anyting else with them.
 ///
 /// You can customise the [`Connector`] fully by creating it using [`Connector::new`]
@@ -82,6 +83,7 @@ pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
 /// Please use [`LazyConnector`] in case you do not want the connctor to establish
 /// a connection yet and instead only want to do so once you have the first request,
 /// which can be useful for things such as MITM socks5 proxies for http(s) traffic.
+#[derive(Debug, Clone)]
 pub struct Connector<C, S> {
     connector: C,
     service: S,
@@ -112,22 +114,22 @@ impl<C, S> Connector<C, S> {
         }
     }
 
-    /// Define whether or not the local address is exposed as the bind address in the reply,
-    /// by default it is exposed.
-    pub fn set_hide_local_address(&mut self, hide: bool) -> &mut Self {
-        self.hide_local_address = hide;
-        self
+    generate_set_and_with! {
+        /// Define whether or not the local address is exposed as the bind address in the reply,
+        /// by default it is exposed.
+        pub fn hide_local_address(mut self, hide: bool) -> Self {
+            self.hide_local_address = hide;
+            self
+        }
     }
 
-    /// Define whether or not the local address is exposed as the bind address in the reply,
-    /// by default it is exposed.
-    #[must_use]
-    pub fn with_hide_local_address(mut self, hide: bool) -> Self {
-        self.hide_local_address = hide;
-        self
+    generate_set_and_with! {
+        /// Define the connect timeout for this socks5 connect server.
+        pub fn connect_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.connect_timeout = timeout;
+            self
+        }
     }
-
-    generate_field_setters!(connect_timeout, Duration);
 }
 
 impl<C, S> Connector<C, S> {
@@ -138,7 +140,7 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context, TcpRequest)
+    /// (TcpRequest)
     ///     -> (EstablishedConnection<T, TcpRequest>, Into<BoxError>)
     /// ```
     pub fn with_connector<T>(self, connector: T) -> Connector<T, S> {
@@ -156,7 +158,7 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context, ProxyRequest) -> ((), Into<BoxError>)
+    /// (ProxyRequest) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Connector<C, T> {
         Connector {
@@ -179,37 +181,15 @@ impl Default for DefaultConnector {
     }
 }
 
-impl<C: fmt::Debug, S: fmt::Debug> fmt::Debug for Connector<C, S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Connector")
-            .field("connector", &self.connector)
-            .field("service", &self.service)
-            .field("hide_local_address", &self.hide_local_address)
-            .field("connect_timeout", &self.connect_timeout)
-            .finish()
-    }
-}
-
-impl<C: Clone, S: Clone> Clone for Connector<C, S> {
-    fn clone(&self) -> Self {
-        Self {
-            connector: self.connector.clone(),
-            service: self.service.clone(),
-            hide_local_address: self.hide_local_address,
-            connect_timeout: self.connect_timeout,
-        }
-    }
-}
-
 impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
     S: Stream + Unpin + ExtensionsMut,
     InnerConnector: ConnectorService<TcpRequest, Connection: Stream + Socket + Unpin>,
     StreamService:
-        Service<ProxyRequest<S, InnerConnector::Connection>, Response = (), Error: Into<BoxError>>,
+        Service<ProxyRequest<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: connect: try to establish connection",
         );
@@ -217,10 +197,9 @@ where
         // TODO: replace with timeout layer once possible
 
         // Clone so we also have them on stream still
-        let parent_extensions = stream.extensions().clone().into_frozen_extensions();
-        let connect_future = self.connector.connect(TcpRequest::new(
+        let connect_future = self.connector.connect(TcpRequest::new_with_extensions(
             destination.clone(),
-            Extensions::new().with_parent_extensions(parent_extensions),
+            stream.extensions().clone(),
         ));
 
         let result = match self.connect_timeout {
@@ -270,7 +249,7 @@ where
                     "socks5 server w/ destination: {destination}: connect: failed to retrieve local addr from established conn, use default '0.0.0.0:0': {err}",
                 );
             })
-            .unwrap_or(Authority::default_ipv4(0));
+            .unwrap_or(HostWithPort::default_ipv4(0));
         let peer_addr = target.peer_addr();
 
         tracing::trace!(
@@ -278,7 +257,7 @@ where
         );
 
         Reply::new(if self.hide_local_address {
-            Authority::default_ipv4(0)
+            HostWithPort::default_ipv4(0)
         } else {
             local_addr.clone()
         })
@@ -314,6 +293,7 @@ where
 /// Please use [`Connector`] for a more common use-case for socks5 proxies,
 /// where it does establish a connection eagerly, ready for piping
 /// between incoming src stream and (established) target stream.
+#[derive(Debug, Clone)]
 pub struct LazyConnector<S> {
     service: S,
 }
@@ -331,23 +311,7 @@ impl<S> LazyConnector<S> {
 impl Default for LazyConnector<DefaultForwarder> {
     fn default() -> Self {
         Self {
-            service: DefaultForwarder::ctx(),
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for LazyConnector<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LazyConnector")
-            .field("service", &self.service)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for LazyConnector<S> {
-    fn clone(&self) -> Self {
-        Self {
-            service: self.service.clone(),
+            service: DefaultForwarder::ctx(Executor::default()),
         }
     }
 }
@@ -355,14 +319,14 @@ impl<S: Clone> Clone for LazyConnector<S> {
 impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
     S: Stream + Unpin + ExtensionsMut,
-    StreamService: Service<S, Response = (), Error: Into<BoxError>>,
+    StreamService: Service<S, Output = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: HostWithPort) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: lazy connect: try to establish connection",
         );
 
-        Reply::new(Authority::default_ipv4(0))
+        Reply::new(HostWithPort::default_ipv4(0))
             .write_to(&mut stream)
             .await
             .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
@@ -387,6 +351,7 @@ pub(crate) use test::MockConnector;
 #[cfg(test)]
 mod test {
     use super::*;
+    use rama_net::address::HostWithPort;
     use std::{ops::DerefMut, sync::Arc};
     use tokio::sync::Mutex;
 
@@ -398,14 +363,14 @@ mod test {
     #[derive(Debug)]
     enum MockReply {
         Success {
-            local_addr: Authority,
+            local_addr: HostWithPort,
             target: Option<Arc<Mutex<tokio_test::io::Mock>>>,
         },
         Error(ReplyKind),
     }
 
     impl MockConnector {
-        pub(crate) fn new(local_addr: Authority) -> Self {
+        pub(crate) fn new(local_addr: HostWithPort) -> Self {
             Self {
                 reply: MockReply::Success {
                     local_addr,
@@ -438,7 +403,7 @@ mod test {
         async fn accept_connect(
             &self,
             mut stream: S,
-            _destination: Authority,
+            _destination: HostWithPort,
         ) -> Result<(), Error> {
             match &self.reply {
                 MockReply::Success { local_addr, target } => {

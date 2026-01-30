@@ -31,8 +31,7 @@
 use crate::{HeaderName, Request, Response};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use smol_str::SmolStr;
-use std::fmt;
+use rama_utils::str::smol_str::SmolStr;
 
 #[derive(Debug, Clone)]
 /// Layer that applies [`RemoveRequestHeader`] which removes request headers.
@@ -99,6 +98,7 @@ impl<S> Layer<S> for RemoveRequestHeaderLayer {
 }
 
 /// Middleware that removes headers from a request.
+#[derive(Debug, Clone)]
 pub struct RemoveRequestHeader<S> {
     inner: S,
     mode: RemoveRequestHeaderMode,
@@ -130,37 +130,19 @@ impl<S> RemoveRequestHeader<S> {
     define_inner_service_accessors!();
 }
 
-impl<S: fmt::Debug> fmt::Debug for RemoveRequestHeader<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RemoveRequestHeader")
-            .field("inner", &self.inner)
-            .field("mode", &self.mode)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for RemoveRequestHeader<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            mode: self.mode.clone(),
-        }
-    }
-}
-
 impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveRequestHeader<S>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
     fn serve(
         &self,
         mut req: Request<ReqBody>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         match &self.mode {
             RemoveRequestHeaderMode::Hop => {
                 super::remove_hop_by_hop_request_headers(req.headers_mut())
@@ -236,6 +218,30 @@ mod test {
             }));
         let req = Request::builder()
             .header("connection", "close")
+            .header("foo", "bar")
+            .body(Body::empty())
+            .unwrap();
+        let _ = svc.serve(req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_request_header_hop_by_hop_with_connection_list() {
+        let svc =
+            RemoveRequestHeaderLayer::hop_by_hop().into_layer(service_fn(async |req: Request| {
+                assert!(req.headers().get("connection").is_none());
+                assert!(req.headers().get("x-foo").is_none());
+                assert!(req.headers().get("x-bar").is_none());
+                assert!(req.headers().get("connection").is_none());
+                assert_eq!(
+                    req.headers().get("foo").map(|v| v.to_str().unwrap()),
+                    Some("bar")
+                );
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        let req = Request::builder()
+            .header("connection", "x-foo, x-bar")
+            .header("x-foo", "1")
+            .header("x-real-ip", "1.2.3.4")
             .header("foo", "bar")
             .body(Body::empty())
             .unwrap();

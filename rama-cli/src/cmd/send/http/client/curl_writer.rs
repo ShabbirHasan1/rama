@@ -5,6 +5,7 @@ use rama::{
         Request, Response, StatusCode, body::util::BodyExt as _, convert::curl,
         service::web::response::IntoResponse as _,
     },
+    service::MirrorService,
     ua::layer::emulate::UserAgentEmulateHttpRequestModifier,
 };
 
@@ -17,21 +18,27 @@ pub(super) struct CurlWriter {
 
 impl Service<Request> for CurlWriter {
     type Error = OpaqueError;
-    type Response = Response;
+    type Output = Response;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let Ok(req) = UserAgentEmulateHttpRequestModifier::new().serve(req).await else {
-            return Ok((StatusCode::INTERNAL_SERVER_ERROR, "failed to emulate UA").into_response());
-        };
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
+        let req = UserAgentEmulateHttpRequestModifier::new(MirrorService::new())
+            .serve(req)
+            .await
+            .map_err(OpaqueError::from_boxed)
+            .context("rama: (curl-writer) emulate UA")?;
 
         let (parts, body) = req.into_parts();
-        let payload = body.collect().await.unwrap().to_bytes();
+        let payload = body
+            .collect()
+            .await
+            .context("rama: (curl-writer) collect req payload")?
+            .to_bytes();
         let curl_cmd = curl::cmd_string_for_request_parts_and_payload(&parts, &payload);
 
         self.writer
             .write_bytes(curl_cmd.as_bytes())
             .await
-            .context("write curl command")?;
+            .context("rama: write curl command")?;
 
         Ok(StatusCode::OK.into_response())
     }

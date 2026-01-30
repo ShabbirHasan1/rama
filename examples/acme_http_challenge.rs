@@ -73,7 +73,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::{
         acme::{
             AcmeClient,
@@ -92,7 +96,6 @@ use rama::{
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::time::sleep;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Default directory url of pebble
 const TEST_DIRECTORY_URL: &str = "https://localhost:14000/dir";
@@ -101,7 +104,7 @@ const ADDR: &str = "0.0.0.0:5002";
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -115,16 +118,18 @@ async fn main() {
         .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
         .into_shared_builder();
 
-    let client = EasyHttpWebClient::builder()
+    let graceful = graceful::Shutdown::default();
+
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
-        .with_default_http_connector()
-        .build()
+        .with_default_http_connector(Executor::graceful(graceful.guard()))
+        .build_client()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
+    let client = AcmeClient::try_new(TEST_DIRECTORY_URL, client)
         .await
         .expect("create acme client");
 
@@ -151,7 +156,7 @@ async fn main() {
         .expect("create account");
 
     let mut order = account
-        .new_order(NewOrderPayload {
+        .try_new_order(NewOrderPayload {
             identifiers: vec![Identifier::dns("example.com")],
             ..Default::default()
         })
@@ -183,15 +188,13 @@ async fn main() {
         key_authorization: key_authorization.clone(),
     });
 
-    let graceful = graceful::Shutdown::default();
-
     let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
         HttpServer::auto(exec)
             .listen(
                 ADDR,
                 (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                    WebService::default().get(&path, move || {
+                    WebService::default().with_get(&path, move || {
                         let state = state.clone();
                         std::future::ready((
                             Headers::single(ContentType::octet_stream()),
@@ -240,7 +243,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(async || {
+        let http_service = HttpServer::auto(exec.clone()).service(service_fn(async || {
             Ok::<_, Infallible>("hello".into_response())
         }));
 
@@ -255,10 +258,10 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind(ADDR)
+        TcpListener::bind(ADDR, exec)
             .await
             .expect("bind TCP Listener: http")
-            .serve_graceful(guard, tcp_service)
+            .serve(tcp_service)
             .await;
     });
 

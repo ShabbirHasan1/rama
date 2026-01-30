@@ -6,7 +6,7 @@ use std::fmt;
 /// to a different value, regardless of whether the future succeeds or
 /// fails.
 ///
-/// This is similar to the [`MapResponse`] and [`MapErr`] combinators,
+/// This is similar to the [`MapOutput`] and [`MapErr`] combinators,
 /// except that the *same* function is invoked when the service's future
 /// completes, whether it completes successfully or fails. This function
 /// takes the [`Result`] returned by the service's future, and returns a
@@ -25,8 +25,9 @@ use std::fmt;
 /// into a different type. It can also be used to change the `Error` type
 /// of the service.
 ///
-/// [`MapResponse`]: crate::layer::MapResponse
+/// [`MapOutput`]: crate::layer::MapOutput
 /// [`MapErr`]: crate::layer::MapErr
+#[derive(Clone)]
 pub struct MapResult<S, F> {
     inner: S,
     f: F,
@@ -44,22 +45,10 @@ where
     }
 }
 
-impl<S, F> Clone for MapResult<S, F>
-where
-    S: Clone,
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            f: self.f.clone(),
-        }
-    }
-}
-
 /// A [`Layer`] that produces a [`MapResult`] service.
 ///
 /// [`Layer`]: crate::Layer
+#[derive(Clone)]
 pub struct MapResultLayer<F> {
     f: F,
 }
@@ -72,15 +61,6 @@ impl<F> fmt::Debug for MapResultLayer<F> {
     }
 }
 
-impl<F> Clone for MapResultLayer<F>
-where
-    F: Clone,
-{
-    fn clone(&self) -> Self {
-        Self { f: self.f.clone() }
-    }
-}
-
 impl<S, F> MapResult<S, F> {
     /// Creates a new [`MapResult`] service.
     pub const fn new(inner: S, f: F) -> Self {
@@ -90,19 +70,19 @@ impl<S, F> MapResult<S, F> {
     define_inner_service_accessors!();
 }
 
-impl<S, F, Request, Response, Error> Service<Request> for MapResult<S, F>
+impl<S, F, Input, Output, Error> Service<Input> for MapResult<S, F>
 where
-    S: Service<Request>,
-    F: Fn(Result<S::Response, S::Error>) -> Result<Response, Error> + Send + Sync + 'static,
-    Request: Send + 'static,
-    Response: Send + 'static,
+    S: Service<Input>,
+    F: Fn(Result<S::Output, S::Error>) -> Result<Output, Error> + Send + Sync + 'static,
+    Input: Send + 'static,
+    Output: Send + 'static,
     Error: Send + 'static,
 {
-    type Response = Response;
+    type Output = Output;
     type Error = Error;
 
-    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        let result = self.inner.serve(req).await;
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let result = self.inner.serve(input).await;
         (self.f)(result)
     }
 }

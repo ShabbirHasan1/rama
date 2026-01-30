@@ -21,9 +21,12 @@ pub use method::MethodMatcher;
 
 mod domain;
 #[doc(inline)]
-pub use domain::{
-    DomainMatcher, DomainStore, DomainsMatcher, UserDomainStore, WHITELISTED_DOMAINS,
-    WILDCARD_DOMAIN,
+pub use domain::DomainMatcher;
+
+mod domains;
+#[doc(inline)]
+pub use domains::{
+    DomainStore, DomainsMatcher, UserDomainStore, WHITELISTED_DOMAINS, WILDCARD_DOMAIN,
 };
 
 pub mod uri;
@@ -544,6 +547,24 @@ impl<Body> HttpMatcher<Body> {
     pub fn path(path: impl AsRef<str>) -> Self {
         Self {
             kind: HttpMatcherKind::Path(PathMatcher::new(path)),
+            negate: false,
+        }
+    }
+
+    /// Create a [`PathMatcher`] matcher for literal.
+    #[must_use]
+    pub fn path_literal(path: impl AsRef<str>) -> Self {
+        Self {
+            kind: HttpMatcherKind::Path(PathMatcher::new_literal(path)),
+            negate: false,
+        }
+    }
+
+    /// Create a [`PathMatcher`] matcher for prefix.
+    #[must_use]
+    pub fn path_prefix(path: impl AsRef<str>) -> Self {
+        Self {
+            kind: HttpMatcherKind::Path(PathMatcher::new_prefix(path)),
             negate: false,
         }
     }

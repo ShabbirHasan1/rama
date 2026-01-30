@@ -1,4 +1,4 @@
-//! `async fn serve(&self, Context, Request) -> Result<Response, Error>`
+//! `async fn serve(&self, Input) -> Result<Output, Error>`
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
 //!
@@ -22,7 +22,11 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 pub mod extensions;
 
@@ -38,8 +42,6 @@ pub mod layer;
 pub use layer::Layer;
 
 pub mod stream;
-
-pub mod inspect;
 
 pub mod combinators;
 pub mod matcher;

@@ -41,7 +41,8 @@ use rama::{
         Body, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
-            compress_adapter::CompressAdaptLayer,
+            compression::CompressionLayer,
+            decompression::DecompressionLayer,
             har::{
                 self,
                 layer::HARExportLayer,
@@ -58,7 +59,7 @@ use rama::{
         server::HttpServer,
         service::web::{WebService, response::IntoResponse},
     },
-    layer::{AddExtensionLayer, ConsumeErrLayer, HijackLayer},
+    layer::{AddInputExtensionLayer, ConsumeErrLayer, HijackLayer},
     net::{
         http::RequestContext,
         proxy::ProxyTarget,
@@ -68,19 +69,23 @@ use rama::{
             client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
-        user::Basic,
+        user::credentials::basic,
     },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing::{self, level_filters::LevelFilter},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::{
         client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
     ua::{
         layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer,
         },
         profile::UserAgentDatabase,
@@ -93,7 +98,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone)]
 struct State {
@@ -101,11 +105,12 @@ struct State {
     ua_db: Arc<UserAgentDatabase>,
     har_layer: HARExportLayer<FileRecorder, Arc<AtomicBool>>,
     har_toggle_ctl: mpsc::Sender<()>,
+    exec: Executor,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    tracing_subscriber::registry()
+    tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
@@ -115,7 +120,7 @@ async fn main() -> Result<(), BoxError> {
         .init();
 
     let mitm_tls_service_data =
-        new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
+        try_new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -125,26 +130,28 @@ async fn main() -> Result<(), BoxError> {
 
     let state = State {
         mitm_tls_service_data,
-        ua_db: Arc::new(UserAgentDatabase::embedded()),
+        ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
         har_layer,
         har_toggle_ctl,
+        exec: Executor::graceful(graceful.guard()),
     };
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build()
+        let exec = Executor::graceful(guard);
+
+        let tcp_service = TcpListener::build(exec.clone())
             .bind("127.0.0.1:62040")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62040");
 
-        let exec = Executor::graceful(guard.clone());
-
         let http_mitm_service = new_http_mitm_proxy(&state);
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
+                ProxyAuthLayer::new(basic!("john", "secret")),
                 // used to toggle HAR recording on and off
                 // ...
                 // NOTE that in a production proxy you would probably
@@ -155,7 +162,7 @@ async fn main() -> Result<(), BoxError> {
                 // Remember kids: authentication != security
                 HijackLayer::new(
                     DomainMatcher::exact("har.toggle.internal"),
-                    Arc::new(WebService::default().post("/switch", async |req: Request| {
+                    Arc::new(WebService::default().with_post("/switch", async |req: Request| {
                         let state = req.extensions().get::<State>().unwrap();
                         if let Err(err) = state.har_toggle_ctl.send(()).await {
                             tracing::error!("failed to toggle HAR Recording: {err}");
@@ -170,19 +177,19 @@ async fn main() -> Result<(), BoxError> {
                     })),
                 ),
                 UpgradeLayer::new(
+                    exec,
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
                 ),
             )
-                .into_layer(http_mitm_service),
+                .into_layer(http_mitm_service)),
         );
 
         tcp_service
-            .serve_graceful(
-                guard,
+            .serve(
                 (
-                    AddExtensionLayer::new(state),
+                    AddInputExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                 )
@@ -200,11 +207,11 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
-    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
+    match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
         Ok(authority) => {
             tracing::info!(
-                server.address = %authority.host(),
-                server.port = %authority.port(),
+                server.address = %authority.host,
+                server.port = authority.port,
                 "accept CONNECT (lazy): insert proxy target into context",
             );
             req.extensions_mut().insert(ProxyTarget(authority));
@@ -231,16 +238,12 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // for upstream http requests.
 
     let state = upgraded.extensions().get::<State>().unwrap();
-    let http_service = new_http_mitm_proxy(state);
+    let http_service = Arc::new(new_http_mitm_proxy(state));
 
-    let executor = upgraded
-        .extensions()
-        .get::<Executor>()
-        .cloned()
-        .unwrap_or_default();
+    let executor = state.exec.clone();
 
     let mut http_tp = HttpServer::auto(executor);
-    http_tp.h2_mut().enable_connect_protocol();
+    http_tp.h2_mut().set_enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
 
@@ -255,15 +258,15 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
 fn new_http_mitm_proxy(
     state: &State,
-) -> impl Service<Request, Response = Response, Error = Infallible> {
+) -> impl Service<Request, Output = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),
         ConsumeErrLayer::default(),
         UserAgentEmulateLayer::new(state.ua_db.clone())
-            .try_auto_detect_user_agent(true)
-            .optional(true),
-        CompressAdaptLayer::default(),
+            .with_try_auto_detect_user_agent(true)
+            .with_is_optional(true),
+        CompressionLayer::new(),
         AddRequiredRequestHeadersLayer::new(),
         EmulateTlsProfileLayer::new(),
     )
@@ -290,25 +293,27 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
+    let state = req.extensions().get::<State>().unwrap();
+
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
     // but instead have a pre-built one as a struct local
-    let client = EasyHttpWebClient::builder()
+    let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
-        .with_default_http_connector()
-        .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default())
-        .build();
-
-    let state = req.extensions().get::<State>().unwrap();
+        .with_default_http_connector(state.exec.clone())
+        .build_client()
+        .with_jit_layer(UserAgentEmulateHttpRequestModifierLayer::default());
 
     // these are not desired for WS MITM flow, but they are for regular HTTP flow
     let client = (
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
+        MapResponseBodyLayer::new(Body::new),
+        DecompressionLayer::new(),
         state.har_layer.clone(),
     )
         .into_layer(client);
@@ -336,7 +341,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+fn try_new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_2,

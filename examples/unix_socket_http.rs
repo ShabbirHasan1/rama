@@ -22,17 +22,21 @@
 
 #[cfg(target_family = "unix")]
 mod unix_example {
+    use std::sync::Arc;
+
     use rama::{
-        http::server::HttpServer,
-        http::service::web::Router,
-        telemetry::tracing::{self, level_filters::LevelFilter},
+        http::{server::HttpServer, service::web::Router},
+        rt::Executor,
+        telemetry::tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
         unix::server::UnixListener,
     };
 
-    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-
     pub(super) async fn run() {
-        tracing_subscriber::registry()
+        tracing::subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()
@@ -42,22 +46,23 @@ mod unix_example {
             .init();
 
         let graceful = rama::graceful::Shutdown::default();
+        let exec = Executor::graceful(graceful.guard());
 
         const PATH: &str = "/tmp/rama_example_unix_http.socket";
 
-        let listener = UnixListener::bind_path(PATH)
+        let listener = UnixListener::bind_path(PATH, exec.clone())
             .await
             .expect("bind Unix socket");
 
-        graceful.spawn_task_fn(async |guard| {
+        graceful.spawn_task(async move {
             tracing::info!(
                 file.path = %PATH,
                 "ready to unix-serve",
             );
             listener
-                .serve_graceful(
-                    guard,
-                    HttpServer::http1().service(Router::new().get("/ping", "pong")),
+                .serve(
+                    HttpServer::http1(exec)
+                        .service(Arc::new(Router::new().with_get("/ping", "pong"))),
                 )
                 .await;
         });

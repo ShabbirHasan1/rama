@@ -35,7 +35,7 @@ use super::compress_certificate::{
     BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
 };
 
-use crate::keylog::new_key_log_file_handle;
+use crate::keylog::try_new_key_log_file_handle;
 
 /// [`TlsConnectorData`] that will be used by the connector
 ///
@@ -75,7 +75,7 @@ impl TlsConnectorData {
 /// This builder is very powerful and is capable of stacking other builders. Using it
 /// this way gives each layer the option to modify what is needed in an efficient way.
 pub struct TlsConnectorDataBuilder {
-    base_builders: Vec<Arc<TlsConnectorDataBuilder>>,
+    base_builders: Vec<Arc<Self>>,
     server_verify_mode: Option<ServerVerifyMode>,
     keylog_intent: Option<KeyLogIntent>,
     cipher_list: Option<Vec<u16>>,
@@ -211,6 +211,10 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_auto() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "wiring format for h2,http1 is known to always succeed"
+        )]
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
             .expect("with http2 and http1")
@@ -218,6 +222,10 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_1() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "wiring format for http1 is known to always succeed"
+        )]
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_11])
             .expect("with http1")
@@ -225,12 +233,16 @@ impl TlsConnectorDataBuilder {
 
     #[must_use]
     pub fn new_http_2() -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "wiring format for h2 is known to always succeed"
+        )]
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2])
             .expect("with http 2")
     }
 
-    /// Add [`ConfigBuilder`] to the end of our base builder
+    /// Add [`TlsConnectorDataBuilder`] to the end of our base builder
     ///
     /// When evaluating builders we start from this builder (the last one) and
     /// work our way back until we find a value.
@@ -239,7 +251,7 @@ impl TlsConnectorDataBuilder {
         self
     }
 
-    /// Add [`ConfigBuilder`] to the start of our base builders
+    /// Add [`TlsConnectorDataBuilder`] to the start of our base builders
     ///
     /// Builder in the start is evaluated as the last one when iterating over builders
     pub fn prepend_base_config(&mut self, config: Arc<Self>) -> &mut Self {
@@ -247,11 +259,12 @@ impl TlsConnectorDataBuilder {
         self
     }
 
-    /// Same as [`TlsConnectorDataBuilder::push_base_config`] but consuming self
-    #[must_use]
-    pub fn with_base_config(mut self, config: Arc<Self>) -> Self {
-        self.push_base_config(config);
-        self
+    generate_set_and_with! {
+        /// Add [`ConfigBuilder`] to the start of our base builders
+        pub fn base_config(mut self, config: Arc<Self>) -> Self {
+            self.push_base_config(config);
+            self
+        }
     }
 
     generate_set_and_with!(
@@ -482,20 +495,104 @@ impl TlsConnectorDataBuilder {
                 // this code path is there to set it anyway
                 static WINDOWS_ROOT_CA: std::sync::LazyLock<Result<X509Store, OpaqueError>> =
                     std::sync::LazyLock::new(|| {
-                        trace!("boring connector: windows: load root certs for current user");
-
-                        // Trusted Root Certification Authorities
-                        let user_root = schannel::cert_store::CertStore::open_current_user("ROOT")
-                            .context("open (root) cert store for current user")?;
+                        trace!("boring connector: windows: load system certs");
 
                         let mut builder = rama_boring::x509::store::X509StoreBuilder::new()
                             .context("build x509 store builder")?;
 
-                        for cert in user_root.certs() {
-                            // Convert the Windows cert to DER, then to BoringSSL X509
-                            if let Ok(x509) = X509::from_der(cert.to_der()) {
-                                let _ = builder.add_cert(x509);
+                        let mut total_cert_count = 0;
+                        let mut total_added_cert_count = 0;
+
+                        const PKIX_SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
+                        const WINDOWS_STORE_NAMES: &[&str] = &["ROOT", "CA"];
+
+                        type CertStoreOpenFn =
+                            for<'a> fn(
+                                &'a str,
+                            )
+                                -> Result<schannel::cert_store::CertStore, std::io::Error>;
+                        const CERTIFICATE_OPENERS: &[(CertStoreOpenFn, &str)] = &[
+                            (
+                                schannel::cert_store::CertStore::open_current_user,
+                                "open_current_user",
+                            ),
+                            (
+                                schannel::cert_store::CertStore::open_local_machine,
+                                "open_local_machine",
+                            ),
+                        ];
+
+                        for (open_fn, open_fn_name) in CERTIFICATE_OPENERS {
+                            for windows_store_name in WINDOWS_STORE_NAMES {
+                                match open_fn(windows_store_name) {
+                                    Ok(cstore) => {
+                                        let mut current_cert_count = 0;
+                                        let mut current_invalid_cert_count = 0;
+                                        let mut current_added_cert_count = 0;
+
+                                        for cert in cstore.certs() {
+                                            current_cert_count += 1;
+                                            total_cert_count += 1;
+
+                                            if !cert.is_time_valid().unwrap_or_default()
+                                                || !cert
+                                                    .valid_uses()
+                                                    .map(|use_case| match use_case {
+                                                        schannel::cert_context::ValidUses::All => {
+                                                            true
+                                                        }
+                                                        schannel::cert_context::ValidUses::Oids(
+                                                            strs,
+                                                        ) => strs
+                                                            .iter()
+                                                            .any(|x| x == PKIX_SERVER_AUTH),
+                                                    })
+                                                    .unwrap_or_default()
+                                            {
+                                                current_invalid_cert_count += 1;
+                                                continue;
+                                            }
+
+                                            // Convert the Windows cert to DER, then to BoringSSL X509
+                                            match X509::from_der(cert.to_der()) {
+                                                Ok(x509) => {
+                                                    if let Err(err) = builder.add_cert(x509) {
+                                                        debug!(
+                                                            "failed to add x509 cert to windows: {err}"
+                                                        );
+                                                    } else {
+                                                        current_added_cert_count += 1;
+                                                        total_added_cert_count += 1;
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    debug!(
+                                                        "failed to convert DER cert to x509: {err}"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        trace!(
+                                            "boring connector: windows: {open_fn_name}::{windows_store_name}: added {current_added_cert_count} certs of {current_cert_count} certs (invalid schannel certs: {current_invalid_cert_count})"
+                                        );
+                                    }
+                                    Err(err) => {
+                                        debug!(
+                                            "failed to open {windows_store_name} cert store using schannel::cert_store::CertStore::{open_fn_name}; err = {err:?}",
+                                        );
+                                    }
+                                }
                             }
+                        }
+
+                        trace!(
+                            "boring connector: windows: final result: added {total_added_cert_count} certs of {total_cert_count} certs"
+                        );
+
+                        if total_added_cert_count == 0 {
+                            return Err(OpaqueError::from_display(
+                                "failed to add windows certs from system (user/machine x Root/CA)",
+                            ));
                         }
 
                         Ok(builder.build())
@@ -509,7 +606,7 @@ impl TlsConnectorDataBuilder {
         }
 
         if let Some(keylog_filename) = self.keylog_filepath().as_deref() {
-            let handle = new_key_log_file_handle(keylog_filename)?;
+            let handle = try_new_key_log_file_handle(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{line}\n");
                 handle.write_log_line(line);
@@ -657,12 +754,14 @@ impl TlsConnectorDataBuilder {
 
         if let Some(limit) = self.record_size_limit() {
             trace!("boring connector: setting record size limit");
-            cfg.set_record_size_limit(limit).unwrap();
+            cfg.set_record_size_limit(limit)
+                .context("set record size limit")?;
         }
 
         if let Some(schemes) = self.delegated_credential_schemes() {
             trace!("boring connector: setting delegated credential schemes");
-            cfg.set_delegated_credential_schemes(schemes).unwrap();
+            cfg.set_delegated_credential_schemes(schemes)
+                .context("set delegated credential schemas")?;
         }
 
         if self.encrypted_client_hello().unwrap_or_default() {

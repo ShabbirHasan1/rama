@@ -6,7 +6,7 @@ use crate::{
 };
 use rama_core::{Service, telemetry::tracing};
 use rama_net::http::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, str::smol_str::format_smolstr};
 use std::convert::Infallible;
 
 /// Service that redirects all HTTP requests to HTTPS
@@ -113,10 +113,10 @@ where
     R: UriMatchReplace + Send + Sync + 'static,
     Body: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = Infallible;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let full_uri = match self.rewrite_uri_rule.match_replace_uri(request_uri(&req)) {
             Ok(uri) => uri,
             Err(UriMatchError::NoMatch(uri)) => {
@@ -142,20 +142,26 @@ where
 
         match (authority.port_u16(), self.overwrite_port) {
             // use port to overwrite
-            (_, Some(port)) => {
-                match smol_str::format_smolstr!("{}:{port}", authority.host()).parse() {
-                    Ok(new_authority) => *authority = new_authority,
+            (_, Some(port)) => match format_smolstr!("{}:{port}", authority.host()).parse() {
+                Ok(new_authority) => *authority = new_authority,
+                Err(err) => {
+                    tracing::debug!(
+                        "failed to overwrite authority using custom port: {err} (bug??)"
+                    );
+                    return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                }
+            },
+            // drop port
+            (Some(_), _) => {
+                *authority = match authority.host().parse() {
+                    Ok(v) => v,
                     Err(err) => {
                         tracing::debug!(
-                            "failed to overwrite authority using custom port: {err} (bug??)"
+                            "failed to overwrite authority with (parsed) host value: {err} (bug??)"
                         );
                         return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
                 }
-            }
-            // drop port
-            (Some(_), _) => {
-                *authority = authority.host().parse().unwrap();
             }
             (None, None) => (), // nothing to do
         }
@@ -165,17 +171,28 @@ where
         {
             if path_and_query.query().is_some() {
                 // TOOD: open issue in http to perhaps more easily drop query??
-                uri_parts.path_and_query = Some(path_and_query.path().parse().unwrap());
+                uri_parts.path_and_query = Some(match path_and_query.path().parse() {
+                    Ok(v) => v,
+                    Err(err) => {
+                        tracing::debug!(
+                            "failed to overwrite path-and-query with (parsed) path value: {err} (bug??)"
+                        );
+                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                    }
+                });
             } else {
                 uri_parts.path_and_query = Some(path_and_query);
             }
         }
 
         match Uri::from_parts(uri_parts) {
-            Ok(uri) => {
-                let loc = Location::from(uri);
-                Ok((Headers::single(loc), self.status_code).into_response())
-            }
+            Ok(uri) => match Location::try_from(uri) {
+                Ok(loc) => Ok((Headers::single(loc), self.status_code).into_response()),
+                Err(err) => {
+                    tracing::debug!("failed to parse uri as header value: {err}");
+                    Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                }
+            },
             Err(err) => {
                 tracing::debug!("failed to re-create Uri using modified parts: {err} (bug??)");
                 Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())

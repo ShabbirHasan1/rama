@@ -1,7 +1,7 @@
 use super::TlsAcceptorData;
 use crate::{
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-    keylog::new_key_log_file_handle,
+    keylog::try_new_key_log_file_handle,
     server::TlsStream,
     types::SecureTransport,
 };
@@ -24,6 +24,7 @@ use std::{io::ErrorKind, sync::Arc};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
+#[derive(Debug, Clone)]
 pub struct TlsAcceptorService<S> {
     data: TlsAcceptorData,
     store_client_hello: bool,
@@ -43,38 +44,15 @@ impl<S> TlsAcceptorService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S: std::fmt::Debug> std::fmt::Debug for TlsAcceptorService<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TlsAcceptorService")
-            .field("data", &self.data)
-            .field("store_client_hello", &self.store_client_hello)
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<S> Clone for TlsAcceptorService<S>
-where
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-            store_client_hello: self.store_client_hello,
-            inner: self.inner.clone(),
-        }
-    }
-}
-
 impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
     IO: Stream + Unpin + ExtensionsMut + 'static,
     S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
         // allow tls acceptor data to be injected,
         // e.g. useful for TLS environments where some data (such as server auth, think ACME)
         // is updated at runtime, be it infrequent
@@ -102,13 +80,13 @@ where
                 stream
                     .extensions()
                     .get::<TransportContext>()
-                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
+                    .and_then(|ctx| ctx.authority.host.as_domain().cloned())
             })
             .or_else(|| {
                 stream
                     .extensions()
                     .get::<RequestContext>()
-                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
+                    .and_then(|ctx| ctx.authority.host.as_domain().cloned())
             });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
@@ -183,7 +161,7 @@ where
         }
 
         if let Some(keylog_filename) = tls_config.keylog_intent.file_path().as_deref() {
-            let handle = new_key_log_file_handle(keylog_filename)?;
+            let handle = try_new_key_log_file_handle(keylog_filename)?;
             acceptor_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{line}\n");
                 handle.write_log_line(line);

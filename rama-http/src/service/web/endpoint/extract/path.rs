@@ -1,6 +1,6 @@
 //! Module in function of the [`Path`] extractor.
 
-use super::FromRequestContextRefPair;
+use super::FromPartsStateRefPair;
 use crate::matcher::{UriParams, UriParamsDeserializeError};
 use crate::request::Parts;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 use std::ops::{Deref, DerefMut};
 
 /// Extractor to get path parameters from the context in deserialized form.
+#[derive(Debug, Clone)]
 pub struct Path<T>(pub T);
 
 define_http_rejection! {
@@ -28,26 +29,14 @@ composite_http_rejection! {
     }
 }
 
-impl<T: std::fmt::Debug> std::fmt::Debug for Path<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Path").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Path<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T, State> FromRequestContextRefPair<State> for Path<T>
+impl<T, State> FromPartsStateRefPair<State> for Path<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync,
 {
     type Rejection = PathRejection;
 
-    async fn from_request_context_ref_pair(
+    async fn from_parts_state_ref_pair(
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
@@ -91,12 +80,14 @@ mod tests {
             bar: u32,
         }
 
-        let svc =
-            WebService::default().get("/a/:foo/:bar/b/*", async |Path(params): Path<Params>| {
+        let svc = WebService::default().with_get(
+            "/a/{foo}/{bar}/b/*",
+            async |Path(params): Path<Params>| {
                 assert_eq!(params.foo, "hello");
                 assert_eq!(params.bar, 42);
                 StatusCode::OK
-            });
+            },
+        );
 
         let builder = Request::builder()
             .method("GET")

@@ -6,12 +6,13 @@ use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
+use rama_http::proto::h1::ext::ReasonPhrase;
 use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
-use smallvec::{SmallVec, smallvec, smallvec_inline};
+use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
 
 use crate::body::DecodedLength;
 use crate::common::date;
@@ -130,15 +131,18 @@ impl Http1Transaction for Server {
             let bytes = buf.as_ref();
             match req.parse_with_uninit_headers(bytes, &mut headers) {
                 Ok(httparse::Status::Complete(parsed_len)) => {
-                    trace!("Request.parse Complete({})", parsed_len);
+                    trace!("Request.parse Complete({parsed_len})");
                     len = parsed_len;
-                    let uri = req.path.unwrap();
+                    let Some(uri) = req.path else {
+                        return Err(Parse::Uri);
+                    };
                     if uri.len() > MAX_URI_LEN {
                         return Err(Parse::UriTooLong);
                     }
-                    method = Method::from_bytes(req.method.unwrap().as_bytes())?;
+                    method =
+                        Method::from_bytes(req.method.map(|m| m.as_bytes()).unwrap_or_default())?;
                     path_range = Self::record_path_range(bytes, uri);
-                    version = if req.version.unwrap() == 1 {
+                    version = if req.version == Some(1) {
                         keep_alive = true;
                         is_http_11 = true;
                         Version::HTTP_11
@@ -152,20 +156,18 @@ impl Http1Transaction for Server {
                     headers_len = req.headers.len();
                 }
                 Ok(httparse::Status::Partial) => return Ok(None),
-                Err(err) => {
-                    return Err(match err {
-                        // if invalid Token, try to determine if for method or path
-                        httparse::Error::Token => {
-                            if req.method.is_none() {
-                                Parse::Method
-                            } else {
-                                debug_assert!(req.path.is_none());
-                                Parse::Uri
-                            }
+                // if invalid Token, try to determine if for method or path
+                Err(httparse::Error::Token) => {
+                    return Err({
+                        if req.method.is_none() {
+                            Parse::Method
+                        } else {
+                            debug_assert!(req.path.is_none());
+                            Parse::Uri
                         }
-                        other => other.into(),
                     });
                 }
+                Err(err) => return Err(err.into()),
             }
         };
 
@@ -240,7 +242,7 @@ impl Http1Transaction for Server {
                         // we don't need to append this secondary length
                         continue;
                     }
-                    decoder = DecodedLength::checked_new(len)?;
+                    decoder = DecodedLength::try_checked_new(len)?;
                     con_len = Some(len);
                 }
                 header::CONNECTION => {
@@ -275,10 +277,12 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
-        let mut extensions = ctx
-            .extensions
-            .take()
-            .expect("extensions should always be set in ParseContext");
+        let mut extensions = ctx.extensions.take().unwrap_or_else(|| {
+            warn!(
+                "extensions should always be set in ParseContext: was None: use default instead..."
+            );
+            Default::default()
+        });
 
         let headers = headers.consume(&mut extensions);
 
@@ -336,7 +340,7 @@ impl Http1Transaction for Server {
         let init_cap = 30 + msg.head.headers.len() * AVERAGE_HEADER_SIZE;
         dst.reserve(init_cap);
 
-        let custom_reason_phrase = msg.head.extensions.get::<crate::ext::ReasonPhrase>();
+        let custom_reason_phrase = msg.head.extensions.get::<ReasonPhrase>();
 
         if msg.head.version == Version::HTTP_11
             && msg.head.subject == StatusCode::OK
@@ -847,19 +851,20 @@ impl Http1Transaction for Client {
                 ) {
                     Ok(httparse::Status::Complete(len)) => {
                         trace!("Response.parse Complete({})", len);
-                        let status = StatusCode::from_u16(res.code.unwrap())?;
+                        let status = StatusCode::from_u16(res.code.unwrap_or(u16::MAX))?;
 
                         let reason = {
-                            let reason = res.reason.unwrap();
                             // Only save the reason phrase if it isn't the canonical reason
-                            if Some(reason) != status.canonical_reason() {
+                            if let Some(reason) = res.reason
+                                && Some(reason) != status.canonical_reason()
+                            {
                                 Some(Bytes::copy_from_slice(reason.as_bytes()))
                             } else {
                                 None
                             }
                         };
 
-                        let version = if res.version.unwrap() == 1 {
+                        let version = if res.version == Some(1) {
                             Version::HTTP_11
                         } else {
                             Version::HTTP_10
@@ -928,7 +933,10 @@ impl Http1Transaction for Client {
                 .extensions
                 .as_ref()
                 .cloned()
-                .expect("extensions should always be set in ParseContext");
+                .unwrap_or_else(|| {
+                    warn!("extensions should always be set in ParseContext but it was missing; falling back to default; report bug in rama");
+                    Default::default()
+                });
 
             // TODO remove but maybe needed for backwards comp for now...
             let req_ext = RequestExtensions::from(extensions.clone());
@@ -937,9 +945,9 @@ impl Http1Transaction for Client {
             let headers = headers.consume(&mut extensions);
 
             if let Some(reason) = reason {
-                // Safety: httparse ensures that only valid reason phrase bytes are present in this
-                // field.
-                let reason = crate::ext::ReasonPhrase::from_bytes_unchecked(reason);
+                // SAFETY: httparse ensures that only valid reason
+                // phrase bytes are present in this field.
+                let reason = unsafe { ReasonPhrase::from_bytes_unchecked(reason) };
                 extensions.insert(reason);
             }
 
@@ -1091,7 +1099,7 @@ impl Client {
                 Ok(Some((DecodedLength::CLOSE_DELIMITED, false)))
             }
         } else if let Some(len) = headers::content_length_parse_all(&inc.headers) {
-            Ok(Some((DecodedLength::checked_new(len)?, false)))
+            Ok(Some((DecodedLength::try_checked_new(len)?, false)))
         } else if inc.headers.contains_key(header::CONTENT_LENGTH) {
             debug!("illegal Content-Length header");
             Err(Parse::content_length_invalid())

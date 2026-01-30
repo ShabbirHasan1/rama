@@ -20,7 +20,7 @@
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
-[rust-version-badge]: https://img.shields.io/badge/rustc-1.88+-blue?style=flat-square&logo=rust
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.91+-blue?style=flat-square&logo=rust
 [rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/actions/workflows/CI.yml/badge.svg?branch=main
 [actions-url]: https://github.com/plabayo/rama/actions/workflows/CI.yml
@@ -34,12 +34,12 @@
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
-🦙 rama™ (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
+🦙 rama® (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
 ## rama-core
 
-`async fn serve(&self, Context, Request) -> Result<Response, Error>`
+`async fn serve(&self, Input) -> Result<Output, Error>`
 
 Crate used by the end-user `rama` crate and `rama` crate authors alike.
 

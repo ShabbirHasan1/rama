@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use rama_core::extensions::Extensions;
+use rama_core::{extensions::Extensions, telemetry::tracing};
 
 /// Result of [`Authorizer::authorize`].
 pub struct AuthorizeResult<C, E> {
@@ -105,19 +105,8 @@ impl<A: Authorizer<C>, C: Send + 'static> Authorizer<C> for Arc<A> {
 }
 
 /// [`Authorizer`] that can be used to validate against static credentials.
+#[derive(Debug, Clone)]
 pub struct StaticAuthorizer<C>(C);
-
-impl<C: fmt::Debug> fmt::Debug for StaticAuthorizer<C> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("StaticAuthorizer").field(&self.0).finish()
-    }
-}
-
-impl<C: Clone> Clone for StaticAuthorizer<C> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
 
 impl<C> StaticAuthorizer<C> {
     /// Create a new [`StaticAuthorizer`] for the given credentials.
@@ -140,116 +129,80 @@ impl<C: PartialEq + Send + Sync + 'static> Authorizer<C> for StaticAuthorizer<C>
     }
 }
 
+macro_rules! impl_authorizer_slice {
+    () => {
+        async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+            let mut iter = self.iter();
+
+            let mut last_authorize_result = match iter.next() {
+                Some(authorizer) => authorizer.authorize(credentials).await,
+                None => {
+                    tracing::debug!(
+                        "no authorizers in array found: assume all credentials are fine incl... this one... (fail-open)"
+                    );
+                    return AuthorizeResult {
+                        credentials,
+                        result: Ok(None),
+                    };
+                }
+            };
+            if last_authorize_result.result.is_ok() {
+                return last_authorize_result;
+            }
+
+            for authorizer in iter {
+                last_authorize_result = authorizer
+                    .authorize(last_authorize_result.credentials)
+                    .await;
+
+                if last_authorize_result.result.is_ok() {
+                    return last_authorize_result;
+                }
+            }
+
+            last_authorize_result
+        }
+
+        fn authorize_sync(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+            let mut iter = self.iter();
+
+            let mut last_authorize_result = match iter.next() {
+                Some(authorizer) => authorizer.authorize_sync(credentials),
+                None => {
+                    tracing::debug!(
+                        "no authorizers in array found: assume all credentials are fine incl... this one... (fail-open)"
+                    );
+                    return AuthorizeResult {
+                        credentials,
+                        result: Ok(None),
+                    };
+                }
+            };
+            if last_authorize_result.result.is_ok() {
+                return last_authorize_result;
+            }
+
+            for authorizer in iter {
+                last_authorize_result = authorizer.authorize_sync(last_authorize_result.credentials);
+
+                if last_authorize_result.result.is_ok() {
+                    return last_authorize_result;
+                }
+            }
+
+            last_authorize_result
+        }
+    };
+}
+
 impl<A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> for Vec<A> {
     type Error = A::Error;
-
-    async fn authorize(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
-        let mut error = None;
-        for authorizer in self {
-            let AuthorizeResult {
-                credentials: c,
-                result,
-            } = authorizer.authorize(credentials).await;
-            match result {
-                Ok(maybe_ext) => {
-                    return AuthorizeResult {
-                        credentials: c,
-                        result: Ok(maybe_ext),
-                    };
-                }
-                Err(err) => {
-                    error = Some(err);
-                    credentials = c;
-                }
-            }
-        }
-        AuthorizeResult {
-            credentials,
-            result: Err(error.unwrap()),
-        }
-    }
-
-    fn authorize_sync(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
-        let mut error = None;
-        for authorizer in self {
-            let AuthorizeResult {
-                credentials: c,
-                result,
-            } = authorizer.authorize_sync(credentials);
-            match result {
-                Ok(maybe_ext) => {
-                    return AuthorizeResult {
-                        credentials: c,
-                        result: Ok(maybe_ext),
-                    };
-                }
-                Err(err) => {
-                    error = Some(err);
-                    credentials = c;
-                }
-            }
-        }
-        AuthorizeResult {
-            credentials,
-            result: Err(error.unwrap()),
-        }
-    }
+    impl_authorizer_slice!();
 }
 
 impl<const N: usize, A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> for [A; N] {
     type Error = A::Error;
-
-    async fn authorize(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
-        let mut error = None;
-        for authorizer in self {
-            let AuthorizeResult {
-                credentials: c,
-                result,
-            } = authorizer.authorize(credentials).await;
-            match result {
-                Ok(maybe_ext) => {
-                    return AuthorizeResult {
-                        credentials: c,
-                        result: Ok(maybe_ext),
-                    };
-                }
-                Err(err) => {
-                    error = Some(err);
-                    credentials = c;
-                }
-            }
-        }
-        AuthorizeResult {
-            credentials,
-            result: Err(error.unwrap()),
-        }
-    }
-
-    fn authorize_sync(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
-        let mut error = None;
-        for authorizer in self {
-            let AuthorizeResult {
-                credentials: c,
-                result,
-            } = authorizer.authorize_sync(credentials);
-            match result {
-                Ok(maybe_ext) => {
-                    return AuthorizeResult {
-                        credentials: c,
-                        result: Ok(maybe_ext),
-                    };
-                }
-                Err(err) => {
-                    error = Some(err);
-                    credentials = c;
-                }
-            }
-        }
-        AuthorizeResult {
-            credentials,
-            result: Err(error.unwrap()),
-        }
-    }
+    impl_authorizer_slice!();
 }
 
 impl<F, Fut, E, C> Authorizer<C> for F

@@ -29,7 +29,7 @@ use std::marker::PhantomData;
 /// - [`SetForwardedHeaderLayer::x_forwarded_host`]: the canonical [`X-Forwarded-Host`][`XForwardedHost`] header (non-standard);
 /// - [`SetForwardedHeaderLayer::x_forwarded_proto`]: the canonical [`X-Forwarded-Proto`][`XForwardedProto`] header (non-standard).
 ///
-/// The "by" property is set to `rama` by default. Use [`SetForwardedHeaderLayer::forward_by`] to overwrite this,
+/// The "by" property is set to `rama` by default. Use [`SetForwardedHeaderLayer::set_forward_by`] to overwrite this,
 /// typically with the actual [`IPv4`]/[`IPv6`] address of your proxy.
 ///
 /// [`IPv4`]: std::net::Ipv4Addr
@@ -43,15 +43,16 @@ use std::marker::PhantomData;
 /// but you can use the [`SetForwardedHeaderLayer::new`] constructor and pass the header type as a type parameter,
 /// alone or in a tuple with other headers.
 ///
-/// [`X-Real-Ip`]: crate::headers::XRealIp
-/// [`X-Client-Ip`]: crate::headers::XClientIp
-/// [`Client-Ip`]: crate::headers::ClientIp
-/// [`CF-Connecting-Ip`]: crate::headers::CFConnectingIp
-/// [`True-Client-Ip`]: crate::headers::TrueClientIp
+/// [`X-Real-Ip`]: crate::headers::forwarded::XRealIp
+/// [`X-Client-Ip`]: crate::headers::forwarded::XClientIp
+/// [`Client-Ip`]: crate::headers::forwarded::ClientIp
+/// [`CF-Connecting-Ip`]: crate::headers::forwarded::CFConnectingIp
+/// [`True-Client-Ip`]: crate::headers::forwarded::TrueClientIp
 ///
 /// ## Example
 ///
-/// This example shows how you could expose the real Client IP using the [`X-Real-IP`][`crate::headers::XRealIp`] header.
+/// This example shows how you could expose the real Client IP using
+/// the [`X-Real-IP`][`crate::headers::forwarded::XRealIp`] header.
 ///
 /// ```rust
 /// use rama_net::stream::SocketInfo;
@@ -88,7 +89,7 @@ pub struct SetForwardedHeaderLayer<T = Forwarded> {
     _headers: PhantomData<fn() -> T>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for SetForwardedHeaderLayer<T> {
+impl<T> fmt::Debug for SetForwardedHeaderLayer<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("SetForwardedHeaderLayer")
             .field("by_node", &self.by_node)
@@ -100,7 +101,7 @@ impl<T: fmt::Debug> fmt::Debug for SetForwardedHeaderLayer<T> {
     }
 }
 
-impl<T: Clone> Clone for SetForwardedHeaderLayer<T> {
+impl<T> Clone for SetForwardedHeaderLayer<T> {
     fn clone(&self) -> Self {
         Self {
             by_node: self.by_node.clone(),
@@ -110,21 +111,14 @@ impl<T: Clone> Clone for SetForwardedHeaderLayer<T> {
 }
 
 impl<T> SetForwardedHeaderLayer<T> {
-    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
-    ///
-    /// Default of `None` will be set to `rama` otherwise.
-    #[must_use]
-    pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
-        self.by_node = node_id.into();
-        self
-    }
-
-    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
-    ///
-    /// Default of `None` will be set to `rama` otherwise.
-    pub fn set_forward_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
-        self.by_node = node_id.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
+        ///
+        /// Default of `None` will be set to `rama` otherwise.
+        pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
+            self.by_node = node_id.into();
+            self
+        }
     }
 }
 
@@ -165,7 +159,7 @@ impl SetForwardedHeaderLayer<Via> {
 
 impl SetForwardedHeaderLayer<XForwardedFor> {
     #[inline]
-    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`] header.
+    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`][XForwardedFor] header.
     #[must_use]
     pub fn x_forwarded_for() -> Self {
         Self::new()
@@ -174,7 +168,7 @@ impl SetForwardedHeaderLayer<XForwardedFor> {
 
 impl SetForwardedHeaderLayer<XForwardedHost> {
     #[inline]
-    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`] header.
+    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`][XForwardedHost] header.
     #[must_use]
     pub fn x_forwarded_host() -> Self {
         Self::new()
@@ -183,7 +177,7 @@ impl SetForwardedHeaderLayer<XForwardedHost> {
 
 impl SetForwardedHeaderLayer<XForwardedProto> {
     #[inline]
-    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`] header.
+    /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`][XForwardedProto] header.
     #[must_use]
     pub fn x_forwarded_proto() -> Self {
         Self::new()
@@ -244,21 +238,14 @@ impl<S: Clone, T> Clone for SetForwardedHeaderService<S, T> {
 }
 
 impl<S, T> SetForwardedHeaderService<S, T> {
-    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
-    ///
-    /// Default of `None` will be set to `rama` otherwise.
-    #[must_use]
-    pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
-        self.by_node = node_id.into();
-        self
-    }
-
-    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
-    ///
-    /// Default of `None` will be set to `rama` otherwise.
-    pub fn set_forward_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
-        self.by_node = node_id.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
+        ///
+        /// Default of `None` will be set to `rama` otherwise.
+        pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
+            self.by_node = node_id.into();
+            self
+        }
     }
 }
 
@@ -291,7 +278,7 @@ impl<S> SetForwardedHeaderService<S, Via> {
 
 impl<S> SetForwardedHeaderService<S, XForwardedFor> {
     #[inline]
-    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-For`] header.
+    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-For`][XForwardedFor] header.
     pub fn x_forwarded_for(inner: S) -> Self {
         Self::new(inner)
     }
@@ -299,7 +286,7 @@ impl<S> SetForwardedHeaderService<S, XForwardedFor> {
 
 impl<S> SetForwardedHeaderService<S, XForwardedHost> {
     #[inline]
-    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-Host`] header.
+    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-Host`][XForwardedHost] header.
     pub fn x_forwarded_host(inner: S) -> Self {
         Self::new(inner)
     }
@@ -307,7 +294,7 @@ impl<S> SetForwardedHeaderService<S, XForwardedHost> {
 
 impl<S> SetForwardedHeaderService<S, XForwardedProto> {
     #[inline]
-    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-Proto`] header.
+    /// Create a new `SetForwardedHeaderService` for the canonical [`X-Forwarded-Proto`][XForwardedProto] header.
     pub fn x_forwarded_proto(inner: S) -> Self {
         Self::new(inner)
     }
@@ -319,18 +306,18 @@ where
     H: ForwardHeader + Send + Sync + 'static,
     Body: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get().cloned();
 
-        let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
+        let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
 
         if let Some(peer_addr) = req
             .extensions()
             .get::<SocketInfo>()
-            .map(|socket| *socket.peer_addr())
+            .map(|socket| socket.peer_addr())
         {
             forwarded_element.set_forwarded_for(peer_addr);
         }
@@ -433,7 +420,7 @@ mod tests {
             .unwrap();
         req.extensions_mut()
             .insert(rama_net::forwarded::Forwarded::new(
-                ForwardedElement::forwarded_for(IpAddr::from([12, 23, 34, 45])),
+                ForwardedElement::new_forwarded_for(IpAddr::from([12, 23, 34, 45])),
             ));
         req.extensions_mut()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
@@ -457,7 +444,7 @@ mod tests {
             .unwrap();
         req.extensions_mut()
             .insert(rama_net::forwarded::Forwarded::new(
-                ForwardedElement::forwarded_for(IpAddr::from([12, 23, 34, 45])),
+                ForwardedElement::new_forwarded_for(IpAddr::from([12, 23, 34, 45])),
             ));
         req.extensions_mut()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
@@ -475,7 +462,7 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc))
-            .forward_by(IpAddr::from([12, 23, 34, 45]));
+            .with_forward_by(IpAddr::from([12, 23, 34, 45]));
         let mut req = Request::builder()
             .uri("https://www.example.com")
             .body(())

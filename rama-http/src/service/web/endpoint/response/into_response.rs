@@ -11,10 +11,11 @@ use rama_core::error::BoxError;
 use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
-use rama_http_headers::{ContentDisposition, ContentType};
+use rama_http_headers::{ContentDisposition, ContentLength, ContentType, HeaderMapExt};
 use rama_http_types::InfiniteReader;
 use rama_http_types::mime;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
+use rama_utils::str::arcstr::ArcStr;
 use std::{
     borrow::Cow,
     convert::Infallible,
@@ -38,25 +39,12 @@ pub trait IntoResponse {
 
 /// Wrapper that can be used to turn an `IntoResponse` type into
 /// something that implements `Into<Response>`.
+#[derive(Debug, Clone)]
 pub struct StaticResponseFactory<T>(pub T);
 
 impl<T: IntoResponse> From<StaticResponseFactory<T>> for Response {
     fn from(value: StaticResponseFactory<T>) -> Self {
         value.0.into_response()
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for StaticResponseFactory<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("StaticResponseFactory")
-            .field(&self.0)
-            .finish()
-    }
-}
-
-impl<T: Clone> Clone for StaticResponseFactory<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }
 
@@ -145,22 +133,40 @@ impl IntoResponse for Box<str> {
 
 impl IntoResponse for Cow<'static, str> {
     fn into_response(self) -> Response {
+        let len = self.len();
         let mut res = Body::from(self).into_response();
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
-        );
+        res.headers_mut().typed_insert(ContentType::text_utf8());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
+        res
+    }
+}
+
+impl IntoResponse for ArcStr {
+    fn into_response(self) -> Response {
+        let len = self.len();
+        let mut res = Body::from(self).into_response();
+        res.headers_mut().typed_insert(ContentType::text_utf8());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
+        res
+    }
+}
+
+impl IntoResponse for &ArcStr {
+    fn into_response(self) -> Response {
+        let len = self.len();
+        let mut res = Body::from(self).into_response();
+        res.headers_mut().typed_insert(ContentType::text_utf8());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
         res
     }
 }
 
 impl IntoResponse for Bytes {
     fn into_response(self) -> Response {
+        let len = self.len();
         let mut res = Body::from(self).into_response();
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::APPLICATION_OCTET_STREAM.as_ref()),
-        );
+        res.headers_mut().typed_insert(ContentType::octet_stream());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
         res
     }
 }
@@ -281,11 +287,10 @@ impl IntoResponse for Box<[u8]> {
 
 impl IntoResponse for Cow<'static, [u8]> {
     fn into_response(self) -> Response {
+        let len = self.len();
         let mut res = Body::from(self).into_response();
-        res.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(mime::APPLICATION_OCTET_STREAM.as_ref()),
-        );
+        res.headers_mut().typed_insert(ContentType::octet_stream());
+        res.headers_mut().typed_insert(ContentLength(len as u64));
         res
     }
 }
@@ -474,6 +479,8 @@ rama_core::combinators::impl_either!(impl_into_response_either);
 mod tests {
     use super::*;
     use rama_core::combinators::Either;
+    use rama_http_types::body::util::BodyExt as _;
+    use rama_utils::str::arcstr::arcstr;
 
     #[test]
     fn test_either_into_response() {
@@ -515,5 +522,65 @@ mod tests {
 
         let c_res = c.into_response();
         assert_eq!(c_res.status(), StatusCode::NOT_FOUND);
+    }
+
+    macro_rules! test_content_length_content_type {
+        ($val:expr, $len:expr, $ct:expr) => {{
+            let n = $len;
+            let resp = $val.into_response();
+            let content_length: usize = resp
+                .headers()
+                .get("content-length")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(n, content_length);
+            let ct: ContentType = resp.headers().typed_get().unwrap();
+            assert_eq!($ct, ct);
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(n, bytes.len());
+        }};
+    }
+
+    #[tokio::test]
+    async fn test_content_length_types_into_response() {
+        test_content_length_content_type!("str", 3, ContentType::text_utf8());
+        test_content_length_content_type!("string".to_owned(), 6, ContentType::text_utf8());
+        test_content_length_content_type!(
+            Cow::Borrowed("Cow::Borrowed"),
+            13,
+            ContentType::text_utf8()
+        );
+        test_content_length_content_type!(
+            Cow::Borrowed("Cow::Owned").into_owned(),
+            10,
+            ContentType::text_utf8()
+        );
+        test_content_length_content_type!(
+            Bytes::from_static(b"Bytes::from_static"),
+            18,
+            ContentType::octet_stream()
+        );
+        test_content_length_content_type!(
+            Bytes::from("Bytes::from"),
+            11,
+            ContentType::octet_stream()
+        );
+        test_content_length_content_type!(b"&[u8]", 5, ContentType::octet_stream());
+        test_content_length_content_type!([b'[', b'u', b'8', b']'], 4, ContentType::octet_stream());
+        test_content_length_content_type!(b"Vec<u8>".to_vec(), 7, ContentType::octet_stream());
+        test_content_length_content_type!(
+            Cow::Borrowed(b"Cow::Borrowed::<u8>"),
+            19,
+            ContentType::octet_stream()
+        );
+        test_content_length_content_type!(
+            Cow::Borrowed(b"Cow::Owned::<u8>").into_owned(),
+            16,
+            ContentType::octet_stream()
+        );
+        test_content_length_content_type!(arcstr!("ArcStr"), 6, ContentType::text_utf8());
     }
 }

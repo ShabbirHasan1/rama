@@ -34,8 +34,6 @@
 //! # }
 //! ```
 
-use std::fmt;
-
 use crate::{Request, Response, StatusCode};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -75,6 +73,7 @@ impl<S> Layer<S> for SetStatusLayer {
 /// Middleware to override status codes.
 ///
 /// See the [module docs](self) for more details.
+#[derive(Debug, Clone)]
 pub struct SetStatus<S> {
     inner: S,
     status: StatusCode,
@@ -98,36 +97,18 @@ impl<S> SetStatus<S> {
     define_inner_service_accessors!();
 }
 
-impl<S: fmt::Debug> fmt::Debug for SetStatus<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SetStatus")
-            .field("inner", &self.inner)
-            .field("status", &self.status)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for SetStatus<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            status: self.status,
-        }
-    }
-}
-
 impl<S: Copy> Copy for SetStatus<S> {}
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for SetStatus<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let mut response = self.inner.serve(req).await?;
         *response.status_mut() = self.status;
         Ok(response)

@@ -91,31 +91,15 @@ use rama_core::futures::FutureExt;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
 use std::{any::Any, panic::AssertUnwindSafe};
 
 /// Layer that applies the [`CatchPanic`] middleware that catches panics and converts them into
 /// `500 Internal Server` responses.
 ///
 /// See the [module docs](self) for an example.
+#[derive(Debug, Clone)]
 pub struct CatchPanicLayer<T> {
     panic_handler: T,
-}
-
-impl<T: fmt::Debug> fmt::Debug for CatchPanicLayer<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("CatchPanicLayer")
-            .field("panic_handler", &self.panic_handler)
-            .finish()
-    }
-}
-
-impl<T: Clone> Clone for CatchPanicLayer<T> {
-    fn clone(&self) -> Self {
-        Self {
-            panic_handler: self.panic_handler.clone(),
-        }
-    }
 }
 
 impl Default for CatchPanicLayer<DefaultResponseForPanic> {
@@ -168,6 +152,7 @@ where
 /// Middleware that catches panics and converts them into `500 Internal Server` responses.
 ///
 /// See the [module docs](self) for an example.
+#[derive(Debug, Clone)]
 pub struct CatchPanic<S, T> {
     inner: S,
     panic_handler: T,
@@ -198,36 +183,18 @@ impl<S, T> CatchPanic<S, T> {
     }
 }
 
-impl<S: fmt::Debug, T: fmt::Debug> fmt::Debug for CatchPanic<S, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CatchPanic")
-            .field("inner", &self.inner)
-            .field("panic_handler", &self.panic_handler)
-            .finish()
-    }
-}
-
-impl<S: Clone, T: Clone> Clone for CatchPanic<S, T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            panic_handler: self.panic_handler.clone(),
-        }
-    }
-}
-
 impl<S, T, ReqBody, ResBody> Service<Request<ReqBody>> for CatchPanic<S, T>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ResBody: Into<Body> + Send + 'static,
     T: ResponseForPanic + Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Response = Response;
+    type Output = Response;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let future = match std::panic::catch_unwind(AssertUnwindSafe(|| self.inner.serve(req))) {
             Ok(future) => future,
             Err(panic_err) => return Ok(self.panic_handler.response_for_panic(panic_err)),

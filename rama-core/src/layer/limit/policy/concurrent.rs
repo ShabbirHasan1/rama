@@ -1,4 +1,4 @@
-//! A [`Policy`] that limits the number of concurrent requests.
+//! A [`Policy`] that limits the number of concurrent inputs.
 //!
 //! See [`ConcurrentPolicy`].
 //!
@@ -26,42 +26,20 @@
 use super::{Policy, PolicyOutput, PolicyResult};
 use parking_lot::Mutex;
 use rama_utils::backoff::Backoff;
-use std::fmt;
 use std::sync::Arc;
 
-/// A [`Policy`] that limits the number of concurrent requests.
+/// A [`Policy`] that limits the number of concurrent inputs.
+#[derive(Debug, Clone)]
 pub struct ConcurrentPolicy<B, C> {
     tracker: C,
     backoff: B,
-}
-
-impl<B: fmt::Debug, C: fmt::Debug> std::fmt::Debug for ConcurrentPolicy<B, C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConcurrentPolicy")
-            .field("tracker", &self.tracker)
-            .field("backoff", &self.backoff)
-            .finish()
-    }
-}
-
-impl<B, C> Clone for ConcurrentPolicy<B, C>
-where
-    B: Clone,
-    C: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            tracker: self.tracker.clone(),
-            backoff: self.backoff.clone(),
-        }
-    }
 }
 
 impl<B, C> ConcurrentPolicy<B, C> {
     /// Create a new [`ConcurrentPolicy`], using the given [`ConcurrentTracker`],
     /// and the given [`Backoff`] policy.
     ///
-    /// The [`Backoff`] policy is used to backoff when the concurrent request limit is reached.
+    /// The [`Backoff`] policy is used to backoff when the concurrent input limit is reached.
     pub fn with_backoff(backoff: B, tracker: C) -> Self {
         Self { tracker, backoff }
     }
@@ -79,7 +57,7 @@ impl<C> ConcurrentPolicy<(), C> {
 
 impl ConcurrentPolicy<(), ConcurrentCounter> {
     /// Create a new concurrent policy,
-    /// which aborts the request if the `max` limit is reached.
+    /// which aborts the input if the `max` limit is reached.
     #[must_use]
     pub fn max(max: usize) -> Self {
         Self {
@@ -101,20 +79,20 @@ impl<B> ConcurrentPolicy<B, ConcurrentCounter> {
     }
 }
 
-impl<B, C, Request> Policy<Request> for ConcurrentPolicy<B, C>
+impl<B, C, Input> Policy<Input> for ConcurrentPolicy<B, C>
 where
     B: Backoff,
-    Request: Send + 'static,
+    Input: Send + 'static,
     C: ConcurrentTracker,
 {
     type Guard = C::Guard;
     type Error = C::Error;
 
-    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, input: Input) -> PolicyResult<Input, Self::Guard, Self::Error> {
         let tracker_err = match self.tracker.try_access() {
             Ok(guard) => {
                 return PolicyResult {
-                    request,
+                    input,
                     output: PolicyOutput::Ready(guard),
                 };
             }
@@ -127,16 +105,16 @@ where
             PolicyOutput::Retry
         };
 
-        PolicyResult { request, output }
+        PolicyResult { input, output }
     }
 }
 
 rama_utils::macros::error::static_str_error! {
-    #[doc = "request aborted due to exhausted concurrency limit"]
+    #[doc = "serve aborted due to exhausted concurrency limit"]
     pub struct LimitReached;
 }
 
-/// The tracker trait that can be implemented to provide custom concurrent request tracking.
+/// The tracker trait that can be implemented to provide custom concurrent input tracking.
 ///
 /// By default [`ConcurrentCounter`] is provided, but in case you need multi-instance tracking,
 /// you can support that by implementing the [`ConcurrentTracker`] trait.
@@ -145,7 +123,7 @@ pub trait ConcurrentTracker: Send + Sync + 'static {
     /// to release the resource when dropped.
     type Guard: Send + 'static;
 
-    /// The error that is returned when the concurrent request limit is reached,
+    /// The error that is returned when the concurrent input limit is reached,
     /// which is also returned in case a used backoff failed.
     type Error: Send + 'static;
 
@@ -157,7 +135,7 @@ pub trait ConcurrentTracker: Send + Sync + 'static {
     fn try_access(&self) -> Result<Self::Guard, Self::Error>;
 }
 
-/// The default [`ConcurrentTracker`] that uses a counter to track the concurrent requests.
+/// The default [`ConcurrentTracker`] that uses a counter to track the concurrent inputs.
 #[derive(Debug, Clone)]
 pub struct ConcurrentCounter {
     max: usize,
@@ -192,7 +170,7 @@ impl ConcurrentTracker for ConcurrentCounter {
     }
 }
 
-/// The guard for [`ConcurrentCounter`] that releases the concurrent request limit.
+/// The guard for [`ConcurrentCounter`] that releases the concurrent input limit.
 #[derive(Debug)]
 pub struct ConcurrentCounterGuard {
     current: Arc<Mutex<usize>>,
@@ -229,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_policy_zero() {
-        // for cases where you want to also block specific requests as part of your rate limiting,
+        // for cases where you want to also block specific inputs as part of your rate limiting,
         // bit of a contrived example, but possible
 
         let policy = ConcurrentPolicy::max(0);

@@ -1,7 +1,7 @@
 use super::*;
 use crate::h2::codec::UserError;
 use crate::h2::proto;
-use rama_core::telemetry::tracing;
+use rama_core::telemetry::tracing::{self, warn};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
@@ -9,7 +9,6 @@ use rama_http_types::proto::h2::frame::{
 use rama_http_types::{HeaderMap, Request, Response};
 
 use std::cmp::Ordering;
-use std::io;
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
@@ -69,6 +68,7 @@ pub(super) enum Event {
     Headers(peer::PollMessage),
     Data(Bytes),
     Trailers(HeaderMap),
+    InformationalHeaders(peer::PollMessage),
 }
 
 #[derive(Debug)]
@@ -84,18 +84,26 @@ pub(crate) enum Open {
 }
 
 impl Recv {
-    pub(super) fn new(peer: peer::Dyn, config: &Config) -> Self {
+    pub(super) fn try_new(
+        peer: peer::Dyn,
+        config: &Config,
+    ) -> Result<Self, crate::h2::proto::Error> {
         let next_stream_id = if peer.is_server() { 1 } else { 2 };
 
         let mut flow = FlowControl::new();
 
-        // connections always have the default window size, regardless of
-        // settings
-        flow.inc_window(DEFAULT_INITIAL_WINDOW_SIZE)
-            .expect("invalid initial remote window size");
-        flow.assign_capacity(DEFAULT_INITIAL_WINDOW_SIZE).unwrap();
+        // connections always have the default window size,
+        // regardless of settings
+        flow.inc_window(DEFAULT_INITIAL_WINDOW_SIZE).map_err(|reason| {
+            warn!("h2 proto: stream recv: invalid initial remote window size: reason = {reason}; report bug to rama");
+            crate::h2::proto::Error::library_go_away(reason)
+        })?;
+        flow.assign_capacity(DEFAULT_INITIAL_WINDOW_SIZE).map_err(|reason| {
+            warn!("h2 proto: stream recv: failed to assign initial window size capacity: reason = {reason}; report bug to rama");
+            crate::h2::proto::Error::library_go_away(reason)
+        })?;
 
-        Self {
+        Ok(Self {
             init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
             flow,
             in_flight_data: 0 as WindowSize,
@@ -110,7 +118,7 @@ impl Recv {
             refused: None,
             is_push_enabled: config.local_push_enabled,
             is_extended_connect_protocol_enabled: config.extended_connect_protocol_enabled,
-        }
+        })
     }
 
     /// Returns the initial receive window size
@@ -132,7 +140,7 @@ impl Recv {
         mode: Open,
         counts: &Counts,
     ) -> Result<Option<StreamId>, Error> {
-        assert!(self.refused.is_none());
+        debug_assert!(self.refused.is_none());
 
         counts.peer().ensure_can_open(id, mode)?;
 
@@ -255,7 +263,6 @@ impl Recv {
         }
 
         if !pseudo.is_informational() {
-            // TODO we can probably mem::take them here, but will need to be tested for side-effects
             let extensions = stream.extensions.clone();
             let message = counts.peer().convert_poll_message(
                 pseudo,
@@ -279,6 +286,27 @@ impl Recv {
                 // corresponding headers frame pushed to `stream.pending_recv`.
                 self.pending_accept.push(stream);
             }
+        } else {
+            // This is an informational response (1xx status code)
+            // Convert to response and store it for polling
+            let extensions = stream.extensions.clone();
+            let message = counts.peer().convert_poll_message(
+                pseudo,
+                fields,
+                field_order,
+                header_size,
+                stream_id,
+                extensions,
+            )?;
+
+            tracing::trace!("Received informational response: stream_id={:?}", stream_id);
+
+            // Push the informational response onto the stream's recv buffer
+            // with a special event type so it can be polled separately
+            stream
+                .pending_recv
+                .push_back(&mut self.buffer, Event::InformationalHeaders(message));
+            stream.notify_recv();
         }
 
         Ok(())
@@ -333,23 +361,67 @@ impl Recv {
         cx: &Context,
         stream: &mut store::Ptr,
     ) -> Poll<Result<Response<()>, proto::Error>> {
-        // If the buffer is not empty, then the first frame must be a HEADERS
-        // frame or the user violated the contract.
-        match stream.pending_recv.pop_front(&mut self.buffer) {
-            Some(Event::Headers(peer::PollMessage::Client(response))) => Poll::Ready(Ok(response)),
-            Some(_) => panic!("poll_response called after response returned"),
-            None => {
-                if !stream.state.ensure_recv_open()? {
-                    proto_err!(stream: "poll_response: stream={:?} is not opened;",  stream.id);
-                    return Poll::Ready(Err(Error::library_reset(
-                        stream.id,
-                        Reason::PROTOCOL_ERROR,
-                    )));
+        // Skip over any interim informational headers to find the main response
+        loop {
+            match stream.pending_recv.pop_front(&mut self.buffer) {
+                Some(Event::Headers(peer::PollMessage::Client(response))) => {
+                    return Poll::Ready(Ok(response));
                 }
+                Some(Event::InformationalHeaders(_)) => {
+                    tracing::trace!(
+                        "Skipping informational response in poll_response - should be consumed via poll_informational; stream_id={:?}",
+                        stream.id,
+                    );
+                }
+                Some(evt) => {
+                    tracing::warn!("poll_response called after response returned: {evt:?}");
+                    return Poll::Ready(Err(proto::Error::library_go_away(Reason::INTERNAL_ERROR)));
+                }
+                None => {
+                    if !stream.state.ensure_recv_open()? {
+                        proto_err!(stream: "poll_response: stream={:?} is not opened;",  stream.id);
+                        return Poll::Ready(Err(Error::library_reset(
+                            stream.id,
+                            Reason::PROTOCOL_ERROR,
+                        )));
+                    }
 
-                stream.recv_task = Some(cx.waker().clone());
-                Poll::Pending
+                    stream.recv_task = Some(cx.waker().clone());
+                    return Poll::Pending;
+                }
             }
+        }
+    }
+
+    /// Called by the client to get informational responses (1xx status codes)
+    pub fn poll_informational(
+        &mut self,
+        cx: &Context,
+        stream: &mut store::Ptr,
+    ) -> Poll<Option<Result<Response<()>, proto::Error>>> {
+        // Try to pop the front event and check if it's an informational response
+        // If it's not, we put it back
+        if let Some(event) = stream.pending_recv.pop_front(&mut self.buffer) {
+            match event {
+                Event::InformationalHeaders(peer::PollMessage::Client(response)) => {
+                    // Found an informational response, return it
+                    return Poll::Ready(Some(Ok(response)));
+                }
+                other => {
+                    // Not an informational response, put it back at the front
+                    stream.pending_recv.push_front(&mut self.buffer, other);
+                }
+            }
+        }
+
+        // No informational response available at the front
+        if stream.state.ensure_recv_open()? {
+            // Request to get notified once more frames arrive
+            stream.recv_task = Some(cx.waker().clone());
+            Poll::Pending
+        } else {
+            // No more frames will be received
+            Poll::Ready(None)
         }
     }
 
@@ -520,11 +592,11 @@ impl Recv {
         settings: &frame::Settings,
         store: &mut Store,
     ) -> Result<(), proto::Error> {
-        if let Some(val) = settings.is_extended_connect_protocol_enabled() {
+        if let Some(val) = settings.config.enable_connect_protocol.map(|v| v != 0) {
             self.is_extended_connect_protocol_enabled = val;
         }
 
-        if let Some(target) = settings.initial_window_size() {
+        if let Some(target) = settings.config.initial_window_size {
             let old_sz = self.init_window_sz;
             self.init_window_sz = target;
 
@@ -599,11 +671,12 @@ impl Recv {
         frame: frame::Data,
         stream: &mut store::Ptr,
     ) -> Result<(), Error> {
-        let sz = frame.payload().len();
+        // could include padding
+        let sz = frame.flow_controlled_len();
 
         // This should have been enforced at the codec::FramedRead layer, so
         // this is just a sanity check.
-        assert!(sz <= MAX_WINDOW_SIZE as usize);
+        debug_assert!(sz <= MAX_WINDOW_SIZE as usize);
 
         let sz = sz as WindowSize;
 
@@ -650,6 +723,7 @@ impl Recv {
             return Err(Error::library_reset(stream.id, Reason::FLOW_CONTROL_ERROR));
         }
 
+        // use payload len, padding doesn't count for content-length
         if stream.dec_content_length(frame.payload().len()).is_err() {
             proto_err!(stream:
                 "recv_data: content-length overflow; stream={:?}; len={:?}",
@@ -693,6 +767,20 @@ impl Recv {
 
         // Track the data as in-flight
         stream.in_flight_recv_data += sz;
+
+        // We auto-release the padded length, since the user cannot.
+        if let Some(padded_len) = frame.padded_len() {
+            tracing::trace!(
+                "recv_data; auto-releasing padded length of {:?} for {:?}",
+                padded_len,
+                stream.id,
+            );
+
+            let _res = self.release_capacity(padded_len.into(), stream, &mut None);
+            // cannot fail, we JUST added more in_flight data above.
+
+            debug_assert!(_res.is_ok());
+        }
 
         let event = Event::Data(frame.into_payload());
 
@@ -876,7 +964,7 @@ impl Recv {
     }
 
     pub(super) fn go_away(&mut self, last_processed_id: StreamId) {
-        assert!(self.max_stream_id >= last_processed_id);
+        debug_assert!(self.max_stream_id >= last_processed_id);
         self.max_stream_id = last_processed_id;
     }
 
@@ -966,7 +1054,7 @@ impl Recv {
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -978,7 +1066,7 @@ impl Recv {
             let frame = frame::Reset::new(stream_id, Reason::REFUSED_STREAM);
 
             // Buffer the frame
-            dst.buffer(frame.into()).expect("invalid RST_STREAM frame");
+            dst.buffer(frame.into())?;
         }
 
         self.refused = None;
@@ -991,7 +1079,10 @@ impl Recv {
             let now = Instant::now();
             let reset_duration = self.reset_duration;
             while let Some(stream) = self.pending_reset_expired.pop_if(store, |stream| {
-                let reset_at = stream.reset_at.expect("reset_at must be set if in queue");
+                let Some(reset_at) = stream.reset_at else {
+                    warn!("h2 proto stream: reset_at must be set if in queue; force expired; report bug to rama");
+                    return true;
+                };
                 // rust-lang/rust#86470 tracks a bug in the standard library where `Instant`
                 // subtraction can panic (because, on some platforms, `Instant` isn't actually
                 // monotonic). We use a saturating operation to avoid this panic here.
@@ -1043,7 +1134,7 @@ impl Recv {
         store: &mut Store,
         counts: &mut Counts,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -1062,7 +1153,7 @@ impl Recv {
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -1074,13 +1165,13 @@ impl Recv {
             ready!(dst.poll_ready(cx))?;
 
             // Buffer the WINDOW_UPDATE frame
-            dst.buffer(frame.into())
-                .expect("invalid WINDOW_UPDATE frame");
+            dst.buffer(frame.into())?;
 
             // Update flow control
-            self.flow
-                .inc_window(incr)
-                .expect("unexpected flow control state");
+            self.flow.inc_window(incr).map_err(|reason| {
+                warn!("h2 stream recv: unexpected update flow control error: reason = {reason}");
+                crate::h2::proto::Error::library_go_away(reason)
+            })?;
         }
 
         Poll::Ready(Ok(()))
@@ -1093,7 +1184,7 @@ impl Recv {
         store: &mut Store,
         counts: &mut Counts,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<(), crate::h2::proto::Error>>
     where
         T: AsyncWrite + Unpin,
         B: Buf,
@@ -1118,7 +1209,7 @@ impl Recv {
                     // TODO: is this correct? We could possibly send a window
                     // update on a ReservedRemote stream if we already know
                     // we want to stream the data faster...
-                    return;
+                    return Ok::<_, crate::h2::proto::Error>(());
                 }
 
                 // TODO: de-dup
@@ -1127,16 +1218,20 @@ impl Recv {
                     let frame = frame::WindowUpdate::new(stream.id, incr);
 
                     // Buffer it
-                    dst.buffer(frame.into())
-                        .expect("invalid WINDOW_UPDATE frame");
+                    dst.buffer(frame.into())?;
 
                     // Update flow control
                     stream
                         .recv_flow
                         .inc_window(incr)
-                        .expect("unexpected flow control state");
+                        .map_err(|reason| {
+                            warn!("h2 proto stream: unexpected flow control state error: reason = {reason}");
+                            crate::h2::proto::Error::library_go_away(reason)
+                        })?;
                 }
-            })
+
+                Ok(())
+            })?;
         }
     }
 

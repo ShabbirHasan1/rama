@@ -14,7 +14,7 @@ use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, w
 use rama_core::{bytes::Bytes, combinators::Either};
 use rama_core::{error::BoxError, futures::future::FusedFuture};
 use rama_core::{
-    extensions::ExtensionsMut,
+    extensions::{ExtensionsMut, ExtensionsRef},
     futures::{Stream, stream::FusedStream},
 };
 use rama_http::{
@@ -29,7 +29,7 @@ use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::ping::{Ponger, Recorder};
-use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
+use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::Incoming as IncomingBody;
 use crate::client::dispatch::{Callback, SendWhen, TrySendError};
 use crate::h2::SendStream;
@@ -37,7 +37,6 @@ use crate::h2::client::ResponseFuture;
 use crate::h2::client::{Builder, Connection, SendRequest};
 use crate::headers;
 use crate::proto::Dispatched;
-use crate::proto::h2::UpgradedSendStream;
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
 
@@ -55,7 +54,7 @@ type ConnEof = oneshot::Receiver<Infallible>;
 const DEFAULT_CONN_WINDOW: u32 = 1024 * 1024 * 5; // 5mb
 const DEFAULT_STREAM_WINDOW: u32 = 1024 * 1024 * 2; // 2mb
 const DEFAULT_MAX_FRAME_SIZE: u32 = 1024 * 16; // 16kb
-const DEFAULT_MAX_SEND_BUF_SIZE: usize = 1024 * 1024; // 1mb
+const DEFAULT_MAX_SEND_BUF_SIZE: u32 = 1024 * 1024; // 1mb
 const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 1024 * 16; // 16kb
 
 // The maximum number of concurrent streams that the client is allowed to open
@@ -79,7 +78,7 @@ pub(crate) struct Config {
     pub(crate) keep_alive_timeout: Duration,
     pub(crate) keep_alive_while_idle: bool,
     pub(crate) max_concurrent_reset_streams: Option<usize>,
-    pub(crate) max_send_buffer_size: usize,
+    pub(crate) max_send_buffer_size: u32,
     pub(crate) max_pending_accept_reset_streams: Option<usize>,
     pub(crate) header_table_size: Option<u32>,
     pub(crate) max_concurrent_streams: Option<u32>,
@@ -115,37 +114,37 @@ impl Default for Config {
 }
 
 pub(crate) fn new_builder(config: &Config) -> Builder {
-    let mut builder = Builder::default();
-    builder
-        .initial_max_send_streams(config.initial_max_send_streams)
-        .initial_window_size(config.initial_stream_window_size)
-        .initial_connection_window_size(config.initial_conn_window_size)
-        .max_header_list_size(config.max_header_list_size)
-        .max_send_buffer_size(config.max_send_buffer_size)
-        .enable_push(config.enable_push);
+    let mut builder = Builder::default()
+        .with_initial_max_send_streams(config.initial_max_send_streams)
+        .with_initial_window_size(config.initial_stream_window_size)
+        .with_initial_connection_window_size(config.initial_conn_window_size)
+        .with_max_header_list_size(config.max_header_list_size)
+        .with_max_send_buffer_size(config.max_send_buffer_size)
+        .with_enable_push(config.enable_push);
+
     if let Some(max) = config.max_frame_size {
-        builder.max_frame_size(max);
+        builder.set_max_frame_size(max);
     }
     if let Some(max) = config.max_concurrent_reset_streams {
-        builder.max_concurrent_reset_streams(max);
+        builder.set_max_concurrent_reset_streams(max);
     }
     if let Some(max) = config.max_pending_accept_reset_streams {
-        builder.max_pending_accept_reset_streams(max);
+        builder.set_max_pending_accept_reset_streams(max);
     }
     if let Some(size) = config.header_table_size {
-        builder.header_table_size(size);
+        builder.set_header_table_size(size);
     }
     if let Some(max) = config.max_concurrent_streams {
-        builder.max_concurrent_streams(max);
+        builder.set_max_concurrent_streams(max);
     }
     if let Some(connect_protocol) = config.enable_connect_protocol {
-        builder.enable_connect_protocol(connect_protocol);
+        builder.set_enable_connect_protocol(connect_protocol);
     }
     if let Some(no_rfc7540_priorities) = config.no_rfc7540_priorities {
         builder.set_no_rfc7540_priorities(no_rfc7540_priorities);
     }
     if let Some(setting_order) = config.setting_order.clone() {
-        builder.setting_order(setting_order);
+        builder.set_setting_order(setting_order);
     }
     builder
 }
@@ -203,7 +202,12 @@ where
     let ping_config = new_ping_config(config);
 
     let (conn, ping) = if ping_config.is_enabled() {
-        let pp = conn.ping_pong().expect("conn.ping_pong");
+        let Some(pp) = conn.ping_pong() else {
+            return Err(
+                crate::Error::new_parse_internal()
+                    .with_display("bug: report in rama crate: client: conn.ping_pong not available while ping config is enabled"),
+            );
+        };
         let (recorder, ponger) = ping::channel(pp, &ping_config);
 
         let conn: Conn<_, B> = Conn::new(ponger, conn);
@@ -281,8 +285,8 @@ where
         let mut this = self.project();
         match this.ponger.poll(cx) {
             Poll::Ready(ping::Ponged::SizeUpdate(wnd)) => {
-                this.conn.set_target_window_size(wnd);
-                this.conn.set_initial_window_size(wnd)?;
+                this.conn.try_set_target_window_size(wnd)?;
+                this.conn.try_set_initial_window_size(wnd)?;
             }
             Poll::Ready(ping::Ponged::KeepAliveTimedOut) => {
                 debug!("connection keep-alive timed out");
@@ -414,7 +418,11 @@ where
             // the connection some more should start shutdown
             // and then close.
             trace!("send_request dropped, starting conn shutdown");
-            drop(this.cancel_tx.take().expect("ConnTask Future polled twice"));
+            if let Some(cancel_tx) = this.cancel_tx.take() {
+                drop(cancel_tx);
+            } else {
+                warn!("h2 client: ConnTask Future polled twice: cancel_tx was already None");
+            }
         }
 
         Poll::Pending
@@ -541,8 +549,21 @@ where
                 if let Err(_e) = result {
                     debug!("client request body error: {_e:?}");
                 }
-                drop(this.conn_drop_ref.take().expect("Future polled twice"));
-                drop(this.ping.take().expect("Future polled twice"));
+
+                if let Some(conn_drop_ref) = this.conn_drop_ref.take() {
+                    drop(conn_drop_ref);
+                } else {
+                    warn!(
+                        "h2 client: ConnTask PipeMap polled twice: conn_drop_ref was already None"
+                    );
+                }
+
+                if let Some(ping) = this.ping.take() {
+                    drop(ping);
+                } else {
+                    warn!("h2 client: ConnTask PipeMap polled twice: ping was already None");
+                }
+
                 return Poll::Ready(());
             }
             Poll::Pending => (),
@@ -613,6 +634,7 @@ where
                     fut: f.fut,
                     ping: Some(ping),
                     send_stream: Some(send_stream),
+                    exec: self.executor.clone(),
                 },
                 call_back: Some(f.cb),
             },
@@ -638,6 +660,7 @@ pin_project! {
         ping: Option<Recorder>,
         #[pin]
         send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
+        exec: Executor,
     }
 }
 
@@ -647,13 +670,22 @@ where
 {
     type Output = Result<Response<crate::body::Incoming>, (crate::Error, Option<Request<B>>)>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.as_mut().project();
 
         let result = ready!(this.fut.poll(cx));
 
-        let ping = this.ping.take().expect("Future polled twice");
-        let send_stream = this.send_stream.take().expect("Future polled twice");
+        let Some((ping, send_stream)) = this
+            .ping
+            .take()
+            .and_then(|ping| this.send_stream.take().map(|stream| (ping, stream)))
+        else {
+            return Poll::Ready(Err((
+                crate::Error::new_parse_internal()
+                    .with_display("ResponseFutMap polled twice (bug: polled after ready)"),
+                None::<Request<B>>,
+            )));
+        };
 
         match result {
             Ok(res) => {
@@ -675,13 +707,15 @@ where
                     let mut res = Response::from_parts(parts, IncomingBody::empty());
 
                     let (pending, on_upgrade) = upgrade::pending();
-                    let io = H2Upgraded {
-                        ping,
-                        send_stream: unsafe { UpgradedSendStream::new(send_stream) },
+
+                    let (h2_up, up_task) = super::upgrade::pair(
+                        send_stream,
                         recv_stream,
-                        buf: Bytes::new(),
-                    };
-                    let upgraded = Upgraded::new(io, Bytes::new());
+                        ping,
+                        res.extensions().clone(),
+                    );
+                    self.exec.spawn_task(up_task);
+                    let upgraded = Upgraded::new(h2_up, Bytes::new());
 
                     pending.fulfill(upgraded);
                     res.extensions_mut().insert(on_upgrade);

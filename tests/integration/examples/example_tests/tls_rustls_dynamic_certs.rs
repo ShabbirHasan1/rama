@@ -2,7 +2,7 @@ use super::utils::{self, ClientService};
 use rama::{
     Layer, Service,
     error::BoxError,
-    extensions::{ExtensionsRef, RequestContextExt},
+    extensions::{ExtensionsRef, InputExtensions},
     http::{
         Response, StreamingBody,
         client::EasyHttpWebClient,
@@ -22,6 +22,7 @@ use rama::{
             client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
+    rt::Executor,
     tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
@@ -71,8 +72,8 @@ async fn test_tls_rustls_dynamic_certs() {
 
         let certificates = response
             .extensions()
-            .get::<RequestContextExt>()
-            .and_then(|ext| ext.get::<NegotiatedTlsParameters>())
+            .get()
+            .and_then(|InputExtensions(ext)| ext.get::<NegotiatedTlsParameters>())
             .unwrap()
             .peer_certificate_chain
             .clone()
@@ -91,13 +92,13 @@ where
         .maybe_with_server_name(domain)
         .with_store_server_certificate_chain(true)
         .into_shared_builder();
-    let inner_client = EasyHttpWebClient::builder()
+    let inner_client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))
-        .with_default_http_connector()
-        .build();
+        .with_default_http_connector(Executor::default())
+        .build_client();
 
     (
         MapResultLayer::new(map_internal_client_error),

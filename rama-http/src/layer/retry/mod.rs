@@ -24,35 +24,10 @@ pub use self::policy::{Policy, PolicyResult};
 /// Configure retrying requests of "failed" responses.
 ///
 /// A [`Policy`] classifies what is a "failed" response.
+#[derive(Debug, Clone)]
 pub struct Retry<P, S> {
     policy: P,
     inner: S,
-}
-
-impl<P, S> std::fmt::Debug for Retry<P, S>
-where
-    P: std::fmt::Debug,
-    S: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Retry")
-            .field("policy", &self.policy)
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<P, S> Clone for Retry<P, S>
-where
-    P: Clone,
-    S: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            policy: self.policy.clone(),
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 // ===== impl Retry =====
@@ -108,14 +83,14 @@ impl std::error::Error for RetryError {
 
 impl<P, S, Body> Service<Request<Body>> for Retry<P, S>
 where
-    P: Policy<S::Response, S::Error>,
+    P: Policy<S::Output, S::Error>,
     S: Service<Request<RetryBody>, Error: Into<BoxError>>,
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = RetryError;
 
-    async fn serve(&self, request: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, request: Request<Body>) -> Result<Self::Output, Self::Error> {
         // consume body so we can clone the request if desired
         let (parts, body) = request.into_parts();
         let body = body.collect().await.map_err(|e| RetryError {
@@ -256,7 +231,7 @@ mod test {
             output: &'static str,
             extensions: Extensions,
             retried: bool,
-            service: &impl Service<Request, Response = Response, Error = E>,
+            service: &impl Service<Request, Output = Response, Error = E>,
         ) {
             let state = extensions.get::<State>().unwrap().clone();
 
@@ -292,7 +267,7 @@ mod test {
             input: &'static str,
             extensions: Extensions,
             retried: bool,
-            service: &impl Service<Request, Response = Response, Error = E>,
+            service: &impl Service<Request, Output = Response, Error = E>,
         ) {
             let state = extensions.get::<State>().unwrap().clone();
 

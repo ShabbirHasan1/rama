@@ -26,16 +26,14 @@ use rama::{
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-
-    let listener = TcpListener::bind("127.0.0.1:62009")
+    let listener = TcpListener::bind("127.0.0.1:62009", Executor::default())
         .await
         .expect("bind TCP Listener");
 
     // This will serve files in the current working dir
     let cwd = std::env::current_dir().expect("current working dir");
     println!("Serving files from: {cwd:?}");
-    let http_fs_server = HttpServer::auto(exec).service(ServeDir::new(cwd));
+    let http_fs_server = HttpServer::default().service(ServeDir::new(cwd));
 
     // Serve the HTTP server over TCP,
     // ...once running you can go in browser for example to:

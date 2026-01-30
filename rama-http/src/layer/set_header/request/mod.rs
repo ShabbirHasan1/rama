@@ -82,13 +82,17 @@
 
 use crate::{HeaderValue, Request, Response, header::HeaderName, headers::HeaderEncode};
 use rama_core::{Layer, Service};
+use rama_http_headers::TypedHeader;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 mod header;
 use header::InsertHeaderMode;
 
-pub use header::{BoxMakeHeaderValueFn, MakeHeaderValue};
+pub use header::{
+    BoxMakeHeaderValueFn, MakeHeaderValue, MakeHeaderValueDefault, MakeHeaderValueFn,
+    TypedHeaderAsMaker,
+};
 
 /// Layer that applies [`SetRequestHeader`] which adds a request header.
 ///
@@ -114,6 +118,7 @@ impl<M> SetRequestHeaderLayer<M> {
     ///
     /// If a previous value exists for the same header, it is removed and replaced with the new
     /// header value.
+    #[inline(always)]
     pub fn overriding(header_name: HeaderName, make: M) -> Self {
         Self::new(header_name, make, InsertHeaderMode::Override)
     }
@@ -122,6 +127,7 @@ impl<M> SetRequestHeaderLayer<M> {
     ///
     /// The new header is always added, preserving any existing values. If previous values exist,
     /// the header will have multiple values.
+    #[inline(always)]
     pub fn appending(header_name: HeaderName, make: M) -> Self {
         Self::new(header_name, make, InsertHeaderMode::Append)
     }
@@ -129,6 +135,7 @@ impl<M> SetRequestHeaderLayer<M> {
     /// Create a new [`SetRequestHeaderLayer`].
     ///
     /// If a previous value exists for the header, the new value is not inserted.
+    #[inline(always)]
     pub fn if_not_present(header_name: HeaderName, make: M) -> Self {
         Self::new(header_name, make, InsertHeaderMode::IfNotPresent)
     }
@@ -142,10 +149,11 @@ impl<M> SetRequestHeaderLayer<M> {
     }
 }
 
-impl SetRequestHeaderLayer<HeaderValue> {
+impl SetRequestHeaderLayer<Option<HeaderValue>> {
     /// Create a new [`SetRequestHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetRequestHeaderLayer::overriding`] for more details.
+    #[inline(always)]
     pub fn overriding_typed<H: HeaderEncode>(header: H) -> Self {
         Self::overriding(H::name().clone(), header.encode_to_value())
     }
@@ -153,6 +161,7 @@ impl SetRequestHeaderLayer<HeaderValue> {
     /// Create a new [`SetRequestHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetRequestHeaderLayer::appending`] for more details.
+    #[inline(always)]
     pub fn appending_typed<H: HeaderEncode>(header: H) -> Self {
         Self::appending(H::name().clone(), header.encode_to_value())
     }
@@ -160,15 +169,17 @@ impl SetRequestHeaderLayer<HeaderValue> {
     /// Create a new [`SetRequestHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetRequestHeaderLayer::if_not_present`] for more details.
+    #[inline(always)]
     pub fn if_not_present_typed<H: HeaderEncode>(header: H) -> Self {
         Self::if_not_present(H::name().clone(), header.encode_to_value())
     }
 }
 
 impl<F, A> SetRequestHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
-    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeaderLayer::overriding`] for more details.
+    #[inline(always)]
     pub fn overriding_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
@@ -177,9 +188,10 @@ impl<F, A> SetRequestHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeaderLayer::appending`] for more details.
+    #[inline(always)]
     pub fn appending_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
@@ -188,13 +200,102 @@ impl<F, A> SetRequestHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeaderLayer`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeaderLayer::if_not_present`] for more details.
+    #[inline(always)]
     pub fn if_not_present_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
             BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
+}
+
+impl<M> SetRequestHeaderLayer<M> {
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
+    ///
+    /// See [`SetRequestHeaderLayer::overriding`] for more details.
+    #[inline(always)]
+    pub fn overriding_default(
+        header_name: HeaderName,
+    ) -> SetRequestHeaderLayer<MakeHeaderValueDefault<M>> {
+        SetRequestHeaderLayer::new(
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
+    ///
+    /// See [`SetRequestHeaderLayer::appending`] for more details.
+    #[inline(always)]
+    pub fn appending_default(
+        header_name: HeaderName,
+    ) -> SetRequestHeaderLayer<MakeHeaderValueDefault<M>> {
+        SetRequestHeaderLayer::new(
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`MakeHeaderValue`].
+    ///
+    /// See [`SetRequestHeaderLayer::if_not_present`] for more details.
+    #[inline(always)]
+    pub fn if_not_present_default(
+        header_name: HeaderName,
+    ) -> SetRequestHeaderLayer<MakeHeaderValueDefault<M>> {
+        SetRequestHeaderLayer::new(
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
+}
+
+impl<M: TypedHeader> SetRequestHeaderLayer<M> {
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetRequestHeaderLayer::overriding`] for more details.
+    #[inline(always)]
+    #[must_use]
+    pub fn overriding_default_typed()
+    -> SetRequestHeaderLayer<MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetRequestHeaderLayer::new(
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetRequestHeaderLayer::appending`] for more details.
+    #[inline(always)]
+    #[must_use]
+    pub fn appending_default_typed()
+    -> SetRequestHeaderLayer<MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetRequestHeaderLayer::new(
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetRequestHeaderLayer`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetRequestHeaderLayer::if_not_present`] for more details.
+    #[inline(always)]
+    #[must_use]
+    pub fn if_not_present_default_typed()
+    -> SetRequestHeaderLayer<MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetRequestHeaderLayer::new(
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
             InsertHeaderMode::IfNotPresent,
         )
     }
@@ -247,28 +348,28 @@ pub struct SetRequestHeader<S, M> {
     mode: InsertHeaderMode,
 }
 
-impl<S> SetRequestHeader<S, HeaderValue> {
+impl<S, H: HeaderEncode> SetRequestHeader<S, TypedHeaderAsMaker<H>> {
     /// Create a new [`SetRequestHeader`] using a typed header.
     ///
     /// If a previous value exists for the same header, it is removed and replaced with the new
     /// header value.
-    pub fn overriding_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::overriding(inner, H::name().clone(), header.encode_to_value())
+    pub fn overriding_typed(inner: S, header: H) -> Self {
+        Self::overriding(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 
     /// Create a new [`SetRequestHeader`] using a typed header.
     ///
     /// The new header is always added, preserving any existing values. If previous values exist,
     /// the header will have multiple values.
-    pub fn appending_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::appending(inner, H::name().clone(), header.encode_to_value())
+    pub fn appending_typed(inner: S, header: H) -> Self {
+        Self::appending(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 
     /// Create a new [`SetRequestHeader`] using a typed header.
     ///
     /// If a previous value exists for the header, the new value is not inserted.
-    pub fn if_not_present_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
-        Self::if_not_present(inner, H::name().clone(), header.encode_to_value())
+    pub fn if_not_present_typed(inner: S, header: H) -> Self {
+        Self::if_not_present(inner, H::name().clone(), TypedHeaderAsMaker(header))
     }
 }
 
@@ -309,7 +410,7 @@ impl<S, M> SetRequestHeader<S, M> {
 }
 
 impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
-    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeader::overriding`] for more details.
     pub fn overriding_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
@@ -321,7 +422,7 @@ impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeader::appending`] for more details.
     pub fn appending_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
@@ -333,7 +434,7 @@ impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
         )
     }
 
-    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    /// Create a new [`SetRequestHeader`] from a [`header::MakeHeaderValueFn`].
     ///
     /// See [`SetRequestHeader::if_not_present`] for more details.
     pub fn if_not_present_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
@@ -341,6 +442,103 @@ impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
             inner,
             header_name,
             BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
+}
+
+impl<S, M> SetRequestHeader<S, M> {
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`MakeHeaderValue`].
+    ///
+    /// See [`SetRequestHeader::overriding`] for more details.
+    #[inline(always)]
+    pub fn overriding_default(
+        inner: S,
+        header_name: HeaderName,
+    ) -> SetRequestHeader<S, MakeHeaderValueDefault<M>> {
+        SetRequestHeader::new(
+            inner,
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`MakeHeaderValue`].
+    ///
+    /// See [`SetRequestHeader::appending`] for more details.
+    #[inline(always)]
+    pub fn appending_default(
+        inner: S,
+        header_name: HeaderName,
+    ) -> SetRequestHeader<S, MakeHeaderValueDefault<M>> {
+        SetRequestHeader::new(
+            inner,
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`MakeHeaderValue`].
+    ///
+    /// See [`SetRequestHeader::if_not_present`] for more details.
+    #[inline(always)]
+    pub fn if_not_present_default(
+        inner: S,
+        header_name: HeaderName,
+    ) -> SetRequestHeader<S, MakeHeaderValueDefault<M>> {
+        SetRequestHeader::new(
+            inner,
+            header_name,
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
+}
+
+impl<S, M: TypedHeader> SetRequestHeader<S, M> {
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetRequestHeader::overriding`] for more details.
+    #[inline(always)]
+    pub fn overriding_default_typed(
+        inner: S,
+    ) -> SetRequestHeader<S, MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetRequestHeader::new(
+            inner,
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetRequestHeader::appending`] for more details.
+    #[inline(always)]
+    pub fn appending_default_typed(
+        inner: S,
+    ) -> SetRequestHeader<S, MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetRequestHeader::new(
+            inner,
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetRequestHeader`] from a [`Default`] [`TypedHeader`].
+    ///
+    /// See [`SetRequestHeader::if_not_present`] for more details.
+    #[inline(always)]
+    pub fn if_not_present_default_typed(
+        inner: S,
+    ) -> SetRequestHeader<S, MakeHeaderValueDefault<TypedHeaderAsMaker<M>>> {
+        SetRequestHeader::new(
+            inner,
+            M::name().clone(),
+            MakeHeaderValueDefault::new(),
             InsertHeaderMode::IfNotPresent,
         )
     }
@@ -364,13 +562,13 @@ impl<ReqBody, ResBody, S, M> Service<Request<ReqBody>> for SetRequestHeader<S, M
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     M: MakeHeaderValue<ReqBody>,
 {
-    type Response = S::Response;
+    type Output = S::Output;
     type Error = S::Error;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let req = self.mode.apply(&self.header_name, req, &self.make).await;
         self.inner.serve(req).await
     }

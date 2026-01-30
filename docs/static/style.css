@@ -933,3 +933,60 @@ sup a:hover {
     font-size: 0.95rem;
     opacity: 0.85;
 }
+
+.commercial-note {
+    margin: 20px auto 30px;
+    max-width: 900px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+    background: color-mix(in srgb, #000 10%, transparent);
+}
+
+.commercial-note-text {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    flex-wrap: wrap;
+}
+
+.commercial-note-text strong {
+    font-weight: 700;
+}
+
+.commercial-note-text span {
+    opacity: 0.85;
+}
+
+@media (max-width: 720px) {
+    .commercial-note {
+        flex-direction: column;
+        align-items: stretch;
+        text-align: left;
+    }
+}
+
+.badge-sponsored {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #ffd700;
+    border: 1px solid rgba(255, 215, 0, 0.5);
+    background: rgba(255, 215, 0, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+    letter-spacing: 0.5px;
+    cursor: help;
+    transform: translateY(-1px);
+}
+
+.badge-sponsored:hover {
+    background: rgba(255, 215, 0, 0.2);
+    box-shadow: 0 0 8px rgba(255, 215, 0, 0.2);
+}

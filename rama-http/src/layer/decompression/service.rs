@@ -1,5 +1,3 @@
-use std::fmt;
-
 use super::{DecompressionBody, body::BodyInner};
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::util::compression::{CompressionLevel, WrapBody};
@@ -16,6 +14,7 @@ use rama_utils::macros::define_inner_service_accessors;
 /// bodies based on the `Content-Encoding` header.
 ///
 /// See the [module docs](crate::layer::decompression) for more details.
+#[derive(Debug, Clone)]
 pub struct Decompression<S> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,
@@ -32,87 +31,49 @@ impl<S> Decompression<S> {
 
     define_inner_service_accessors!();
 
-    /// Sets whether to request the gzip encoding.
-    #[must_use]
-    pub fn gzip(mut self, enable: bool) -> Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to request the gzip encoding.
+        pub fn gzip(mut self, enable: bool) -> Self {
+            self.accept.set_gzip(enable);
+            self
+        }
     }
 
-    /// Sets whether to request the gzip encoding.
-    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_gzip(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to request the Deflate encoding.
+        pub fn deflate(mut self, enable: bool) -> Self {
+            self.accept.set_deflate(enable);
+            self
+        }
     }
 
-    /// Sets whether to request the Deflate encoding.
-    #[must_use]
-    pub fn deflate(mut self, enable: bool) -> Self {
-        self.accept.set_deflate(enable);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to request the Brotli encoding.
+        pub fn br(mut self, enable: bool) -> Self {
+            self.accept.set_br(enable);
+            self
+        }
     }
 
-    /// Sets whether to request the Deflate encoding.
-    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_deflate(enable);
-        self
-    }
-
-    /// Sets whether to request the Brotli encoding.
-    #[must_use]
-    pub fn br(mut self, enable: bool) -> Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to request the Brotli encoding.
-    pub fn set_br(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_br(enable);
-        self
-    }
-
-    /// Sets whether to request the Zstd encoding.
-    #[must_use]
-    pub fn zstd(mut self, enable: bool) -> Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-
-    /// Sets whether to request the Zstd encoding.
-    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
-        self.accept.set_zstd(enable);
-        self
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for Decompression<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Decompression")
-            .field("inner", &self.inner)
-            .field("accept", &self.accept)
-            .finish()
-    }
-}
-
-impl<S: Clone> Clone for Decompression<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            accept: self.accept,
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to request the Zstd encoding.
+        pub fn zstd(mut self, enable: bool) -> Self {
+            self.accept.set_zstd(enable);
+            self
         }
     }
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Decompression<S>
 where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: StreamingBody<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
 {
-    type Response = Response<DecompressionBody<ResBody>>;
+    type Output = Response<DecompressionBody<ResBody>>;
     type Error = S::Error;
 
-    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let header::Entry::Vacant(entry) = req.headers_mut().entry(ACCEPT_ENCODING)
             && let Some(accept) = self.accept.maybe_to_header_value()
         {

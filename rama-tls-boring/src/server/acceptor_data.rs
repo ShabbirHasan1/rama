@@ -311,7 +311,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                         Cache::builder()
                             .time_to_live(match ttl {
                                 None | Some(Duration::ZERO) => {
-                                    Duration::from_secs(60 * 60 * 24 * 89)
+                                    Duration::from_hours(24 * 89) // 89 days
                                 }
                                 Some(custom) => custom,
                             })
@@ -501,11 +501,18 @@ fn self_signed_server_auth(data: &SelfSignedData) -> Result<IssuedCert, OpaqueEr
 }
 
 #[inline]
-fn self_signed_server_ca(data: &SelfSignedData) -> Result<(X509, PKey<Private>), OpaqueError> {
+/// Generate a self-signed server CA from the given [`SelfSignedData`].
+///
+/// This should not be used in production but mostly for experimental / testing purposes.
+pub fn self_signed_server_ca(data: &SelfSignedData) -> Result<(X509, PKey<Private>), OpaqueError> {
     self_signed_server_auth_gen_ca(data)
 }
 
-fn self_signed_server_auth_gen_cert(
+/// Generate a server cert for the [`SelfSignedData`] using the given CA Cert + Key.
+///
+/// In most cases you probably want more refined configuration and controls,
+/// so in general we recommend to not use this utility outside of experimental or testing purposes.
+pub fn self_signed_server_auth_gen_cert(
     data: &SelfSignedData,
     ca_cert: &X509,
     ca_privkey: &PKey<Private>,
@@ -531,7 +538,7 @@ fn self_signed_server_auth_gen_cert(
             .context("append subject alt name to x509 name builder")?;
     }
     x509_name
-        .append_entry_by_nid(Nid::COMMONNAME, common_name.to_string().as_str())
+        .append_entry_by_nid(Nid::COMMONNAME, common_name.as_str())
         .context("append common name to x509 name builder")?;
     let x509_name = x509_name.build();
 
@@ -654,7 +661,7 @@ fn self_signed_server_auth_gen_ca(
             .context("append subject alt name to x509 name builder")?;
     }
     x509_name
-        .append_entry_by_nid(Nid::COMMONNAME, common_name.to_string().as_str())
+        .append_entry_by_nid(Nid::COMMONNAME, common_name.as_str())
         .context("append common name to x509 name builder")?;
     let x509_name = x509_name.build();
 
@@ -688,11 +695,11 @@ fn self_signed_server_auth_gen_ca(
     ca_cert_builder
         .set_not_before(&not_before)
         .context("x509 cert builder: set not before to today")?;
-    let not_after = Asn1Time::days_from_now(90)
-        .context("x509 cert builder: create ASN1Time for 90 days in future")?;
+    let not_after = Asn1Time::days_from_now(365 * 20)
+        .context("x509 cert builder: create ASN1Time for 20 years in future")?;
     ca_cert_builder
         .set_not_after(&not_after)
-        .context("x509 cert builder: set not after to 90 days in future")?;
+        .context("x509 cert builder: set not after to 20 years in future")?;
 
     ca_cert_builder
         .append_extension(

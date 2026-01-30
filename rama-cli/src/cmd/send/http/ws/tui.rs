@@ -8,6 +8,7 @@ use rama::{
         ws::{Message, Utf8Bytes, handshake::client::ClientWebSocket, protocol::Role},
     },
     telemetry::tracing,
+    utils::{collections::NonEmptySmallVec, str::NonEmptyStr},
 };
 
 use chrono::{DateTime, Local};
@@ -99,10 +100,10 @@ impl App {
     pub(super) async fn new<C>(
         req: Request,
         client: C,
-        protocols: Option<Vec<String>>,
+        protocols: Option<NonEmptySmallVec<3, NonEmptyStr>>,
     ) -> Result<Self, OpaqueError>
     where
-        C: Service<Request, Response = Response, Error = BoxError>,
+        C: Service<Request, Output = Response, Error = BoxError>,
     {
         let title = format!("  rama-ws @ {}", req.uri());
 

@@ -3,9 +3,10 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Request, Response, StatusCode, Version,
+        headers::ContentType,
         proto::h2,
         service::web::{
-            extract::Path,
+            extract::{Path, State as StateParam},
             response::{self, IntoResponse, Json},
         },
         ws::{
@@ -22,7 +23,6 @@ use rama::{
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
 
 use super::{
     State, StorageAuthorized,
@@ -67,8 +67,8 @@ pub(super) async fn get_consent() -> impl IntoResponse {
                 </p>
                     You can also make use of the echo service for developers at:
                     <ul>
-                        <li><a href="http://echo.ramaproxy.org:80">http://echo.ramaproxy.org</a>: echo service, plain-text</li>
-                        <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS</li>
+                        <li><a href="http://echo.ramaproxy.org:80">http://echo.ramaproxy.org</a>: echo service, plain-text (incl. WS support)</li>
+                        <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS (incl. WSS support)</li>
                     </ul>
                 </p>
                 </p>
@@ -78,10 +78,17 @@ pub(super) async fn get_consent() -> impl IntoResponse {
                         <li><a href="https://ipv6.ramaproxy.org">https://ipv6.ramaproxy.org</a>: return your pubic IPv6 address</li>
                     </ul>
                 </p>
+                <p>
+                    We also have a small HTTP(S) test service:
+                    <ul>
+                        <li><a href="http://http-test.ramaproxy.org:80">http://http-test.ramaproxy.org</a>: http test service, plain-text</li>
+                        <li><a href="https://http-test.ramaproxy.org:443">https://http-test.ramaproxy.org</a>: https test service, TLS</li>
+                    </ul>
+                </p>
                 <p>You can learn move about rama at in
                     <a href="https://ramaproxy.org/book">the rama book</a>.
                     And the source code for this service is available at
-                    <a href="https://github.com/plabayo/rama/tree/main/rama-fp">https://github.com/plabayo/rama/tree/main/rama-fp</a>.
+                    <a href="https://github.com/plabayo/rama">https://github.com/plabayo/rama</a>.
                 </p>
             </div>
             <div class="small">
@@ -102,7 +109,10 @@ pub(super) async fn get_consent() -> impl IntoResponse {
     )
 }
 
-pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
+pub(super) async fn get_report(
+    StateParam(state): StateParam<State>,
+    req: Request,
+) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -121,6 +131,7 @@ pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
     let user_agent = user_agent_info.user_agent.clone();
 
     let http_info = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -133,13 +144,7 @@ pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
     let head = r#"<script src="/assets/script.js"></script>"#;
 
     let mut tables = vec![
-        parts
-            .extensions
-            .get::<Arc<State>>()
-            .unwrap()
-            .data_source
-            .clone()
-            .into(),
+        state.data_source.clone().into(),
         user_agent_info.into(),
         request_info.into(),
         Table {
@@ -174,7 +179,7 @@ pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
-    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
+    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -231,7 +236,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                         for setting_id in order {
                             match setting_id {
                                 h2::frame::SettingId::HeaderTableSize => {
-                                    if let Some(value) = settings.header_table_size() {
+                                    if let Some(value) = settings.config.header_table_size {
                                         rows.push((
                                             "Header Table Size".to_owned(),
                                             value.to_string(),
@@ -239,12 +244,13 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                     }
                                 }
                                 h2::frame::SettingId::EnablePush => {
-                                    if let Some(value) = settings.is_push_enabled() {
+                                    if let Some(value) = settings.config.enable_push.map(|v| v != 0)
+                                    {
                                         rows.push(("Enable Push".to_owned(), value.to_string()));
                                     }
                                 }
                                 h2::frame::SettingId::MaxConcurrentStreams => {
-                                    if let Some(value) = settings.max_concurrent_streams() {
+                                    if let Some(value) = settings.config.max_concurrent_streams {
                                         rows.push((
                                             "Max Concurrent Streams".to_owned(),
                                             value.to_string(),
@@ -252,7 +258,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                     }
                                 }
                                 h2::frame::SettingId::InitialWindowSize => {
-                                    if let Some(value) = settings.initial_window_size() {
+                                    if let Some(value) = settings.config.initial_window_size {
                                         rows.push((
                                             "Initial Window Size".to_owned(),
                                             value.to_string(),
@@ -260,12 +266,12 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                     }
                                 }
                                 h2::frame::SettingId::MaxFrameSize => {
-                                    if let Some(value) = settings.max_frame_size() {
+                                    if let Some(value) = settings.config.max_frame_size {
                                         rows.push(("Max Frame Size".to_owned(), value.to_string()));
                                     }
                                 }
                                 h2::frame::SettingId::MaxHeaderListSize => {
-                                    if let Some(value) = settings.max_header_list_size() {
+                                    if let Some(value) = settings.config.max_header_list_size {
                                         rows.push((
                                             "Max Header List Size".to_owned(),
                                             value.to_string(),
@@ -274,7 +280,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                 }
                                 h2::frame::SettingId::EnableConnectProtocol => {
                                     if let Some(value) =
-                                        settings.is_extended_connect_protocol_enabled()
+                                        settings.config.enable_connect_protocol.map(|v| v != 0)
                                     {
                                         rows.push((
                                             "Enable Connect Protocol".to_owned(),
@@ -283,7 +289,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                     }
                                 }
                                 h2::frame::SettingId::NoRfc7540Priorities => {
-                                    if let Some(value) = settings.no_rfc7540_priorities() {
+                                    if let Some(value) = settings.config.no_rfc7540_priorities {
                                         rows.push((
                                             "No RFC 7540 Priorities".to_owned(),
                                             value.to_string(),
@@ -339,6 +345,7 @@ pub(super) struct APINumberRequest {
 }
 
 pub(super) async fn post_api_fetch_number(
+    StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -360,6 +367,7 @@ pub(super) async fn post_api_fetch_number(
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -374,13 +382,7 @@ pub(super) async fn post_api_fetch_number(
         .await
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
 
-    if let Some(storage) = parts
-        .extensions
-        .get::<Arc<State>>()
-        .unwrap()
-        .storage
-        .as_ref()
-    {
+    if let Some(storage) = state.storage.as_ref() {
         let auth = parts.extensions.contains::<StorageAuthorized>();
         if let Some(js_web_apis) = request.js_web_apis.clone() {
             storage
@@ -401,7 +403,7 @@ pub(super) async fn post_api_fetch_number(
         }
     }
 
-    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
+    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -424,6 +426,7 @@ pub(super) async fn post_api_fetch_number(
 }
 
 pub(super) async fn post_api_xml_http_request_number(
+    StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -445,6 +448,7 @@ pub(super) async fn post_api_xml_http_request_number(
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -454,7 +458,7 @@ pub(super) async fn post_api_xml_http_request_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
+    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -477,7 +481,10 @@ pub(super) async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(req: Request) -> Result<Html, Response> {
+pub(super) async fn form(
+    StateParam(state): StateParam<State>,
+    req: Request,
+) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -496,6 +503,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -525,13 +533,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
     }
 
     let mut tables = vec![
-        parts
-            .extensions
-            .get::<Arc<State>>()
-            .unwrap()
-            .data_source
-            .clone()
-            .into(),
+        state.data_source.clone().into(),
         user_agent_info.into(),
         request_info.into(),
         Table {
@@ -566,7 +568,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
-    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
+    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -587,7 +589,7 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
 // endpoints: WS(S)
 //------------------------------------------
 
-pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
+pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), OpaqueError> {
     tracing::debug!("ws api called");
     let (mut ws, parts) = ws.into_parts();
 
@@ -596,6 +598,7 @@ pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
     let user_agent = user_agent_info.user_agent.clone();
 
     let _ = get_and_store_http_info(
+        &state,
         parts.headers,
         &parts.extensions,
         parts.version,
@@ -609,12 +612,7 @@ pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
         .extensions
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
-        && let Some(storage) = parts
-            .extensions
-            .get::<Arc<State>>()
-            .unwrap()
-            .storage
-            .as_ref()
+        && let Some(storage) = state.storage.as_ref()
     {
         let auth = parts.extensions.contains::<StorageAuthorized>();
         storage
@@ -649,22 +647,20 @@ pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
 
 const STYLE_CSS: &str = include_str!("../../../../assets/style.css");
 
-pub(super) async fn get_assets_style() -> Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/css")
-        .body(STYLE_CSS.into())
-        .expect("build css response")
+pub(super) async fn get_assets_style() -> impl IntoResponse {
+    (
+        response::Headers::single(ContentType::css_utf8()),
+        STYLE_CSS,
+    )
 }
 
 const SCRIPT_JS: &str = include_str!("../../../../assets/script.js");
 
-pub(super) async fn get_assets_script() -> Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/javascript")
-        .body(SCRIPT_JS.into())
-        .expect("build js response")
+pub(super) async fn get_assets_script() -> impl IntoResponse {
+    (
+        response::Headers::single(ContentType::javascript_utf8()),
+        SCRIPT_JS,
+    )
 }
 
 //------------------------------------------

@@ -10,10 +10,10 @@
 //!
 //! If you wish to support proxy filters directly from the username,
 //! you can use the [`ProxyFilterUsernameParser`] to extract the proxy filter
-//! so it will be added to the [`Context`]'s [`Extensions`].
+//! so it will be added to the input [`Extensions`].
 //!
 //! The [`ProxyDB`] is used by Connection Pools to connect via a proxy,
-//! in case a [`ProxyFilter`] is present in the [`Context`]'s [`Extensions`].
+//! in case a [`ProxyFilter`] is present in the input [`Extensions`].
 //!
 //! # DB Live Reloads
 //!
@@ -31,14 +31,13 @@
 //! task and wrap the reader in a [`ProxyDB`] implementation. This way you can live reload based upon
 //! a signal, or more realistically, every x minutes.
 //!
-//! [`Context`]: rama_core::Context
 //! [`Extensions`]: rama_core::extensions::Extensions
 //!
 //! ## ProxyDB layer
 //!
-//! [`ProxyDB`] layer support to select a proxy based on the given [`Context`].
+//! [`ProxyDB`] layer support to select a proxy based on the given input [`Extensions`].
 //!
-//! This layer expects a [`ProxyFilter`] to be available in the [`Context`],
+//! This layer expects a [`ProxyFilter`] to be available in the input [`Extensions`],
 //! which can be added by using the `HeaderConfigLayer` (`rama-http`)
 //! when operating on the HTTP layer and/or by parsing it via the TCP proxy username labels (e.g. `john-country-us-residential`),
 //! in case you support that as part of your transport-layer authentication. And of course you can
@@ -52,7 +51,6 @@
 //!
 //! [`ProxyAddress`]: rama_net::address::ProxyAddress
 //! [`ProxyDB`]: ProxyDB
-//! [`Context`]: rama_core::Context
 //!
 //! # Example
 //!
@@ -69,7 +67,7 @@
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
-//! use rama_utils::str::NonEmptyString;
+//! use rama_utils::str::non_empty_str;
 //! use itertools::Itertools;
 //! use std::{convert::Infallible, sync::Arc};
 //!
@@ -77,7 +75,7 @@
 //! async fn main() {
 //!     let db = MemoryProxyDB::try_from_iter([
 //!         Proxy {
-//!             id: NonEmptyString::from_static("42"),
+//!             id: non_empty_str!("42"),
 //!             address: "12.34.12.34:8080".try_into().unwrap(),
 //!             tcp: true,
 //!             udp: true,
@@ -97,7 +95,7 @@
 //!             asn: None,
 //!         },
 //!         Proxy {
-//!             id: NonEmptyString::from_static("100"),
+//!             id: non_empty_str!("100"),
 //!             address: "123.123.123.123:8080".try_into().unwrap(),
 //!             tcp: true,
 //!             udp: false,
@@ -120,7 +118,7 @@
 //!     .unwrap();
 //!
 //!     let service =
-//!         ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default)
+//!         ProxyDBLayer::new(Arc::new(db)).with_filter_mode(ProxyFilterMode::Default)
 //!         .into_layer(service_fn(async  |req: Request| {
 //!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
@@ -140,7 +138,7 @@
 //!     });
 //!
 //!     let proxy_address = service.serve(req).await.unwrap();
-//!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
+//!     assert_eq!(proxy_address.address.to_string(), "12.34.12.34:8080");
 //! }
 //! ```
 //!
@@ -166,14 +164,14 @@
 //!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
-//! use rama_utils::str::NonEmptyString;
+//! use rama_utils::str::non_empty_str;
 //! use itertools::Itertools;
 //! use std::{convert::Infallible, sync::Arc};
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     let proxy = Proxy {
-//!         id: NonEmptyString::from_static("1"),
+//!         id: non_empty_str!("1"),
 //!         address: "john:secret@proxy.example.com:60000".try_into().unwrap(),
 //!         tcp: true,
 //!         udp: true,
@@ -194,8 +192,8 @@
 //!     };
 //!
 //!     let service = ProxyDBLayer::new(Arc::new(proxy))
-//!         .filter_mode(ProxyFilterMode::Default)
-//!         .username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+//!         .with_filter_mode(ProxyFilterMode::Default)
+//!         .with_username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
 //!             use std::fmt::Write;
 //!
 //!             let mut output = String::new();
@@ -242,7 +240,11 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stdout, clippy::dbg_macro),
+    deny(clippy::unwrap_used, clippy::expect_used)
+)]
 
 mod username;
 #[doc(inline)]

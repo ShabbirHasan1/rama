@@ -28,9 +28,7 @@ use super::UnixSocketAddress;
 /// calling [`split`] on the `UnixDatagramFramed` returned by this method, which will break
 /// them into separate objects, allowing them to interact more easily.
 ///
-/// [`Stream`]: futures_core::Stream
-/// [`Sink`]: futures_sink::Sink
-/// [`split`]: https://docs.rs/futures/latest/futures/stream/trait.StreamExt.html#method.split
+/// [`split`]: rama_core::futures::StreamExt::split
 #[must_use = "sinks do nothing unless polled"]
 #[derive(Debug)]
 pub struct UnixDatagramFramed<C, T = UnixDatagram> {
@@ -40,7 +38,6 @@ pub struct UnixDatagramFramed<C, T = UnixDatagram> {
     wr: BytesMut,
     out_addr: Option<UnixSocketAddress>,
     flushed: bool,
-    is_readable: bool,
     current_addr: Option<UnixSocketAddress>,
 }
 
@@ -63,18 +60,13 @@ where
 
         loop {
             // Are there still bytes left in the read buffer to decode?
-            if pin.is_readable {
+            if let Some(current_addr) = pin.current_addr.clone() {
                 if let Some(frame) = pin.codec.decode_eof(&mut pin.rd)? {
-                    let current_addr = pin
-                        .current_addr
-                        .clone()
-                        .expect("will always be set before this line is called");
-
                     return Poll::Ready(Some(Ok((frame, current_addr))));
                 }
 
                 // if this line has been reached then decode has returned `None`.
-                pin.is_readable = false;
+                pin.current_addr = None;
                 pin.rd.clear();
             }
 
@@ -99,7 +91,6 @@ where
             };
 
             pin.current_addr = Some(addr.into());
-            pin.is_readable = true;
         }
     }
 }
@@ -185,7 +176,6 @@ where
             rd: BytesMut::with_capacity(INITIAL_RD_CAPACITY),
             wr: BytesMut::with_capacity(INITIAL_WR_CAPACITY),
             flushed: true,
-            is_readable: false,
             current_addr: None,
         }
     }

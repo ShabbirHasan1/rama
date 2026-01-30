@@ -6,7 +6,7 @@
 
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
-use rama_net::address::{Authority, SocketAddress};
+use rama_net::address::{HostWithPort, SocketAddress};
 use std::fmt;
 
 use super::core::HandshakeError;
@@ -17,11 +17,12 @@ use crate::proto::{ReplyKind, server};
 /// the server has established a connection with the socks5 server.
 ///
 /// [`Binder`] is provided by using the [`Client::handshake_bind`] method,
-/// and contains the [`bind_address`] to be given to the server so it knows
-/// where to connect to.
+/// and contains the [`requested_bind_address`] to be given to the server so it knows
+/// where to connect to. The one selected in the end will be [`selected_bind_address`]
 ///
 /// [`Client::handshake_bind`]: crate::Socks5Client::handshake_bind
-/// [`bind_address`]: Binder::bind_address
+/// [`requested_bind_address`]: Binder::requested_bind_address
+/// [`selected_bind_address`]: Binder::selected_bind_address
 pub struct Binder<S> {
     stream: S,
     requested_bind_address: Option<SocketAddress>,
@@ -82,7 +83,7 @@ pub struct BindOutput<S> {
     /// Stream to transfer data via the socks5 server to the target server.
     pub stream: S,
     /// Possibly the address of the server as seen by the socks5 server.
-    pub server: Authority,
+    pub server: HostWithPort,
 }
 
 impl<S: Stream + Unpin> Binder<S> {
@@ -135,10 +136,10 @@ impl<S: Stream + Unpin> Binder<S> {
         };
 
         tracing::trace!(
-            network.local.address = %self.selected_bind_address.ip_addr(),
-            network.local.port = %self.selected_bind_address.port(),
-            server.address = %server.host(),
-            server.port = %server.port(),
+            network.local.address = %self.selected_bind_address.ip_addr,
+            network.local.port = %self.selected_bind_address.port,
+            server.address = %server.host,
+            server.port = %server.port,
             "socks5: bind handshake complete",
         );
 
