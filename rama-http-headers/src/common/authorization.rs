@@ -741,7 +741,7 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
         }
         AuthorizeResult {
             credentials,
-            result: Err(error.unwrap()),
+            result: Err(error.unwrap_or_default()),
         }
     }
 }
