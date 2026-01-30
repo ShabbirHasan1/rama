@@ -30,7 +30,7 @@ pub trait Authorizer<C>: Send + Sync + 'static {
 
     /// Synchronously authorize the given credentials.
     fn authorize_sync(&self, _credentials: C) -> AuthorizeResult<C, Self::Error> {
-        panic!("not implemented")
+        unimplemented!()
     }
 }
 
@@ -219,5 +219,9 @@ where
         credentials: C,
     ) -> impl Future<Output = AuthorizeResult<C, Self::Error>> + Send + '_ {
         (self)(credentials)
+    }
+
+    fn authorize_sync(&self, _credentials: C) -> AuthorizeResult<C, Self::Error> {
+        unimplemented!("not implemented")
     }
 }

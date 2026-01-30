@@ -1,6 +1,6 @@
 use {
     rama_core::{
-        context::Extensions,
+        extensions::Extensions,
         telemetry::tracing,
         username::{UsernameLabelParser, UsernameLabelState},
     },
@@ -252,7 +252,7 @@ impl UsernameLabelParser for IpCidrConExtUsernameLabelParser {
     }
 
     fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
-        ext.maybe_insert(self.extension);
+        ext.insert(self.extension);
         Ok(())
     }
 }
@@ -260,7 +260,10 @@ impl UsernameLabelParser for IpCidrConExtUsernameLabelParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::username::{UsernameOpaqueLabelParser, parse_username};
+    use rama_core::{
+        extensions::Extensions,
+        username::{UsernameOpaqueLabelParser, parse_username},
+    };
 
     fn init_tracing() {
         let subscriber = tracing_subscriber::fmt::Subscriber::builder()

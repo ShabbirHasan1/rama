@@ -169,7 +169,7 @@ impl Service<Interface> for DefaultAcceptorFactory {
     type Error = BoxError;
 
     async fn serve(&self, interface: Interface) -> Result<Self::Output, Self::Error> {
-        let acceptor = TcpListener::bind(interface, self.exec.clone()).await?;
+        let acceptor = TcpListener::bind(interface, self.exec.clone(), None).await?;
         Ok(acceptor)
     }
 }

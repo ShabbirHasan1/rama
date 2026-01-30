@@ -215,6 +215,7 @@ rustls = { version = "0.23", default-features = false, features = [
 rustls-native-certs = "0.8"
 rustls-pki-types = "^1"
 rustversion = "1.0"
+rustc-hash = "2"
 schannel = "0.1"
 serde = "1.0"
 serde_html_form = "0.4"

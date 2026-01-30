@@ -1,14 +1,9 @@
 //! Authorization header and types.
 
-use std::net::IpAddr;
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
-
 use arc_swap::{ArcSwap, ArcSwapAny};
 use arcshift::ArcShift;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
-
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
@@ -16,6 +11,11 @@ use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address::SocketAddress;
 use rama_net::user::authority::{AuthorizeResult, Authorizer, StaticAuthorizer, Unauthorized};
 use rama_net::user::{Basic, Bearer, UserId};
+use rama_utils::str::NonEmptyStr;
+use std::fmt::Debug;
+use std::net::IpAddr;
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
@@ -351,13 +351,13 @@ pub struct UserCredInfo<A> {
 impl UserCredInfo<Basic> {
     #[must_use]
     pub fn new_static(
-        username: &'static str,
-        password: &'static str,
+        username: NonEmptyStr,
+        password: NonEmptyStr,
         primary_ip: IpAddr,
         secondary_ip: IpAddr,
     ) -> Self {
         Self {
-            credential: Basic::new_static(username, password),
+            credential: Basic::new(username, password),
             primary_ip,
             secondary_ip,
         }
@@ -379,7 +379,7 @@ impl UserCredInfo<Basic> {
     }
 }
 
-impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredInfo<C> {
+impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for UserCredInfo<C> {
     type Error = Unauthorized;
 
     async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
@@ -442,7 +442,7 @@ impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredInf
 impl<C, L, T> AuthoritySync<C, L> for UserCredInfo<T>
 where
     C: Credentials + Send + 'static,
-    T: AuthoritySync<C, L> + Clone,
+    T: AuthoritySync<C, L> + Clone + Debug,
 {
     fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
         if self.credential.authorized(ext, credentials) {
@@ -613,15 +613,35 @@ impl UserCredStore<Basic> {
     }
 }
 
-impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredStore<C> {
+impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for UserCredStore<C> {
     type Error = Unauthorized;
 
     async fn authorize(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
         let mut error = None;
-
         match &self.backend {
             UserCredStoreBackend::RwLock(lock) => {
                 let guard = lock.read().await;
+                for authorizer in guard.iter() {
+                    let AuthorizeResult {
+                        credentials: c,
+                        result,
+                    } = authorizer.authorize_sync(credentials.clone());
+                    match result {
+                        Ok(maybe_ext) => {
+                            return AuthorizeResult {
+                                credentials: c,
+                                result: Ok(maybe_ext),
+                            };
+                        }
+                        Err(err) => {
+                            error = Some(err);
+                            credentials = c;
+                        }
+                    }
+                }
+            }
+            UserCredStoreBackend::ArcSwap(swap) => {
+                let guard = swap.load();
                 for authorizer in guard.iter() {
                     let AuthorizeResult {
                         credentials: c,
@@ -640,6 +660,41 @@ impl<C: PartialEq + Clone + Send + Sync + 'static> Authorizer<C> for UserCredSto
                         }
                     }
                 }
+            }
+            UserCredStoreBackend::ArcShift(shift) => {
+                let guard = shift.shared_get();
+                for authorizer in guard.iter() {
+                    let AuthorizeResult {
+                        credentials: c,
+                        result,
+                    } = authorizer.authorize_sync(credentials);
+                    match result {
+                        Ok(maybe_ext) => {
+                            return AuthorizeResult {
+                                credentials: c,
+                                result: Ok(maybe_ext),
+                            };
+                        }
+                        Err(err) => {
+                            error = Some(err);
+                            credentials = c;
+                        }
+                    }
+                }
+            }
+        }
+        AuthorizeResult {
+            credentials,
+            result: Err(error.unwrap_or_default()),
+        }
+    }
+
+    fn authorize_sync(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
+        let mut error = None;
+
+        match &self.backend {
+            UserCredStoreBackend::RwLock(_lock) => {
+                unimplemented!("RwLock Implementation is not yet implemented")
             }
             UserCredStoreBackend::ArcSwap(swap) => {
                 let guard = swap.load();

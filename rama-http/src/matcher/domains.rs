@@ -3,17 +3,9 @@ use arc_swap::ArcSwapAny;
 use arcshift::ArcShift;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
-use rama_core::{
-    extensions::{Extensions, ExtensionsRef},
-    telemetry::tracing,
-};
-use rama_net::address::{Domain, Host, IntoDomain};
+use rama_net::address::{Domain, Host};
 use rama_net::http::RequestContext;
 use rama_net::user::UserId;
-use rama_net::{
-    address::{Domain, Host, IntoDomain},
-    http::RequestContext,
-};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -134,7 +126,7 @@ impl UserDomainStore for ArcShift<FxHashMap<Domain, Vec<String>>> {
 /// Common helper functions
 fn extract_host<Body>(ext: Option<&mut Extensions>, req: &Request<Body>) -> Option<Host> {
     if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
-        Some(req_ctx.authority.host().clone())
+        Some(req_ctx.authority.host.clone())
     } else {
         // let req_ctx = match RequestContext::try_from(req) {
         let req_ctx = match RequestContext::try_from(req) {
@@ -144,7 +136,7 @@ fn extract_host<Body>(ext: Option<&mut Extensions>, req: &Request<Body>) -> Opti
                 return None;
             }
         };
-        let host = req_ctx.authority.host().clone();
+        let host = req_ctx.authority.host.clone();
         if let Some(ext) = ext {
             ext.insert(req_ctx);
         }
@@ -164,7 +156,7 @@ fn check_static_whitelist(domain: &Domain, sub: bool) -> bool {
     }
 }
 
-fn extract_api_key(req: &Request<Body>) -> Option<&str> {
+fn extract_api_key<Body>(req: &Request<Body>) -> Option<&str> {
     req.extensions()
         .get::<UserId>()
         .and_then(|user_id| match user_id {

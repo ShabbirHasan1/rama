@@ -6,7 +6,6 @@ use crate::{
     Protocol,
     address::{Domain, Host},
 };
-use rama_core::conversion::RamaTryFrom;
 use rama_core::error::OpaqueError;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
@@ -135,7 +134,7 @@ pub fn try_request_ctx_from_http_parts(
                     match domain {
                         Some(host) if Some(host.as_str()) == uri.host() => {
                             tracing::trace!(url.full = %uri, "request context: detected host {host} from SNI");
-                            let authority: Authority = (host, default_port).into();
+                            let authority = HostWithOptPort::from((host, default_port));
                             Some(authority)
                         }
                         _ => {
@@ -143,8 +142,7 @@ pub fn try_request_ctx_from_http_parts(
                                 .host()
                                 .and_then(|h| Host::try_from(h).ok().map(|h| {
                                     tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
-                                    let authority: Authority = (h, default_port).into();
-                                    authority
+                                    HostWithOptPort::from((h, default_port))
                                 }))
                         }
                     }

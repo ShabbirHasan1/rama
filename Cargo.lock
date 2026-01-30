@@ -3005,6 +3005,7 @@ dependencies = [
  "rama-utils",
  "rand 0.9.2",
  "rawzip",
+ "rustc-hash",
  "serde",
  "serde_html_form",
  "serde_json",

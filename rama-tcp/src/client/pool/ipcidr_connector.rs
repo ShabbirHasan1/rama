@@ -341,7 +341,7 @@ mod tests {
                     fallback
                 );
                 assert!(fallback.is_some(), "Fallback should be configured");
-                let selected_ip = round_robin_connector.ip_addr();
+                let selected_ip = round_robin_connector.ip_addr;
                 assert_ne!(selected_ip, connector.ip_cidr.addr());
             }
         }
@@ -379,7 +379,7 @@ mod tests {
                 );
 
                 assert_eq!(
-                    selected_address.ip_addr(),
+                    selected_address.ip_addr,
                     IpAddr::V4("192.168.1.15".parse().unwrap()),
                     "Single-IP CIDR must always return the exact configured address"
                 );
@@ -418,7 +418,7 @@ mod tests {
                 );
 
                 assert_eq!(
-                    primary_address.ip_addr(),
+                    primary_address.ip_addr,
                     IpAddr::V4("192.168.1.15".parse().unwrap()),
                     "Round-robin mode with single IP must consistently return the configured address"
                 );
@@ -430,14 +430,14 @@ mod tests {
 
                 if let Some(fallback) = fallback_address {
                     assert_eq!(
-                        fallback.ip_addr(),
+                        fallback.ip_addr,
                         IpAddr::V6("2001:470:e953::ffff".parse().unwrap()),
                         "IPv6 fallback address must match the configured Hurricane Electric tunnel endpoint"
                     );
 
                     tracing::debug!(
                         "Cross-protocol fallback validation successful: IPv6 address {} properly configured",
-                        fallback.ip_addr()
+                        fallback.ip_addr
                     );
                 }
             }

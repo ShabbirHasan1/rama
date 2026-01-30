@@ -6,13 +6,16 @@ use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
-use rama_core::context::Extensions;
+use rama_core::extensions::{Extension, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
+use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_http_headers::authorization::{AuthoritySync, UserCredStore, UserCredStoreBackend};
+use rama_http_types::body::OptionalBody;
 use rama_net::user::UserId;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 
 /// Layer that applies the [`CustomProxyAuthService`] middleware which apply a timeout to requests.
@@ -177,37 +180,24 @@ impl<A: Clone, C, S: Clone, L> Clone for CustomProxyAuthService<A, C, S, L> {
     }
 }
 
-#[inline]
-fn create_auth_required_response<ResBody: Default>(scheme: &'static str) -> Response<ResBody> {
-    Response::builder()
-        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-        .header(PROXY_AUTHENTICATE, scheme)
-        .body(Default::default())
-        .unwrap()
-}
-
 impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for CustomProxyAuthService<A, C, S, L>
 where
-    A: Authority<C, L> + AuthoritySync<C, L> + Clone,
-    C: Credentials + Clone + Send + Sync + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    A: Authority<C, L> + AuthoritySync<C, L> + Clone + Debug,
+    C: Credentials + Extension + Clone + Send + Sync + 'static,
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
     L: 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
 {
-    type Response = S::Response;
-    type Error = S::Error;
+    type Output = Response<OptionalBody<ResBody>>;
+    type Error = OpaqueError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let credentials = req
             .headers()
             .typed_get::<ProxyAuthorization<C>>()
             .map(|h| h.0)
-            .or_else(|| ctx.get::<C>().cloned());
+            .or_else(|| req.extensions().get::<C>().cloned());
 
         match credentials {
             Some(creds) => {
@@ -223,7 +213,7 @@ where
                     }
                     UserCredStoreBackend::ArcShift(store) => {
                         let data_guard = store.shared_get();
-                        let mut ext = Extensions::new();
+                        let mut ext = rama_core::extensions::Extensions::new();
                         if data_guard.iter().any(|user_cred_info| {
                             AuthoritySync::<C, L>::authorized(user_cred_info, &mut ext, &creds)
                         }) {
@@ -241,18 +231,36 @@ where
 
                 match auth_result {
                     Some(ext) => {
-                        ctx.extend(ext);
-                        self.inner.serve(ctx, req).await
+                        req.extensions_mut().extend(ext);
+                        Ok(self
+                            .inner
+                            .serve(req)
+                            .await
+                            .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                            .map(OptionalBody::some))
                     }
-                    None => Ok(create_auth_required_response(C::SCHEME)),
+                    None => Ok(Response::builder()
+                        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                        .header(PROXY_AUTHENTICATE, C::SCHEME)
+                        .body(OptionalBody::none())
+                        .context("create auth-required response")?),
                 }
             }
             None => {
                 if self.allow_anonymous {
-                    ctx.insert(UserId::Anonymous);
-                    self.inner.serve(ctx, req).await
+                    req.extensions_mut().insert(UserId::Anonymous);
+                    Ok(self
+                        .inner
+                        .serve(req)
+                        .await
+                        .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                        .map(OptionalBody::some))
                 } else {
-                    Ok(create_auth_required_response(C::SCHEME))
+                    Ok(Response::builder()
+                        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                        .header(PROXY_AUTHENTICATE, C::SCHEME)
+                        .body(OptionalBody::none())
+                        .context("create auth-required response")?)
                 }
             }
         }
