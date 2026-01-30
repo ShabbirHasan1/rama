@@ -1,4 +1,5 @@
 use super::{DEFAULT_MESSAGE_LEVEL, Latency};
+use crate::HeaderValue;
 use crate::Response;
 use rama_core::telemetry::tracing::{self, Level, Span};
 use rama_utils::latency::LatencyUnit;
@@ -116,9 +117,8 @@ impl<B> OnResponse<B> for DefaultOnResponse {
         let existing_headers = response.headers_mut();
         existing_headers.insert(
             "X-Response-Time",
-            format!("{}", latency)
-                .parse()
-                .expect("Failed to parse duration"),
+            HeaderValue::from_str(&format!("{latency}"))
+                .unwrap_or(HeaderValue::from_static("Unknown Latency")),
         );
         let response_headers = self
             .include_headers

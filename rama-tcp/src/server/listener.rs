@@ -195,6 +195,26 @@ impl TcpListenerBuilder {
     pub async fn bind<I: TryInto<Interface, Error: Into<BoxError>>>(
         self,
         interface: I,
+    ) -> Result<TcpListener, BoxError> {
+        match interface.try_into().map_err(Into::<BoxError>::into)? {
+            Interface::Address(addr) => self.bind_address(addr).await,
+            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+            Interface::Device(name) => self.bind_device(name, None).await,
+            Interface::Socket(opts) => {
+                let socket = opts
+                    .try_build_socket()
+                    .context("build socket from options")?;
+                self.bind_socket(socket, None).await
+            }
+        }
+    }
+
+    /// Creates a new TcpListener, which will be bound to the specified interface.
+    ///
+    /// The returned listener is ready for accepting connections.
+    pub async fn bind_with_backlog<I: TryInto<Interface, Error: Into<BoxError>>>(
+        self,
+        interface: I,
         backlog: Option<i32>,
     ) -> Result<TcpListener, BoxError> {
         match interface.try_into().map_err(Into::<BoxError>::into)? {
@@ -314,9 +334,21 @@ impl TcpListener {
     pub async fn bind<I: TryInto<Interface, Error: Into<BoxError>>>(
         interface: I,
         exec: Executor,
+    ) -> Result<Self, BoxError> {
+        TcpListenerBuilder::new(exec).bind(interface).await
+    }
+
+    /// Creates a new TcpListener, which will be bound to the specified interface.
+    ///
+    /// The returned listener is ready for accepting connections.
+    pub async fn bind_with_backlog<I: TryInto<Interface, Error: Into<BoxError>>>(
+        interface: I,
+        exec: Executor,
         backlog: Option<i32>,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(exec).bind(interface, backlog).await
+        TcpListenerBuilder::new(exec)
+            .bind_with_backlog(interface, backlog)
+            .await
     }
 }
 

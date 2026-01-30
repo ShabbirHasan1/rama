@@ -31,10 +31,7 @@ impl Default for IpCidrConnector {
     fn default() -> Self {
         Self {
             mode: PoolMode::Random,
-            ip_cidr: IpNet::V4(
-                Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0)
-                    .expect("Failed to parse unspecified IPv4 address"),
-            ),
+            ip_cidr: IpNet::V4(Ipv4Net::new_assert(Ipv4Addr::UNSPECIFIED, 0)),
             cidr_range: None,
             fallback: None,
             excluded: None,

@@ -548,11 +548,11 @@ where
     /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
     ///
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
-    pub async fn listen<I>(self, interface: I, backlog: Option<i32>) -> Result<(), BoxError>
+    pub async fn listen<I>(self, interface: I) -> Result<(), BoxError>
     where
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(interface, self.exec.clone(), backlog).await?;
+        let tcp = TcpListener::bind(interface, self.exec.clone()).await?;
         tcp.serve(Arc::new(self)).await;
         Ok(())
     }
