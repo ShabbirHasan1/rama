@@ -165,7 +165,7 @@ impl TcpListenerBuilder {
         tokio::task::spawn_blocking(move || {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
             let addr = addr.try_into().map_err(Into::<BoxError>::into)?;
-            let socket_options = match addr.ip_addr() {
+            let socket_options = match addr.ip_addr {
                 std::net::IpAddr::V4(_ip) => SocketOptions {
                     device: Some(name),
                     address: Some(addr),
