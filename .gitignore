@@ -9,3 +9,6 @@
 .idea
 .vscode
 .DS_Store
+
+# log files produced by e2e benchmarks
+e2e-test-logs
