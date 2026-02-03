@@ -8,7 +8,7 @@ use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
-use rama_net::address::SocketAddress;
+use rama_net::address::{Domain, SocketAddress};
 use rama_net::user::authority::{AuthorizeResult, Authorizer, StaticAuthorizer, Unauthorized};
 use rama_net::user::{Basic, Bearer, UserId};
 use rama_utils::str::NonEmptyStr;
@@ -18,6 +18,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::WhiteListedDomains;
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Authorization` header, defined in [RFC7235](https://tools.ietf.org/html/rfc7235#section-4.2)
@@ -345,32 +346,42 @@ where
 pub struct UserCredInfo<A> {
     pub credential: A,
     pub primary_ip: IpAddr,
-    pub secondary_ip: IpAddr,
+    pub allowed_any_domain: bool,
+    pub allowed_domains: Option<Vec<WhiteListedDomains>>,
+    pub allowed_custom_domains: Option<Vec<Domain>>,
+    pub allowed_any_ip: bool,
+    pub allowed_ips: Option<Vec<IpAddr>>,
+    pub allowed_custom_ips: Option<Vec<IpAddr>>,
 }
 
 impl UserCredInfo<Basic> {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new_static(
-        username: NonEmptyStr,
-        password: NonEmptyStr,
+        credential: Basic,
         primary_ip: IpAddr,
-        secondary_ip: IpAddr,
+        allowed_any_domain: bool,
+        allowed_domains: Option<Vec<WhiteListedDomains>>,
+        allowed_custom_domains: Option<Vec<Domain>>,
+        allowed_any_ip: bool,
+        allowed_ips: Option<Vec<IpAddr>>,
+        allowed_custom_ips: Option<Vec<IpAddr>>,
     ) -> Self {
         Self {
-            credential: Basic::new(username, password),
+            credential,
             primary_ip,
-            secondary_ip,
+            allowed_any_domain,
+            allowed_domains,
+            allowed_custom_domains,
+            allowed_any_ip,
+            allowed_ips,
+            allowed_custom_ips,
         }
     }
 
     #[must_use]
-    pub fn primary_connector(&self) -> SocketAddress {
+    pub fn connector(&self) -> SocketAddress {
         SocketAddress::new(self.primary_ip, 0)
-    }
-
-    #[must_use]
-    pub fn secondary_connector(&self) -> SocketAddress {
-        SocketAddress::new(self.secondary_ip, 0)
     }
 
     #[must_use]

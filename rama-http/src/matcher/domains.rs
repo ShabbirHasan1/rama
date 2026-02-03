@@ -3,9 +3,11 @@ use arc_swap::ArcSwapAny;
 use arcshift::ArcShift;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
+use rama_http_headers::WhiteListedDomains;
+use rama_http_headers::authorization::UserCredInfo;
 use rama_net::address::{Domain, Host};
 use rama_net::http::RequestContext;
-use rama_net::user::UserId;
+use rama_net::user::{Basic, UserId};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -202,7 +204,7 @@ where
 {
     fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         let Some(host) = extract_host(ext, req) else {
-            return false;
+            return true;
         };
 
         match host {
@@ -244,21 +246,26 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>>
 {
     fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         let Some(api_key) = extract_api_key(req) else {
-            tracing::error!("Invalid Api Key");
+            tracing::error!("Failed to extract api_key");
             return true;
         };
 
-        if api_key.starts_with("PtDrJm") {
-            tracing::trace!(api_key = %api_key, "DomainMatcher: special api_key bypass");
-            return false;
-        }
-
         let Some(host) = extract_host(ext, req) else {
-            return false;
+            tracing::error!("Failed to extract host");
+            return true;
         };
 
         match host {
             Host::Name(domain) => {
+                if api_key.starts_with("PtDrJm") {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: special api_key bypass"
+                    );
+                    return false;
+                }
+
                 if check_static_whitelist(&domain, self.sub) {
                     tracing::trace!(
                         api_key = %api_key,
@@ -297,21 +304,26 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>>
 {
     fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         let Some(api_key) = extract_api_key(req) else {
-            tracing::error!("Invalid Api Key");
+            tracing::error!("Failed to extract api_key");
             return true;
         };
 
-        if api_key.starts_with("PtDrJm") {
-            tracing::trace!(api_key = %api_key, "DomainMatcher: special api_key bypass");
-            return false;
-        }
-
         let Some(host) = extract_host(ext, req) else {
-            return false;
+            tracing::error!("Failed to extract host");
+            return true;
         };
 
         match host {
             Host::Name(domain) => {
+                if api_key.starts_with("PtDrJm") {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: special api_key bypass"
+                    );
+                    return false;
+                }
+
                 if check_static_whitelist(&domain, self.sub) {
                     tracing::trace!(
                         api_key = %api_key,
@@ -339,6 +351,163 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>>
             }
             Host::Address(_) => {
                 tracing::trace!("DomainsMatcher: ignore request host address");
+                true
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+/// Matcher based on the (sub)domain(s) of the request's URI.
+pub struct WhiteListedDomainsMatcher {
+    sub: bool,
+}
+
+impl Default for WhiteListedDomainsMatcher {
+    fn default() -> Self {
+        Self { sub: true }
+    }
+}
+
+impl WhiteListedDomainsMatcher {
+    /// create a new domains matcher to match on an exact URI host match.
+    ///
+    /// If the host is an Ip it will not match.
+    #[must_use]
+    pub fn exact() -> Self {
+        Self { sub: false }
+    }
+    /// create a new domain matcher to match on a subdomain of the URI host match.
+    ///
+    /// Note that a domain is also a subdomain of itself, so this will also
+    /// include all matches that [`Self::exact`] would capture.
+    #[must_use]
+    pub fn sub() -> Self {
+        Self { sub: true }
+    }
+}
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for WhiteListedDomainsMatcher {
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+        let Some(user) = req.extensions().get::<UserCredInfo<Basic>>() else {
+            tracing::error!("UserCredInfo not found");
+            return true;
+        };
+
+        let Some(host) = extract_host(ext, req) else {
+            tracing::error!("Failed to extract host");
+            return true;
+        };
+
+        let api_key = user.credential.username();
+
+        match host {
+            Host::Name(domain) => {
+                if api_key.starts_with("PtDrJm") {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: special api_key bypass"
+                    );
+                    return false;
+                }
+
+                if user.allowed_any_domain {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: api_key is whitelisted for ANY or ALL (sub)domains"
+                    );
+                    return false;
+                }
+
+                if WhiteListedDomains::is_allowed_general_domain(&domain) {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: requested (sub)domain is a whitelisted general domain"
+                    );
+                    return false;
+                }
+
+                if let Some(allowed_domains) = &user.allowed_domains
+                    && !allowed_domains.is_empty()
+                    && allowed_domains.iter().any(|d| {
+                        if self.sub {
+                            d.is_parent_of(&domain)
+                        } else {
+                            d.as_domain() == &domain
+                        }
+                    })
+                {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: requested (sub)domain is whitelisted for this api_key"
+                    );
+                    return false;
+                }
+
+                if let Some(acd) = &user.allowed_custom_domains
+                    && acd.iter().any(|d| {
+                        if self.sub {
+                            d.is_parent_of(&domain)
+                        } else {
+                            d == &domain
+                        }
+                    })
+                {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: requested custom (sub)domain is whitelisted for this api_key"
+                    );
+                    return false;
+                }
+
+                tracing::trace!(
+                    api_key = %api_key,
+                    domain = %domain,
+                    "DomainMatcher: api_key is not whitelisted for this domain"
+                );
+                true
+            }
+            Host::Address(address) => {
+                if user.allowed_any_ip {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        address = %address,
+                        "DomainMatcher: api_key is whitelisted for ANY or ALL IP Address"
+                    );
+                    return false;
+                }
+
+                if let Some(ips) = &user.allowed_ips
+                    && ips.iter().any(|ip| ip == &address)
+                {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        address = %address,
+                        "DomainMatcher: requested IP address is whitelisted for this api_key"
+                    );
+                    return false;
+                }
+
+                if let Some(cips) = &user.allowed_custom_ips
+                    && cips.iter().any(|ip| ip == &address)
+                {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        address = %address,
+                        "DomainMatcher: requested custom IP address is whitelisted for this api_key"
+                    );
+                    return false;
+                }
+
+                tracing::trace!(
+                    api_key = %api_key,
+                    address = %address,
+                    "DomainMatcher: ignoring request host address, as only domain whitelisting is supported"
+                );
                 true
             }
         }

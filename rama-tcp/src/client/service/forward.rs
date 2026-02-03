@@ -1,5 +1,5 @@
 use super::TcpConnector;
-use crate::client::Request as TcpRequest;
+use crate::client::{Request as TcpRequest, service::TcpStreamConnectorCloneFactory};
 use rama_core::{
     Service,
     error::{BoxError, ErrorExt, OpaqueError},
@@ -7,8 +7,9 @@ use rama_core::{
     rt::Executor,
     stream::Stream,
 };
+use rama_dns::GlobalDnsResolver;
 use rama_net::{
-    address::HostWithPort,
+    address::{HostWithPort, SocketAddress},
     client::{ConnectorService, EstablishedClientConnection},
     proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
 };
@@ -61,6 +62,16 @@ impl Forwarder<super::TcpConnector> {
         Forwarder {
             kind: self.kind,
             connector,
+        }
+    }
+
+    pub fn with_ctx_and_connector<T>(
+        exec: Executor,
+        connector: T,
+    ) -> Forwarder<TcpConnector<GlobalDnsResolver, TcpStreamConnectorCloneFactory<T>>> {
+        Forwarder {
+            kind: ForwarderKind::Dynamic,
+            connector: TcpConnector::new(exec).with_connector(connector),
         }
     }
 }

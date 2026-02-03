@@ -27,6 +27,7 @@ mod domains;
 #[doc(inline)]
 pub use domains::{
     DomainStore, DomainsMatcher, UserDomainStore, WHITELISTED_DOMAINS, WILDCARD_DOMAIN,
+    WhiteListedDomainsMatcher,
 };
 
 pub mod uri;

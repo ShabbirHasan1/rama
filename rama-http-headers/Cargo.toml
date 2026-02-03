@@ -22,6 +22,7 @@ arc-swap = { workspace = true }
 arcshift = { workspace = true, features = ["nightly"] }
 ahash = { workspace = true }
 base64 = { workspace = true }
+bitcode = { workspace = true }
 chrono = { workspace = true }
 const_format = { workspace = true }
 httpdate = { workspace = true }
@@ -33,6 +34,7 @@ rama-net = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_repr = { workspace = true }
 sha1 = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
