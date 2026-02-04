@@ -283,7 +283,7 @@ impl<T: UsernameLabelParser> AuthoritySync<Self, T> for Basic {
     fn authorized(&self, ext: &mut Extensions, credentials: &Self) -> bool {
         let username = credentials.username();
         let password = credentials.password();
-
+        tracing::debug!("checking authorization for username: {}", username);
         if password != self.password() {
             return false;
         }
