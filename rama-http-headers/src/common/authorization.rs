@@ -346,6 +346,7 @@ where
 pub struct UserCredInfo<A> {
     pub credential: A,
     pub primary_ip: IpAddr,
+    pub secondary_ip: IpAddr,
     pub allowed_any_domain: bool,
     pub allowed_domains: Option<Vec<WhiteListedDomains>>,
     pub allowed_custom_domains: Option<Vec<Domain>>,
@@ -360,6 +361,7 @@ impl UserCredInfo<Basic> {
     pub fn new_static(
         credential: Basic,
         primary_ip: IpAddr,
+        secondary_ip: IpAddr,
         allowed_any_domain: bool,
         allowed_domains: Option<Vec<WhiteListedDomains>>,
         allowed_custom_domains: Option<Vec<Domain>>,
@@ -370,6 +372,7 @@ impl UserCredInfo<Basic> {
         Self {
             credential,
             primary_ip,
+            secondary_ip,
             allowed_any_domain,
             allowed_domains,
             allowed_custom_domains,
@@ -380,8 +383,13 @@ impl UserCredInfo<Basic> {
     }
 
     #[must_use]
-    pub fn connector(&self) -> SocketAddress {
+    pub fn primary_connector(&self) -> SocketAddress {
         SocketAddress::new(self.primary_ip, 0)
+    }
+
+    #[must_use]
+    pub fn secondary_connector(&self) -> SocketAddress {
+        SocketAddress::new(self.secondary_ip, 0)
     }
 
     #[must_use]
