@@ -1,4 +1,3 @@
-use bitcode::{Decode, Encode};
 use rama_net::address::Domain;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -63,18 +62,7 @@ pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 46] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize_repr,
-    Deserialize_repr,
-    Encode,
-    Decode,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize_repr, Deserialize_repr,
 )]
 #[repr(u8)]
 pub enum WhiteListedDomains {

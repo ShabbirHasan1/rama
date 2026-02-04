@@ -90,7 +90,6 @@ base64 = "0.22"
 bb8 = "0.9"
 bb8-postgres = "0.9"
 bitflags = "2.10"
-bitcode = { git = "https://github.com/OpenLLT/bitcode.git", branch = "develop", features = ["time", "uuid", "serde", "jiff", "arrayvec", "glam", "rust_decimal"] }
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"

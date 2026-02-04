@@ -180,6 +180,9 @@ impl<A: Clone, C, S: Clone, L> Clone for CustomProxyAuthService<A, C, S, L> {
     }
 }
 
+static WARNING_MESSAGE: &str = "
+CRITICAL;STOP;ACCESS-DENIED: This path is not a place of honor. Nothing valued is here. Your current request parameters emanate instability.And a violation of authentication protocol detected. Unauthorized traversal will result in immediate IP blacklisting and credential revocation. Proceeding may cause irreversible state desynchronization or permanent data loss. This event has been logged for security audit.And continued interaction with this malformed request will trigger automated defensive countermeasures.";
+
 impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for CustomProxyAuthService<A, C, S, L>
 where
     A: Authority<C, L> + AuthoritySync<C, L> + Clone + Debug,
@@ -193,6 +196,14 @@ where
     type Error = OpaqueError;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        if req.method() != http::Method::CONNECT {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(http::header::WARNING, WARNING_MESSAGE)
+                .body(OptionalBody::none())
+                .context("create auth-required response");
+        }
+
         let credentials = req
             .headers()
             .typed_get::<ProxyAuthorization<C>>()
@@ -242,6 +253,7 @@ where
                     None => Ok(Response::builder()
                         .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                         .header(PROXY_AUTHENTICATE, C::SCHEME)
+                        .header(http::header::WARNING, WARNING_MESSAGE)
                         .body(OptionalBody::none())
                         .context("create auth-required response")?),
                 }
@@ -259,6 +271,7 @@ where
                     Ok(Response::builder()
                         .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                         .header(PROXY_AUTHENTICATE, C::SCHEME)
+                        .header(http::header::WARNING, WARNING_MESSAGE)
                         .body(OptionalBody::none())
                         .context("create auth-required response")?)
                 }
