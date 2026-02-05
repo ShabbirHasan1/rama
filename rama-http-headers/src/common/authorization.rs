@@ -478,7 +478,9 @@ where
 
 #[allow(clippy::disallowed_types)]
 #[derive(Clone, Debug)]
-pub struct UserCredInfoHashMap<C>(pub std::collections::HashMap<C, UserCredInfo<C>, RandomState>);
+pub struct UserCredInfoHashMap<C: Clone + Debug + PartialEq + Eq + Hash>(
+    pub std::collections::HashMap<C, UserCredInfo<C>, RandomState>,
+);
 
 impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for UserCredInfoHashMap<Basic> {
     fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
@@ -488,16 +490,6 @@ impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for UserCredInfoHashMap<Bas
         AuthoritySync::<Basic, T>::authorized(user_cred_info, ext, credentials)
     }
 }
-
-// #[allow(clippy::disallowed_types)]
-// impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for UserCredInfoHashMap<Basic> {
-//     fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
-//         let Some(user_cred_info) = self.get(&credentials.username_inner()) else {
-//             return false;
-//         };
-//         AuthoritySync::<Basic, T>::authorized(user_cred_info, ext, credentials)
-//     }
-// }
 
 impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorizer<C>
     for UserCredInfoHashMap<C>
@@ -568,7 +560,7 @@ impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorize
 }
 
 /// Storage backend for user credentials.
-pub enum UserCredStoreBackend<A> {
+pub enum UserCredStoreBackend<A: Clone + Debug + PartialEq + Eq + Hash> {
     /// Uses RwLock for thread-safe access with blocking updates for vector backend.
     RwLock(Arc<RwLock<Vec<UserCredInfo<A>>>>),
     /// Uses ArcSwap for lock-free reads with atomic updates for vector backend.
@@ -583,7 +575,10 @@ pub enum UserCredStoreBackend<A> {
     ArcShiftHashmap(ArcShift<UserCredInfoHashMap<A>>),
 }
 
-impl<A> std::fmt::Debug for UserCredStoreBackend<A> {
+impl<A> std::fmt::Debug for UserCredStoreBackend<A>
+where
+    A: Clone + Debug + PartialEq + Eq + Hash,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RwLock(_) => f.debug_tuple("RwLock").finish(),
@@ -596,7 +591,10 @@ impl<A> std::fmt::Debug for UserCredStoreBackend<A> {
     }
 }
 
-impl<A> Clone for UserCredStoreBackend<A> {
+impl<A> Clone for UserCredStoreBackend<A>
+where
+    A: Clone + Debug + PartialEq + Eq + Hash,
+{
     fn clone(&self) -> Self {
         match self {
             Self::RwLock(lock) => Self::RwLock(lock.clone()),
@@ -610,11 +608,17 @@ impl<A> Clone for UserCredStoreBackend<A> {
 }
 
 #[derive(Debug, Clone)]
-pub struct UserCredStore<A> {
+pub struct UserCredStore<A>
+where
+    A: Clone + Debug + PartialEq + Eq + Hash,
+{
     pub backend: UserCredStoreBackend<A>,
 }
 
-impl<A> UserCredStore<A> {
+impl<A> UserCredStore<A>
+where
+    A: Clone + Debug + PartialEq + Eq + Hash,
+{
     /// Create a new store using RwLock backend.
     #[must_use]
     pub fn new(users: Vec<UserCredInfo<A>>) -> Self {
