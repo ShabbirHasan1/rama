@@ -1,5 +1,6 @@
 //! Authorization header and types.
 
+use ahash::RandomState;
 use arc_swap::{ArcSwap, ArcSwapAny};
 use arcshift::ArcShift;
 use base64::Engine;
@@ -11,8 +12,8 @@ use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address::{Domain, SocketAddress};
 use rama_net::user::authority::{AuthorizeResult, Authorizer, StaticAuthorizer, Unauthorized};
 use rama_net::user::{Basic, Bearer, UserId};
-use rama_utils::str::NonEmptyStr;
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::net::IpAddr;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -342,6 +343,8 @@ where
     }
 }
 
+// HashMap<i32, i32, RandomState>
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserCredInfo<A> {
     pub credential: A,
@@ -473,14 +476,111 @@ where
     }
 }
 
+#[allow(clippy::disallowed_types)]
+#[derive(Clone, Debug)]
+pub struct UserCredInfoHashMap<C>(pub std::collections::HashMap<C, UserCredInfo<C>, RandomState>);
+
+impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for UserCredInfoHashMap<Basic> {
+    fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
+        let Some(user_cred_info) = self.0.get(credentials) else {
+            return false;
+        };
+        AuthoritySync::<Basic, T>::authorized(user_cred_info, ext, credentials)
+    }
+}
+
+// #[allow(clippy::disallowed_types)]
+// impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for UserCredInfoHashMap<Basic> {
+//     fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
+//         let Some(user_cred_info) = self.get(&credentials.username_inner()) else {
+//             return false;
+//         };
+//         AuthoritySync::<Basic, T>::authorized(user_cred_info, ext, credentials)
+//     }
+// }
+
+impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorizer<C>
+    for UserCredInfoHashMap<C>
+{
+    type Error = Unauthorized;
+
+    async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        let Some(user_cred_info) = self.0.get(&credentials) else {
+            return ().authorize(credentials).await;
+        };
+        let mut ext = Extensions::new();
+        let result = credentials.eq(&user_cred_info.credential);
+        let AuthorizeResult {
+            credentials: c,
+            result,
+        } = result.authorize(credentials).await;
+        match result {
+            Ok(maybe_ext) => {
+                ext.insert(self.clone());
+                if maybe_ext.is_none() {
+                    return AuthorizeResult {
+                        credentials: c,
+                        result: Ok(Some(ext)),
+                    };
+                }
+                AuthorizeResult {
+                    credentials: c,
+                    result: Ok(maybe_ext),
+                }
+            }
+            Err(err) => AuthorizeResult {
+                credentials: c,
+                result: Err(err),
+            },
+        }
+    }
+
+    fn authorize_sync(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        let Some(user_cred_info) = self.0.get(&credentials) else {
+            return ().authorize_sync(credentials);
+        };
+        let mut ext = Extensions::new();
+        let result = credentials.eq(&user_cred_info.credential);
+        let AuthorizeResult {
+            credentials: c,
+            result,
+        } = result.authorize_sync(credentials);
+        match result {
+            Ok(maybe_ext) => {
+                ext.insert(self.clone());
+                if maybe_ext.is_none() {
+                    return AuthorizeResult {
+                        credentials: c,
+                        result: Ok(Some(ext)),
+                    };
+                }
+                AuthorizeResult {
+                    credentials: c,
+                    result: Ok(maybe_ext),
+                }
+            }
+            Err(err) => AuthorizeResult {
+                credentials: c,
+                result: Err(err),
+            },
+        }
+    }
+}
+
 /// Storage backend for user credentials.
 pub enum UserCredStoreBackend<A> {
-    /// Uses RwLock for thread-safe access with blocking updates.
+    /// Uses RwLock for thread-safe access with blocking updates for vector backend.
     RwLock(Arc<RwLock<Vec<UserCredInfo<A>>>>),
-    /// Uses ArcSwap for lock-free reads with atomic updates.
+    /// Uses ArcSwap for lock-free reads with atomic updates for vector backend.
     ArcSwap(Arc<ArcSwapAny<Arc<Vec<UserCredInfo<A>>>>>),
-    /// Uses ArcShift for efficient updates with shared access.
+    /// Uses ArcShift for efficient updates with shared access for vector backend.
     ArcShift(ArcShift<Vec<UserCredInfo<A>>>),
+    /// Uses RwLock for thread-safe access with blocking updates for hashmap backend.
+    RwLockHashmap(Arc<RwLock<UserCredInfoHashMap<A>>>),
+    /// Uses ArcSwap for lock-free reads with atomic updates for hashmap backend.
+    ArcSwapHashmap(Arc<ArcSwapAny<Arc<UserCredInfoHashMap<A>>>>),
+    /// Uses ArcShift for efficient updates with shared access for hashmap backend.
+    ArcShiftHashmap(ArcShift<UserCredInfoHashMap<A>>),
 }
 
 impl<A> std::fmt::Debug for UserCredStoreBackend<A> {
@@ -489,6 +589,9 @@ impl<A> std::fmt::Debug for UserCredStoreBackend<A> {
             Self::RwLock(_) => f.debug_tuple("RwLock").finish(),
             Self::ArcSwap(_) => f.debug_tuple("ArcSwap").finish(),
             Self::ArcShift(_) => f.debug_tuple("ArcShift").finish(),
+            Self::RwLockHashmap(_) => f.debug_tuple("RwLockHashmap").finish(),
+            Self::ArcSwapHashmap(_) => f.debug_tuple("ArcSwapHashmap").finish(),
+            Self::ArcShiftHashmap(_) => f.debug_tuple("ArcShiftHashmap").finish(),
         }
     }
 }
@@ -499,6 +602,9 @@ impl<A> Clone for UserCredStoreBackend<A> {
             Self::RwLock(lock) => Self::RwLock(lock.clone()),
             Self::ArcSwap(swap) => Self::ArcSwap(swap.clone()),
             Self::ArcShift(shift) => Self::ArcShift(shift.clone()),
+            Self::RwLockHashmap(hashmap) => Self::RwLockHashmap(hashmap.clone()),
+            Self::ArcSwapHashmap(hashmap) => Self::ArcSwapHashmap(hashmap.clone()),
+            Self::ArcShiftHashmap(hashmap) => Self::ArcShiftHashmap(hashmap.clone()),
         }
     }
 }
@@ -534,7 +640,10 @@ impl<A> UserCredStore<A> {
     }
 
     /// Try to update credentials without blocking (only works with RwLock backend).
-    pub fn try_update(&self, users: Vec<UserCredInfo<A>>) -> Result<(), Vec<UserCredInfo<A>>> {
+    pub fn try_update_vectors(
+        &self,
+        users: Vec<UserCredInfo<A>>,
+    ) -> Result<(), Vec<UserCredInfo<A>>> {
         match &self.backend {
             UserCredStoreBackend::RwLock(lock) => {
                 if let Ok(mut guard) = lock.try_write() {
@@ -551,9 +660,39 @@ impl<A> UserCredStore<A> {
                 tracing::trace!("User credentials updated successfully");
                 Ok(())
             }
-            UserCredStoreBackend::ArcShift(_) => {
-                tracing::trace!(
-                    "try_update not supported for ArcShift backend, use update instead"
+            _ => {
+                tracing::error!(
+                    "Unsupported try_update_vectors backend for user credentials update"
+                );
+                Err(users)
+            }
+        }
+    }
+
+    /// Try to update credentials without blocking (only works with RwLock backend).
+    pub fn try_update_hashmap(
+        &self,
+        users: UserCredInfoHashMap<A>,
+    ) -> Result<(), UserCredInfoHashMap<A>> {
+        match &self.backend {
+            UserCredStoreBackend::RwLockHashmap(lock) => {
+                if let Ok(mut guard) = lock.try_write() {
+                    *guard = users;
+                    tracing::trace!("User credentials updated successfully");
+                    Ok(())
+                } else {
+                    tracing::trace!("Failed to acquire write lock for user credentials update");
+                    Err(users)
+                }
+            }
+            UserCredStoreBackend::ArcSwapHashmap(swap) => {
+                swap.store(Arc::new(users));
+                tracing::trace!("User credentials updated successfully");
+                Ok(())
+            }
+            _ => {
+                tracing::error!(
+                    "Unsupported try_update_hashmap backend for user credentials update"
                 );
                 Err(users)
             }
@@ -561,7 +700,7 @@ impl<A> UserCredStore<A> {
     }
 
     /// Update credentials (async for RwLock, sync for others).
-    pub async fn update(&mut self, users: Vec<UserCredInfo<A>>) {
+    pub async fn update_vectors(&mut self, users: Vec<UserCredInfo<A>>) {
         match &mut self.backend {
             UserCredStoreBackend::RwLock(lock) => {
                 let mut guard = lock.write().await;
@@ -577,18 +716,41 @@ impl<A> UserCredStore<A> {
                 shift.reload();
                 tracing::trace!("User credentials updated successfully");
             }
+            _ => {
+                tracing::error!("Unsupported update_vectors backend for user credentials update");
+            }
+        }
+    }
+
+    /// Update credentials (async for RwLock, sync for others).
+    pub async fn update_hashmap(&mut self, users: UserCredInfoHashMap<A>) {
+        match &mut self.backend {
+            UserCredStoreBackend::RwLockHashmap(lock) => {
+                let mut guard = lock.write().await;
+                *guard = users;
+                tracing::trace!("User credentials updated successfully");
+            }
+            UserCredStoreBackend::ArcSwapHashmap(swap) => {
+                swap.store(Arc::new(users));
+                tracing::trace!("User credentials updated successfully");
+            }
+            UserCredStoreBackend::ArcShiftHashmap(shift) => {
+                shift.update(users);
+                shift.reload();
+                tracing::trace!("User credentials updated successfully");
+            }
+            _ => {
+                tracing::error!("Unsupported update_hashmap backend for user credentials update");
+            }
         }
     }
 
     /// Update credentials synchronously (only works with ArcSwap and ArcShift backends).
-    pub fn update_sync(&mut self, users: Vec<UserCredInfo<A>>) -> Result<(), Vec<UserCredInfo<A>>> {
+    pub fn update_sync_vectors(
+        &mut self,
+        users: Vec<UserCredInfo<A>>,
+    ) -> Result<(), Vec<UserCredInfo<A>>> {
         match &mut self.backend {
-            UserCredStoreBackend::RwLock(_) => {
-                tracing::trace!(
-                    "Synchronous update not supported for RwLock backend, use update instead"
-                );
-                Err(users)
-            }
             UserCredStoreBackend::ArcSwap(swap) => {
                 swap.store(Arc::new(users));
                 tracing::trace!("User credentials updated successfully");
@@ -600,39 +762,81 @@ impl<A> UserCredStore<A> {
                 tracing::trace!("User credentials updated successfully");
                 Ok(())
             }
+            _ => {
+                tracing::trace!("Synchronous update_sync_vectors not supported for this backend");
+                Err(users)
+            }
+        }
+    }
+
+    /// Update credentials synchronously (only works with ArcSwap and ArcShift backends).
+    pub fn update_sync_hashmap(
+        &mut self,
+        users: UserCredInfoHashMap<A>,
+    ) -> Result<(), UserCredInfoHashMap<A>> {
+        match &mut self.backend {
+            UserCredStoreBackend::ArcSwapHashmap(swap) => {
+                swap.store(Arc::new(users));
+                tracing::trace!("User credentials updated successfully");
+                Ok(())
+            }
+            UserCredStoreBackend::ArcShiftHashmap(shift) => {
+                shift.update(users);
+                shift.reload();
+                tracing::trace!("User credentials updated successfully");
+                Ok(())
+            }
+            _ => {
+                tracing::trace!("Synchronous update_sync_hashmap not supported for this backend");
+                Err(users)
+            }
         }
     }
 }
 
 impl UserCredStore<Basic> {
-    pub async fn get_user_cred_info(&self, username: &str) -> Option<UserCredInfo<Basic>> {
+    pub async fn get_user_cred_info(&self, credentials: &Basic) -> Option<UserCredInfo<Basic>> {
         match &self.backend {
             UserCredStoreBackend::RwLock(lock) => {
                 let guard = lock.read().await;
                 guard
                     .iter()
-                    .find(|info| info.credential.username() == username)
+                    .find(|info| &info.credential == credentials)
                     .cloned()
             }
             UserCredStoreBackend::ArcSwap(swap) => {
                 let guard = swap.load();
                 guard
                     .iter()
-                    .find(|info| info.credential.username() == username)
+                    .find(|info| &info.credential == credentials)
                     .cloned()
             }
             UserCredStoreBackend::ArcShift(shift) => {
                 let guard = shift.shared_non_reloading_get();
                 guard
                     .iter()
-                    .find(|info| info.credential.username() == username)
+                    .find(|info| &info.credential == credentials)
                     .cloned()
+            }
+            UserCredStoreBackend::RwLockHashmap(lock) => {
+                let guard = lock.read().await;
+                guard.0.get(credentials).cloned()
+            }
+            UserCredStoreBackend::ArcSwapHashmap(swap) => {
+                let guard = swap.load();
+                guard.0.get(credentials).cloned()
+            }
+            UserCredStoreBackend::ArcShiftHashmap(shift) => {
+                let guard = shift.shared_non_reloading_get();
+                guard.0.get(credentials).cloned()
             }
         }
     }
 }
 
-impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for UserCredStore<C> {
+impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorizer<C>
+    for UserCredStore<C>
+{
     type Error = Unauthorized;
 
     async fn authorize(&self, mut credentials: C) -> AuthorizeResult<C, Self::Error> {
@@ -644,7 +848,7 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
                     let AuthorizeResult {
                         credentials: c,
                         result,
-                    } = authorizer.authorize_sync(credentials.clone());
+                    } = authorizer.authorize(credentials.clone()).await;
                     match result {
                         Ok(maybe_ext) => {
                             return AuthorizeResult {
@@ -665,7 +869,7 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
                     let AuthorizeResult {
                         credentials: c,
                         result,
-                    } = authorizer.authorize_sync(credentials);
+                    } = authorizer.authorize(credentials).await;
                     match result {
                         Ok(maybe_ext) => {
                             return AuthorizeResult {
@@ -698,6 +902,63 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
                             error = Some(err);
                             credentials = c;
                         }
+                    }
+                }
+            }
+            UserCredStoreBackend::RwLockHashmap(lock) => {
+                let guard = lock.read().await;
+                let AuthorizeResult {
+                    credentials: c,
+                    result,
+                } = guard.authorize(credentials.clone()).await;
+                match result {
+                    Ok(maybe_ext) => {
+                        return AuthorizeResult {
+                            credentials: c,
+                            result: Ok(maybe_ext),
+                        };
+                    }
+                    Err(err) => {
+                        error = Some(err);
+                        credentials = c;
+                    }
+                }
+            }
+            UserCredStoreBackend::ArcSwapHashmap(swap) => {
+                let guard = swap.load();
+                let AuthorizeResult {
+                    credentials: c,
+                    result,
+                } = guard.authorize(credentials).await;
+                match result {
+                    Ok(maybe_ext) => {
+                        return AuthorizeResult {
+                            credentials: c,
+                            result: Ok(maybe_ext),
+                        };
+                    }
+                    Err(err) => {
+                        error = Some(err);
+                        credentials = c;
+                    }
+                }
+            }
+            UserCredStoreBackend::ArcShiftHashmap(shift) => {
+                let guard = shift.shared_get();
+                let AuthorizeResult {
+                    credentials: c,
+                    result,
+                } = guard.authorize_sync(credentials);
+                match result {
+                    Ok(maybe_ext) => {
+                        return AuthorizeResult {
+                            credentials: c,
+                            result: Ok(maybe_ext),
+                        };
+                    }
+                    Err(err) => {
+                        error = Some(err);
+                        credentials = c;
                     }
                 }
             }
@@ -712,9 +973,6 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
         let mut error = None;
 
         match &self.backend {
-            UserCredStoreBackend::RwLock(_lock) => {
-                unimplemented!("RwLock Implementation is not yet implemented")
-            }
             UserCredStoreBackend::ArcSwap(swap) => {
                 let guard = swap.load();
                 for authorizer in guard.iter() {
@@ -756,6 +1014,48 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
                         }
                     }
                 }
+            }
+
+            UserCredStoreBackend::ArcSwapHashmap(swap) => {
+                let guard = swap.load();
+                let AuthorizeResult {
+                    credentials: c,
+                    result,
+                } = guard.authorize_sync(credentials);
+                match result {
+                    Ok(maybe_ext) => {
+                        return AuthorizeResult {
+                            credentials: c,
+                            result: Ok(maybe_ext),
+                        };
+                    }
+                    Err(err) => {
+                        error = Some(err);
+                        credentials = c;
+                    }
+                }
+            }
+            UserCredStoreBackend::ArcShiftHashmap(shift) => {
+                let guard = shift.shared_get();
+                let AuthorizeResult {
+                    credentials: c,
+                    result,
+                } = guard.authorize_sync(credentials);
+                match result {
+                    Ok(maybe_ext) => {
+                        return AuthorizeResult {
+                            credentials: c,
+                            result: Ok(maybe_ext),
+                        };
+                    }
+                    Err(err) => {
+                        error = Some(err);
+                        credentials = c;
+                    }
+                }
+            }
+            _ => {
+                unimplemented!("RwLock and RwLockHashmap Implementation is not yet implemented")
             }
         }
         AuthorizeResult {
