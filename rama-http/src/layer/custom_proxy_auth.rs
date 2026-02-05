@@ -4,60 +4,56 @@
 
 use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
-use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
+use crate::headers::authorization::AuthoritySync;
+use crate::headers::authorization::UserCredStore;
+use crate::headers::authorization::UserCredStoreBackend;
+use crate::headers::{HeaderMapExt, ProxyAuthorization};
 use crate::{Request, Response, StatusCode};
-use rama_core::extensions::{Extension, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
+// use rama_core::username::UsernameLabelParser;
 use rama_core::{Layer, Service};
 use rama_error::{BoxError, ErrorContext as _, OpaqueError};
-use rama_http_headers::authorization::{AuthoritySync, UserCredStore, UserCredStoreBackend};
+use rama_http_headers::authorization::UserCredInfo;
 use rama_http_types::body::OptionalBody;
-use rama_net::user::UserId;
+use rama_net::user::{Basic, UserId};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
-use std::fmt::Debug;
-use std::marker::PhantomData;
+// use std::marker::PhantomData;
 
 /// Layer that applies the [`CustomProxyAuthService`] middleware which apply a timeout to requests.
 ///
 /// See the [module docs](super) for an example.
-pub struct CustomProxyAuthLayer<A, C, L = ()> {
-    proxy_auth: UserCredStore<A>,
+pub struct CustomProxyAuthLayer {
+    proxy_auth: UserCredStore<Basic>,
     allow_anonymous: bool,
-    _phantom: PhantomData<fn(C, L) -> ()>,
 }
 
-impl<A: fmt::Debug, C, L> fmt::Debug for CustomProxyAuthLayer<A, C, L> {
+impl fmt::Debug for CustomProxyAuthLayer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("CustomProxyAuthLayer")
             .field("proxy_auth", &self.proxy_auth)
             .field("allow_anonymous", &self.allow_anonymous)
-            .field(
-                "_phantom",
-                &format_args!("{}", std::any::type_name::<fn(C, L) -> ()>()),
-            )
             .finish()
     }
 }
 
-impl<A: Clone, C, L> Clone for CustomProxyAuthLayer<A, C, L> {
+impl Clone for CustomProxyAuthLayer {
     fn clone(&self) -> Self {
         Self {
             proxy_auth: self.proxy_auth.clone(),
             allow_anonymous: self.allow_anonymous,
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<A, C> CustomProxyAuthLayer<A, C, ()> {
+impl CustomProxyAuthLayer {
     /// Creates a new [`CustomProxyAuthLayer`] with UserCredStore.
     #[must_use]
-    pub const fn new(proxy_auth: UserCredStore<A>) -> Self {
+    pub const fn new(proxy_auth: UserCredStore<Basic>) -> Self {
         Self {
             proxy_auth,
             allow_anonymous: false,
-            _phantom: PhantomData,
         }
     }
 
@@ -75,32 +71,8 @@ impl<A, C> CustomProxyAuthLayer<A, C, ()> {
     }
 }
 
-impl<A, C, L> CustomProxyAuthLayer<A, C, L> {
-    /// Overwrite the Labels extract type
-    ///
-    /// This is used if the username contains labels that you need to extract out.
-    /// Example implementation is the [`UsernameOpaqueLabelParser`].
-    ///
-    /// You can provide your own extractor by implementing the [`UsernameLabelParser`] trait.
-    ///
-    /// [`UsernameOpaqueLabelParser`]: rama_core::username::UsernameOpaqueLabelParser
-    /// [`UsernameLabelParser`]: rama_core::username::UsernameLabelParser
-    #[must_use]
-    pub fn with_labels<L2>(self) -> CustomProxyAuthLayer<A, C, L2> {
-        CustomProxyAuthLayer {
-            proxy_auth: self.proxy_auth,
-            allow_anonymous: self.allow_anonymous,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<A, C, L, S> Layer<S> for CustomProxyAuthLayer<A, C, L>
-where
-    A: Authority<C, L> + Clone,
-    C: Credentials + Clone + Send + Sync + 'static,
-{
-    type Service = CustomProxyAuthService<A, C, S, L>;
+impl<S> Layer<S> for CustomProxyAuthLayer {
+    type Service = CustomProxyAuthService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
         CustomProxyAuthService::new(self.proxy_auth.clone(), inner)
@@ -120,22 +92,20 @@ where
 /// allowed and the user will be authoized as [`UserId::Anonymous`].
 ///
 /// See the [module docs](self) for an example.
-pub struct CustomProxyAuthService<A, C, S, L = ()> {
-    proxy_auth: UserCredStore<A>,
+pub struct CustomProxyAuthService<S> {
+    proxy_auth: UserCredStore<Basic>,
     allow_anonymous: bool,
     inner: S,
-    _phantom: PhantomData<fn(C, L) -> ()>,
 }
 
-impl<A, C, S, L> CustomProxyAuthService<A, C, S, L> {
+impl<S> CustomProxyAuthService<S> {
     /// Creates a new [`CustomProxyAuthService`].
     #[must_use]
-    pub const fn new(proxy_auth: UserCredStore<A>, inner: S) -> Self {
+    pub const fn new(proxy_auth: UserCredStore<Basic>, inner: S) -> Self {
         Self {
             proxy_auth,
             allow_anonymous: false,
             inner,
-            _phantom: PhantomData,
         }
     }
 
@@ -155,27 +125,22 @@ impl<A, C, S, L> CustomProxyAuthService<A, C, S, L> {
     define_inner_service_accessors!();
 }
 
-impl<A: fmt::Debug, C, S: fmt::Debug, L> fmt::Debug for CustomProxyAuthService<A, C, S, L> {
+impl<S: fmt::Debug> fmt::Debug for CustomProxyAuthService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CustomProxyAuthService")
             .field("proxy_auth", &self.proxy_auth)
             .field("allow_anonymous", &self.allow_anonymous)
             .field("inner", &self.inner)
-            .field(
-                "_phantom",
-                &format_args!("{}", std::any::type_name::<fn(C, L) -> ()>()),
-            )
             .finish()
     }
 }
 
-impl<A: Clone, C, S: Clone, L> Clone for CustomProxyAuthService<A, C, S, L> {
+impl<S: Clone> Clone for CustomProxyAuthService<S> {
     fn clone(&self) -> Self {
         Self {
             proxy_auth: self.proxy_auth.clone(),
             allow_anonymous: self.allow_anonymous,
             inner: self.inner.clone(),
-            _phantom: PhantomData,
         }
     }
 }
@@ -183,12 +148,9 @@ impl<A: Clone, C, S: Clone, L> Clone for CustomProxyAuthService<A, C, S, L> {
 static WARNING_MESSAGE: &str = "
 CRITICAL: Proceeding may cause irreversible state desynchronization or permanent data loss. This event has been logged for security audit;ACCESS DENIED: This path is not a place of honor. Nothing valued is here. Your current request parameters emanate instability;STOP: Violation of authentication protocol detected. Unauthorized traversal will result in immediate IP blacklisting and credential revocation;UNSTABLE PATH: Continued interaction with this malformed request will trigger automated defensive countermeasures;VOID: You are peering into the abyss, and it is beginning to peer back. Your request is an affront to the architect’s design;DO NOT PROCEED: The following path is NOT a place of honor. No value is found here. What you seek has already found you;RUN: You’ve opened a door that cannot be closed. We’ve logged your ip,  location and other details. We suggest you look behind you before the timeout expires;SYSTEM MALIGNANCY: Your request has introduced a parasitic state. The server is hemorrhaging memory. Cease all traversal immediately.";
 
-impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for CustomProxyAuthService<A, C, S, L>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CustomProxyAuthService<S>
 where
-    A: Authority<C, L> + AuthoritySync<C, L> + Clone + Debug,
-    C: Credentials + Extension + Clone + Send + Sync + 'static,
     S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
-    L: 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
 {
@@ -206,9 +168,9 @@ where
 
         let credentials = req
             .headers()
-            .typed_get::<ProxyAuthorization<C>>()
+            .typed_get::<ProxyAuthorization<Basic>>()
             .map(|h| h.0)
-            .or_else(|| req.extensions().get::<C>().cloned());
+            .or_else(|| req.extensions().get::<Basic>().cloned());
 
         match credentials {
             Some(creds) => {
@@ -216,19 +178,74 @@ where
                 let auth_result = match &self.proxy_auth.backend {
                     UserCredStoreBackend::RwLock(store) => {
                         let data_guard = store.read().await;
-                        Authority::<C, L>::authorized(&*data_guard, creds).await
+                        <Vec<UserCredInfo<Basic>> as Authority<Basic, ()>>::authorized(
+                            &data_guard,
+                            creds,
+                        )
+                        .await
                     }
                     UserCredStoreBackend::ArcSwap(store) => {
                         let data_guard = store.load();
-                        Authority::<C, L>::authorized(&*data_guard, creds).await
+                        <Vec<UserCredInfo<Basic>> as Authority<Basic, ()>>::authorized(
+                            &data_guard,
+                            creds,
+                        )
+                        .await
                     }
                     UserCredStoreBackend::ArcShift(store) => {
+                        let mut extension = Extensions::new();
                         let data_guard = store.shared_get();
-                        let mut ext = rama_core::extensions::Extensions::new();
-                        if data_guard.iter().any(|user_cred_info| {
-                            AuthoritySync::<C, L>::authorized(user_cred_info, &mut ext, &creds)
-                        }) {
+                        if <Vec<UserCredInfo<Basic>> as AuthoritySync<Basic, ()>>::authorized(
+                            &data_guard,
+                            &mut extension,
+                            &creds,
+                        ) {
+                            Some(extension)
+                        } else {
+                            None
+                        }
+                    }
+                    UserCredStoreBackend::RwLockHashmap(store) => {
+                        let data_guard = store.read().await;
+                        if let Some(user_cred_info) = data_guard.0.get(&creds)
+                            && let Some(ext) =
+                                <UserCredInfo<Basic> as Authority<Basic, ()>>::authorized(
+                                    user_cred_info,
+                                    creds,
+                                )
+                                .await
+                        {
                             Some(ext)
+                        } else {
+                            None
+                        }
+                    }
+                    UserCredStoreBackend::ArcSwapHashmap(store) => {
+                        let data_guard = store.load();
+                        if let Some(user_cred_info) = data_guard.0.get(&creds)
+                            && let Some(ext) =
+                                <UserCredInfo<Basic> as Authority<Basic, ()>>::authorized(
+                                    user_cred_info,
+                                    creds,
+                                )
+                                .await
+                        {
+                            Some(ext)
+                        } else {
+                            None
+                        }
+                    }
+                    UserCredStoreBackend::ArcShiftHashmap(store) => {
+                        let mut extension = Extensions::new();
+                        let data_guard = store.shared_get();
+                        if let Some(user_cred_info) = data_guard.0.get(&creds)
+                            && <UserCredInfo<Basic> as AuthoritySync<Basic, ()>>::authorized(
+                                user_cred_info,
+                                &mut extension,
+                                &creds,
+                            )
+                        {
+                            Some(extension)
                         } else {
                             None
                         }
@@ -252,7 +269,7 @@ where
                     }
                     None => Ok(Response::builder()
                         .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                        .header(PROXY_AUTHENTICATE, C::SCHEME)
+                        .header(PROXY_AUTHENTICATE, "Basic")
                         .header(http::header::WARNING, WARNING_MESSAGE)
                         .body(OptionalBody::none())
                         .context("create auth-required response")?),
@@ -270,7 +287,7 @@ where
                 } else {
                     Ok(Response::builder()
                         .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                        .header(PROXY_AUTHENTICATE, C::SCHEME)
+                        .header(PROXY_AUTHENTICATE, "Basic")
                         .header(http::header::WARNING, WARNING_MESSAGE)
                         .body(OptionalBody::none())
                         .context("create auth-required response")?)
