@@ -102,6 +102,7 @@ clap = { version = "4.5", features = ["derive", "unstable-v5", "wrap_help"] }
 compression-codecs = "0.4"
 compression-core = "0.4"
 const_format = "0.2"
+crossbeam-epoch = { version = "0.9", features = ["loom", "nightly"] }
 csv = "1.4"
 derive_more = "2.0"
 divan = "0.1"
@@ -138,7 +139,7 @@ memchr = "2.7"
 mimalloc = { version = "0.1", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
-moka = "0.12"
+moka = { version = "0.12", features = ["future", "logging", "quanta"] }
 nom = "8.0.0"
 opentelemetry = { version = "0.31", default-features = false, features = [
     "trace",

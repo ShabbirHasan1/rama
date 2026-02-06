@@ -25,6 +25,7 @@ pub mod cors;
 pub mod custom_proxy_auth;
 pub mod dns;
 pub mod error_handling;
+pub mod firewall;
 pub mod follow_redirect;
 pub mod forwarded;
 pub mod har;
