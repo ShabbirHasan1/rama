@@ -284,7 +284,7 @@ impl<T: UsernameLabelParser> AuthoritySync<Self, T> for Basic {
     fn authorized(&self, ext: &mut Extensions, credentials: &Self) -> bool {
         let username = credentials.username();
         let password = credentials.password();
-        tracing::debug!("checking authorization for username: {}", username);
+        tracing::debug!(username = username, "checking authorization for username");
         if password != self.password() {
             return false;
         }
@@ -405,6 +405,10 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
     type Error = Unauthorized;
 
     async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        tracing::debug!(
+            credentials = ?&credentials,
+            "checking authorization for credentials"
+        );
         let mut ext = Extensions::new();
         let result = credentials.eq(&self.credential);
         let AuthorizeResult {
@@ -413,8 +417,12 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
         } = result.authorize(credentials).await;
         match result {
             Ok(maybe_ext) => {
-                ext.insert(self.clone());
                 if maybe_ext.is_none() {
+                    tracing::info!(
+                        credentials = ?&c,
+                        "authorization succeeded for credentials"
+                    );
+                    ext.insert(self.clone());
                     return AuthorizeResult {
                         credentials: c,
                         result: Ok(Some(ext)),
@@ -425,14 +433,25 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
                     result: Ok(maybe_ext),
                 }
             }
-            Err(err) => AuthorizeResult {
-                credentials: c,
-                result: Err(err),
-            },
+            Err(err) => {
+                tracing::error!(
+                    credentials = ?&c,
+                    error = ?&err,
+                    "checking authorization for credentials failed"
+                );
+                AuthorizeResult {
+                    credentials: c,
+                    result: Err(err),
+                }
+            }
         }
     }
 
     fn authorize_sync(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        tracing::debug!(
+            credentials = ?&credentials,
+            "checking authorization for credentials"
+        );
         let mut ext = Extensions::new();
         let result = credentials.eq(&self.credential);
         let AuthorizeResult {
@@ -441,8 +460,12 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
         } = result.authorize_sync(credentials);
         match result {
             Ok(maybe_ext) => {
-                ext.insert(self.clone());
                 if maybe_ext.is_none() {
+                    tracing::info!(
+                        credentials = ?&c,
+                        "authorization succeeded for credentials"
+                    );
+                    ext.insert(self.clone());
                     return AuthorizeResult {
                         credentials: c,
                         result: Ok(Some(ext)),
@@ -453,21 +476,36 @@ impl<C: PartialEq + Clone + Debug + Send + Sync + 'static> Authorizer<C> for Use
                     result: Ok(maybe_ext),
                 }
             }
-            Err(err) => AuthorizeResult {
-                credentials: c,
-                result: Err(err),
-            },
+            Err(err) => {
+                tracing::error!(
+                    credentials = ?&c,
+                    error = ?&err,
+                    "checking authorization for credentials failed"
+                );
+                AuthorizeResult {
+                    credentials: c,
+                    result: Err(err),
+                }
+            }
         }
     }
 }
 
 impl<C, L, T> AuthoritySync<C, L> for UserCredInfo<T>
 where
-    C: Credentials + Send + 'static,
+    C: Credentials + Debug + Send + 'static,
     T: AuthoritySync<C, L> + Clone + Debug,
 {
     fn authorized(&self, ext: &mut Extensions, credentials: &C) -> bool {
+        tracing::debug!(
+            credentials = ?&credentials,
+            "checking authorization for credentials"
+        );
         if self.credential.authorized(ext, credentials) {
+            tracing::info!(
+                credentials = ?&credentials,
+                "authorization succeeded for credentials"
+            );
             ext.insert(self.clone());
             true
         } else {
@@ -484,7 +522,12 @@ pub struct UserCredInfoHashMap<C: Clone + Debug + PartialEq + Eq + Hash>(
 
 impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for UserCredInfoHashMap<Basic> {
     fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
+        tracing::debug!(
+            credentials = ?&credentials,
+            "checking authorization for credentials"
+        );
         let Some(user_cred_info) = self.0.get(credentials) else {
+            tracing::error!(credentials = ?&credentials, "credentials not found in database");
             return false;
         };
         AuthoritySync::<Basic, T>::authorized(user_cred_info, ext, credentials)
@@ -497,7 +540,12 @@ impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorize
     type Error = Unauthorized;
 
     async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        tracing::debug!(
+            credentials = ?&credentials,
+            "checking authorization for credentials"
+        );
         let Some(user_cred_info) = self.0.get(&credentials) else {
+            tracing::error!(credentials = ?&credentials, "credentials not found in database");
             return ().authorize(credentials).await;
         };
         let mut ext = Extensions::new();
@@ -508,6 +556,10 @@ impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorize
         } = result.authorize(credentials).await;
         match result {
             Ok(maybe_ext) => {
+                tracing::info!(
+                    credentials = ?&c,
+                    "authorization succeeded for credentials"
+                );
                 ext.insert(self.clone());
                 if maybe_ext.is_none() {
                     return AuthorizeResult {
@@ -520,15 +572,27 @@ impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorize
                     result: Ok(maybe_ext),
                 }
             }
-            Err(err) => AuthorizeResult {
-                credentials: c,
-                result: Err(err),
-            },
+            Err(err) => {
+                tracing::error!(
+                    credentials = ?&c,
+                    error = ?&err,
+                    "checking authorization for credentials failed"
+                );
+                AuthorizeResult {
+                    credentials: c,
+                    result: Err(err),
+                }
+            }
         }
     }
 
     fn authorize_sync(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        tracing::debug!(
+            credentials = ?&credentials,
+            "checking authorization for credentials"
+        );
         let Some(user_cred_info) = self.0.get(&credentials) else {
+            tracing::error!(credentials = ?&credentials, "credentials not found in database");
             return ().authorize_sync(credentials);
         };
         let mut ext = Extensions::new();
@@ -539,6 +603,10 @@ impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorize
         } = result.authorize_sync(credentials);
         match result {
             Ok(maybe_ext) => {
+                tracing::info!(
+                    credentials = ?&c,
+                    "authorization succeeded for credentials"
+                );
                 ext.insert(self.clone());
                 if maybe_ext.is_none() {
                     return AuthorizeResult {
@@ -551,10 +619,17 @@ impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorize
                     result: Ok(maybe_ext),
                 }
             }
-            Err(err) => AuthorizeResult {
-                credentials: c,
-                result: Err(err),
-            },
+            Err(err) => {
+                tracing::error!(
+                    credentials = ?&c,
+                    error = ?&err,
+                    "checking authorization for credentials failed"
+                );
+                AuthorizeResult {
+                    credentials: c,
+                    result: Err(err),
+                }
+            }
         }
     }
 }
