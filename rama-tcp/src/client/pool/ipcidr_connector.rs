@@ -4,7 +4,7 @@ use {
         utils::{IpCidrConExt, ipv4_from_extension, ipv6_from_extension},
     },
     crate::{TcpStream, client::TcpStreamConnector},
-    rama_core::{error::OpaqueError, telemetry::tracing},
+    rama_core::{error::BoxError, telemetry::tracing},
     rama_net::{
         address::SocketAddress,
         stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net},
@@ -112,10 +112,10 @@ impl IpCidrConnector {
             if self.excluded.is_none() {
                 return self.create_socket_addresses(ip_addr);
             }
-            if let Some(ref excluded) = self.excluded {
-                if !excluded.contains(&ip_addr) {
-                    return self.create_socket_addresses(ip_addr);
-                }
+            if let Some(ref excluded) = self.excluded
+                && !excluded.contains(&ip_addr)
+            {
+                return self.create_socket_addresses(ip_addr);
             }
         }
         let ip_addr = self.generate_ip_address();
@@ -202,7 +202,7 @@ impl IpCidrConnector {
 }
 
 impl TcpStreamConnector for IpCidrConnector {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let (bind_addr, fallback) = self.get_connector();

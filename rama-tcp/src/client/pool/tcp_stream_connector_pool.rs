@@ -1,6 +1,6 @@
 use {
     crate::{TcpStream, client::TcpStreamConnector},
-    rama_core::{error::OpaqueError, telemetry::tracing},
+    rama_core::{error::BoxError, telemetry::tracing},
     rand::{
         rng,
         seq::{IndexedRandom as _, SliceRandom as _},
@@ -17,16 +17,11 @@ use {
     },
 };
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum PoolMode {
+    #[default]
     Random,
     RoundRobin(Arc<AtomicUsize>),
-}
-
-impl Default for PoolMode {
-    fn default() -> Self {
-        Self::Random
-    }
 }
 
 impl Debug for PoolMode {
@@ -161,14 +156,13 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
 
 impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConnectorPool<C>
 where
-    <C as TcpStreamConnector>::Error:
-        From<OpaqueError> + std::fmt::Debug + std::fmt::Display + Send,
+    <C as TcpStreamConnector>::Error: From<BoxError> + std::fmt::Debug + std::fmt::Display + Send,
 {
     type Error = <C as TcpStreamConnector>::Error;
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let Some(connector) = self.get_connector() else {
-            return Err(OpaqueError::from_display(
+            return Err(BoxError::from(
                 "TcpStreamConnectorPool is empty - no connectors available for connection",
             )
             .into());
@@ -257,8 +251,7 @@ impl<C> TcpStreamConnectorWithFallback<C> {
 
 impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConnectorWithFallback<C>
 where
-    <C as TcpStreamConnector>::Error:
-        From<OpaqueError> + std::fmt::Debug + std::fmt::Display + Send,
+    <C as TcpStreamConnector>::Error: From<BoxError> + std::fmt::Debug + std::fmt::Display + Send,
 {
     type Error = <C as TcpStreamConnector>::Error;
 
