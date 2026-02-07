@@ -10,10 +10,10 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::ExtensionsRef as _;
-use rama_http_headers::{HeaderMapExt as _, ProxyAuthorization};
+// use rama_http_headers::{HeaderMapExt as _, ProxyAuthorization};
 // use rama_http_types::body::OptionalBody;
 use rama_net::stream::SocketInfo;
-use rama_net::user::Basic;
+// use rama_net::user::Basic;
 use rama_tcp::TcpStream;
 use rama_utils::str::smol_str::ToSmolStr as _;
 use std::sync::Arc;
@@ -477,18 +477,8 @@ where
             .context("user_agent is not valid UTF-8")?
             .to_owned();
 
-        let api_key = req
-            .headers()
-            .typed_get::<ProxyAuthorization<Basic>>()
-            .map(|h| h.0)
-            .or_else(|| req.extensions().get::<Basic>().cloned())
-            .context("failed to extract proxy authorization header value and Basic credentials")?
-            .username()
-            .to_owned();
-
         let is_ip_banned = self.firewall.is_banned(&ip_addr).await;
         let is_ua_banned = self.firewall.is_banned(&user_agent).await;
-        let is_un_banned = self.firewall.is_banned(&api_key).await;
 
         if let Some(_ip_ban_info) = is_ip_banned {
             rama_core::telemetry::tracing::warn!(
@@ -503,21 +493,6 @@ where
             //     .body(ResBody::from("hello"))
             //     .context("drop connection for blocked ip address")
             //     .context_field("ip_addr", ip_addr);
-        }
-
-        if let Some(_un_ban_info) = is_un_banned {
-            rama_core::telemetry::tracing::warn!(
-                api_key = %api_key,
-                "dropping connection for blocked API_KEY",
-            );
-            return Err(BoxError::from("drop connection for blocked api_key")
-                .context_field("api_key", api_key));
-            // return Response::builder()
-            //     .status(StatusCode::FORBIDDEN)
-            //     .header(http::header::WARNING, WARNING_MESSAGE)
-            //     .body(rama_http_types::Body::empty())
-            //     .context("drop connection for blocked api_key")
-            //     .context_field("api_key", api_key);
         }
 
         if let Some(_ua_ban_info) = is_ua_banned {

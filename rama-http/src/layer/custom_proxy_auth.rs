@@ -198,8 +198,21 @@ where
 
         match credentials {
             Some(creds) => {
-                let api_key = creds.clone();
                 tracing::trace!("Proxy credentials found");
+                let api_key = creds.username().to_owned();
+                let is_un_banned = firewall.is_banned(&api_key).await;
+                if let Some(_un_ban_info) = is_un_banned {
+                    rama_core::telemetry::tracing::warn!(
+                        api_key = %api_key,
+                        "dropping connection for blocked API_KEY",
+                    );
+                    return Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .header(http::header::WARNING, WARNING_MESSAGE)
+                        .body(OptionalBody::none())
+                        .context("drop connection for blocked api_key")
+                        .context_field("api_key", api_key);
+                }
                 let auth_result = match &self.proxy_auth.backend {
                     UserCredStoreBackend::RwLock(store) => {
                         let data_guard = store.read().await;
@@ -291,9 +304,8 @@ where
                         .map_err(|err| BoxError::from(err.into()))?
                         .map(OptionalBody::some))
                 } else {
-                    let api_key = api_key.username();
                     let ban_info = firewall
-                        .record_violation(api_key)
+                        .record_violation(&api_key)
                         .await
                         .context("api_key record violation record info not found")?;
                     let ban_time = ban_info.calculate_ttl();
@@ -303,7 +315,8 @@ where
                         .header(http::header::WARNING, WARNING_MESSAGE)
                         .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
                         .body(OptionalBody::none())
-                        .context("create auth-required response")?)
+                        .context("create banned api_key response")
+                        .context_field("api_key", api_key)?)
                     // Ok(Response::builder()
                     // .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                     // .header(PROXY_AUTHENTICATE, "Basic")
