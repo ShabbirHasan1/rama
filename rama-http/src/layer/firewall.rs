@@ -383,11 +383,11 @@ impl Firewall {
 
 #[derive(Debug, Clone)]
 pub struct FirewallLayer {
-    pub firewall: Arc<std::sync::LazyLock<Firewall>>,
+    pub firewall: Arc<Firewall>,
 }
 
 impl FirewallLayer {
-    pub fn new(firewall: Arc<std::sync::LazyLock<Firewall>>) -> Self {
+    pub fn new(firewall: Arc<Firewall>) -> Self {
         Self { firewall }
     }
 }
@@ -395,7 +395,7 @@ impl FirewallLayer {
 #[derive(Clone)]
 pub struct FirewallService<S> {
     inner: S,
-    firewall: Arc<std::sync::LazyLock<Firewall>>,
+    firewall: Arc<Firewall>,
 }
 
 impl<S> Layer<S> for FirewallLayer {
