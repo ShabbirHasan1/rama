@@ -386,6 +386,12 @@ pub struct FirewallLayer {
     pub firewall: Arc<std::sync::LazyLock<Firewall>>,
 }
 
+impl FirewallLayer {
+    pub fn new(firewall: Arc<std::sync::LazyLock<Firewall>>) -> Self {
+        Self { firewall }
+    }
+}
+
 #[derive(Clone)]
 pub struct FirewallService<S> {
     inner: S,
