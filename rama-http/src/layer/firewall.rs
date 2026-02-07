@@ -1,8 +1,8 @@
-use crate::layer::custom_proxy_auth::WARNING_MESSAGE;
+// use crate::layer::custom_proxy_auth::WARNING_MESSAGE;
 use crate::{Request, Response};
 use ahash::RandomState;
 use crossbeam_epoch::{self as epoch, Atomic, Owned};
-use http::StatusCode;
+// use http::StatusCode;
 use http::header::USER_AGENT;
 use moka::Expiry;
 use moka::future::Cache;
@@ -11,7 +11,7 @@ use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::ExtensionsRef as _;
 use rama_http_headers::{HeaderMapExt as _, ProxyAuthorization};
-use rama_http_types::body::OptionalBody;
+// use rama_http_types::body::OptionalBody;
 use rama_net::stream::SocketInfo;
 use rama_net::user::Basic;
 use rama_tcp::TcpStream;
@@ -457,7 +457,7 @@ where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
-    type Output = Response<OptionalBody<ResBody>>;
+    type Output = S::Output;
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
@@ -482,7 +482,7 @@ where
             .typed_get::<ProxyAuthorization<Basic>>()
             .map(|h| h.0)
             .or_else(|| req.extensions().get::<Basic>().cloned())
-            .context("user_agent is not valid UTF-8")?
+            .context("failed to extract proxy authorization header value and Basic credentials")?
             .username()
             .to_owned();
 
@@ -495,12 +495,14 @@ where
                 ip_addr = %ip_addr,
                 "dropping connection for blocked IP Address"
             );
-            return Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .header(http::header::WARNING, WARNING_MESSAGE)
-                .body(OptionalBody::none())
-                .context("drop connection for blocked ip address")
-                .context_field("ip_addr", ip_addr);
+            return Err(BoxError::from("drop connection for blocked ip address")
+                .context_field("ip_addr", ip_addr));
+            // return Response::builder()
+            //     .status(StatusCode::FORBIDDEN)
+            //     .header(http::header::WARNING, WARNING_MESSAGE)
+            //     .body(ResBody::from("hello"))
+            //     .context("drop connection for blocked ip address")
+            //     .context_field("ip_addr", ip_addr);
         }
 
         if let Some(_un_ban_info) = is_un_banned {
@@ -508,12 +510,14 @@ where
                 api_key = %api_key,
                 "dropping connection for blocked API_KEY",
             );
-            return Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .header(http::header::WARNING, WARNING_MESSAGE)
-                .body(OptionalBody::none())
-                .context("drop connection for blocked api_key")
-                .context_field("api_key", api_key);
+            return Err(BoxError::from("drop connection for blocked api_key")
+                .context_field("api_key", api_key));
+            // return Response::builder()
+            //     .status(StatusCode::FORBIDDEN)
+            //     .header(http::header::WARNING, WARNING_MESSAGE)
+            //     .body(rama_http_types::Body::empty())
+            //     .context("drop connection for blocked api_key")
+            //     .context_field("api_key", api_key);
         }
 
         if let Some(_ua_ban_info) = is_ua_banned {
@@ -521,20 +525,17 @@ where
                 user_agent = %user_agent,
                 "dropping connection for blocked User Agent",
             );
-            return Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .header(http::header::WARNING, WARNING_MESSAGE)
-                .body(OptionalBody::none())
-                .context("drop connection for blocked user agent")
-                .context_field("user_agent", user_agent);
+            return Err(BoxError::from("drop connection for blocked user agent")
+                .context_field("user_agent", user_agent));
+            // return Response::builder()
+            //     .status(StatusCode::FORBIDDEN)
+            //     .header(http::header::WARNING, WARNING_MESSAGE)
+            //     .body(())
+            //     .context("drop connection for blocked user agent")
+            //     .context_field("user_agent", user_agent);
         }
 
-        Ok(self
-            .inner
-            .serve(req)
-            .await
-            .into_box_error()?
-            .map(OptionalBody::some))
+        self.inner.serve(req).await.into_box_error()
     }
 }
 

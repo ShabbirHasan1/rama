@@ -8,6 +8,7 @@ use crate::headers::authorization::AuthoritySync;
 use crate::headers::authorization::UserCredStore;
 use crate::headers::authorization::UserCredStoreBackend;
 use crate::headers::{HeaderMapExt, ProxyAuthorization};
+use crate::layer::firewall::Firewall;
 use crate::{Request, Response, StatusCode};
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
@@ -163,7 +164,7 @@ where
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let firewall = req
             .extensions()
-            .get::<crate::layer::firewall::Firewall>()
+            .get::<Firewall>()
             .context("firewall not found")?;
 
         let ip_addr = req
