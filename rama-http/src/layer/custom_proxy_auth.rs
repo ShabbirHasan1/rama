@@ -2,7 +2,7 @@
 //!
 //! If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
 
-use crate::header::PROXY_AUTHENTICATE;
+// use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
 use crate::headers::authorization::AuthoritySync;
 use crate::headers::authorization::UserCredStore;
@@ -12,12 +12,15 @@ use crate::{Request, Response, StatusCode};
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 // use rama_core::username::UsernameLabelParser;
+use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::telemetry::tracing::warn;
 use rama_core::{Layer, Service};
-use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use rama_http_headers::authorization::UserCredInfo;
 use rama_http_types::body::OptionalBody;
+use rama_net::stream::SocketInfo;
 use rama_net::user::{Basic, UserId};
 use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::str::smol_str::ToSmolStr as _;
 use std::fmt;
 // use std::marker::PhantomData;
 
@@ -145,7 +148,7 @@ impl<S: Clone> Clone for CustomProxyAuthService<S> {
     }
 }
 
-static WARNING_MESSAGE: &str = "
+pub static WARNING_MESSAGE: &str = "
 CRITICAL: Proceeding may cause irreversible state desynchronization or permanent data loss. This event has been logged for security audit;ACCESS DENIED: This path is not a place of honor. Nothing valued is here. Your current request parameters emanate instability;STOP: Violation of authentication protocol detected. Unauthorized traversal will result in immediate IP blacklisting and credential revocation;UNSTABLE PATH: Continued interaction with this malformed request will trigger automated defensive countermeasures;VOID: You are peering into the abyss, and it is beginning to peer back. Your request is an affront to the architect’s design;DO NOT PROCEED: The following path is NOT a place of honor. No value is found here. What you seek has already found you;RUN: You’ve opened a door that cannot be closed. We’ve logged your ip,  location and other details. We suggest you look behind you before the timeout expires;SYSTEM MALIGNANCY: Your request has introduced a parasitic state. The server is hemorrhaging memory. Cease all traversal immediately.";
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CustomProxyAuthService<S>
@@ -155,13 +158,33 @@ where
     ResBody: Default + Send + 'static,
 {
     type Output = Response<OptionalBody<ResBody>>;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let firewall = req
+            .extensions()
+            .get::<crate::layer::firewall::Firewall>()
+            .context("firewall not found")?;
+
+        let ip_addr = req
+            .extensions()
+            .get::<SocketInfo>()
+            .context("no socket info found")?
+            .peer_addr()
+            .ip_addr
+            .to_smolstr();
+
         if req.method() != http::Method::CONNECT {
+            let ban_info = firewall
+                .record_violation(&ip_addr)
+                .await
+                .context("ip address record violation record info not found")?;
+            let ban_time = ban_info.calculate_ttl();
+            warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Invalid method for CONNECT request, Banned IP Address with Ban Info");
             return Response::builder()
-                .status(StatusCode::BAD_REQUEST)
+                .status(StatusCode::METHOD_NOT_ALLOWED)
                 .header(http::header::WARNING, WARNING_MESSAGE)
+                .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
                 .body(OptionalBody::none())
                 .context("create auth-required response");
         }
@@ -174,6 +197,7 @@ where
 
         match credentials {
             Some(creds) => {
+                let api_key = creds.clone();
                 tracing::trace!("Proxy credentials found");
                 let auth_result = match &self.proxy_auth.backend {
                     UserCredStoreBackend::RwLock(store) => {
@@ -257,22 +281,34 @@ where
                     "Proxy credentials checked"
                 );
 
-                match auth_result {
-                    Some(ext) => {
-                        req.extensions_mut().extend(ext);
-                        Ok(self
-                            .inner
-                            .serve(req)
-                            .await
-                            .map_err(|err| OpaqueError::from_boxed(err.into()))?
-                            .map(OptionalBody::some))
-                    }
-                    None => Ok(Response::builder()
-                        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                        .header(PROXY_AUTHENTICATE, "Basic")
+                if let Some(ext) = auth_result {
+                    req.extensions_mut().extend(ext);
+                    Ok(self
+                        .inner
+                        .serve(req)
+                        .await
+                        .map_err(|err| BoxError::from(err.into()))?
+                        .map(OptionalBody::some))
+                } else {
+                    let api_key = api_key.username();
+                    let ban_info = firewall
+                        .record_violation(api_key)
+                        .await
+                        .context("api_key record violation record info not found")?;
+                    let ban_time = ban_info.calculate_ttl();
+                    warn!(api_key = %api_key, ban_info = ?ban_info, ban_time = ?ban_time, "Possible BruteForce Attack with Worng Credentials, Banned API_KEY with Ban Info");
+                    Ok(Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
                         .header(http::header::WARNING, WARNING_MESSAGE)
+                        .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
                         .body(OptionalBody::none())
-                        .context("create auth-required response")?),
+                        .context("create auth-required response")?)
+                    // Ok(Response::builder()
+                    // .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                    // .header(PROXY_AUTHENTICATE, "Basic")
+                    // .header(http::header::WARNING, WARNING_MESSAGE)
+                    // .body(OptionalBody::none())
+                    // .context("create auth-required response")?),
                 }
             }
             None => {
@@ -282,13 +318,20 @@ where
                         .inner
                         .serve(req)
                         .await
-                        .map_err(|err| OpaqueError::from_boxed(err.into()))?
+                        .map_err(|err| BoxError::from(err.into()))?
                         .map(OptionalBody::some))
                 } else {
+                    let ban_info = firewall
+                        .record_violation(&ip_addr)
+                        .await
+                        .context("ip address record violation record info not found")?;
+                    let ban_time = ban_info.calculate_ttl();
+                    warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Credentials is a must and required, Banned IP Address with Ban Info");
                     Ok(Response::builder()
                         .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                        .header(PROXY_AUTHENTICATE, "Basic")
+                        // .header(PROXY_AUTHENTICATE, "Basic")
                         .header(http::header::WARNING, WARNING_MESSAGE)
+                        .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
                         .body(OptionalBody::none())
                         .context("create auth-required response")?)
                 }

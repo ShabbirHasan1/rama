@@ -1,7 +1,21 @@
+use crate::layer::custom_proxy_auth::WARNING_MESSAGE;
+use crate::{Request, Response};
 use ahash::RandomState;
 use crossbeam_epoch::{self as epoch, Atomic, Owned};
+use http::StatusCode;
+use http::header::USER_AGENT;
 use moka::Expiry;
 use moka::future::Cache;
+use rama_core::Layer;
+use rama_core::Service;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
+use rama_core::extensions::ExtensionsRef as _;
+use rama_http_headers::{HeaderMapExt as _, ProxyAuthorization};
+use rama_http_types::body::OptionalBody;
+use rama_net::stream::SocketInfo;
+use rama_net::user::Basic;
+use rama_tcp::TcpStream;
+use rama_utils::str::smol_str::ToSmolStr as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -75,6 +89,7 @@ impl Expiry<Arc<str>, BanInfo> for BanExpiry {
 }
 
 // ==================== Lock-Free Bloom Filter ====================
+#[derive(Debug)]
 pub struct ConcurrentBloomFilter {
     pub bits: Box<[AtomicU64]>,
     pub num_hashes: usize,
@@ -151,7 +166,7 @@ unsafe impl Send for ConcurrentBloomFilter {}
 unsafe impl Sync for ConcurrentBloomFilter {}
 
 // ==================== Atomic Bloom Swap ====================
-//
+#[derive(Debug)]
 pub struct AtomicBloom {
     // Crossbeam's Atomic type handles the epoch-tracking for us
     pub ptr: Atomic<ConcurrentBloomFilter>,
@@ -217,12 +232,19 @@ impl Drop for AtomicBloom {
 }
 
 // ==================== Firewall ====================
+#[derive(Debug, Clone)]
 pub struct Firewall {
     pub bans: Cache<Arc<str>, BanInfo, RandomState>,
     pub bloom: Arc<AtomicBloom>,
     pub bloom_refresh_interval: Duration,
     pub last_bloom_refresh: Arc<AtomicU64>,
     pub max_entries: u64,
+}
+
+impl Default for Firewall {
+    fn default() -> Self {
+        Self::new(100_000)
+    }
 }
 
 impl Firewall {
@@ -247,37 +269,54 @@ impl Firewall {
 
     /// Ultra-fast lock-free check with epoch-based protection
     #[inline]
-    pub async fn is_banned(&self, key: &str) -> bool {
+    pub async fn is_banned(&self, key: &str) -> Option<BanInfo> {
         let potential_match = {
             let guard = epoch::pin();
             self.bloom.get(&guard).contains(key)
         };
 
         if !potential_match {
-            return false;
+            rama_core::telemetry::tracing::trace!(subject = %key, "Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT is NOT Banned");
+            return None;
         }
 
-        self.bans.get(key).await.is_some()
+        if let Some(ban_info) = self.bans.get(key).await {
+            rama_core::telemetry::tracing::trace!(subject = %key, ban_info = ?ban_info, ban_time = ?ban_info.calculate_ttl(), "Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT is Banned");
+            Some(ban_info)
+        } else {
+            rama_core::telemetry::tracing::trace!(subject = %key, "Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT is NOT Banned");
+            None
+        }
     }
 
-    pub async fn record_violation(&self, key: &str) {
+    pub async fn record_violation(&self, key: &str) -> Option<BanInfo> {
+        let ban_infos: Option<BanInfo>;
+        rama_core::telemetry::tracing::trace!(subject = %key, "Banning Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
         if let Some(mut info) = self.bans.get(key).await {
             info.increment();
             self.bans.insert(Arc::from(key), info).await;
+            ban_infos = Some(info);
+            rama_core::telemetry::tracing::info!(subject = %key, ban_info = ?info, ban_time = ?info.calculate_ttl(), "Successfully Banned Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
         } else {
-            self.bans.insert(Arc::from(key), BanInfo::new()).await;
+            let ban_info = BanInfo::new();
+            self.bans.insert(Arc::from(key), ban_info).await;
             // self.bloom.get().insert(key);
 
             // Pin the epoch to insert into the current bloom
             let guard = epoch::pin();
             self.bloom.get(&guard).insert(key);
             drop(guard);
+            ban_infos = Some(ban_info);
+            rama_core::telemetry::tracing::info!(subject = %key, ban_info = ?ban_info, ban_time = ?ban_info.calculate_ttl(), "Successfully Banned Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
         }
 
         self.maybe_refresh_bloom();
+        rama_core::telemetry::tracing::trace!(subject = %key, "Successfully Banned Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
+        ban_infos
     }
 
     pub fn maybe_refresh_bloom(&self) {
+        rama_core::telemetry::tracing::trace!("Initiated Maybe Refreshing Bloom Filter");
         let now_secs = Instant::now().elapsed().as_secs();
         let last_refresh = self.last_bloom_refresh.load(Ordering::Relaxed);
 
@@ -308,11 +347,14 @@ impl Firewall {
                 });
             }
         }
+        rama_core::telemetry::tracing::trace!("Finished Maybe Refreshing Bloom Filter");
     }
 
     #[inline]
     pub async fn unban(&self, key: &str) {
+        rama_core::telemetry::tracing::trace!(subject = %key, "Unbanning Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
         self.bans.invalidate(key).await;
+        rama_core::telemetry::tracing::info!(subject = %key, "Successfully Unbanned Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
     }
 
     #[inline]
@@ -321,6 +363,7 @@ impl Firewall {
     }
 
     pub async fn refresh_bloom(&self) {
+        rama_core::telemetry::tracing::trace!("Initiated Refreshing Bloom Filter");
         let bloom = self.bloom.clone();
         let bans = self.bans.clone();
         let max_entries = self.max_entries;
@@ -332,6 +375,160 @@ impl Firewall {
         bloom.swap(new_bloom);
         let now_secs = Instant::now().elapsed().as_secs();
         self.last_bloom_refresh.store(now_secs, Ordering::Release);
+        rama_core::telemetry::tracing::trace!("Finished Refreshing Bloom Filter");
+    }
+}
+
+// rama_utils::macros::impl_deref!(Firewall);
+
+#[derive(Debug, Clone)]
+pub struct FirewallLayer {
+    pub firewall: Arc<std::sync::LazyLock<Firewall>>,
+}
+
+#[derive(Clone)]
+pub struct FirewallService<S> {
+    inner: S,
+    firewall: Arc<std::sync::LazyLock<Firewall>>,
+}
+
+impl<S> Layer<S> for FirewallLayer {
+    type Service = FirewallService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        FirewallService {
+            inner,
+            firewall: self.firewall.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        FirewallService {
+            inner,
+            firewall: self.firewall,
+        }
+    }
+}
+
+impl<S: std::fmt::Debug> std::fmt::Debug for FirewallService<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FirewallService")
+            .field("firewall", &self.firewall)
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<S> Service<TcpStream> for FirewallService<S>
+where
+    S: Service<TcpStream, Error: Into<BoxError>>,
+{
+    type Output = S::Output;
+    type Error = BoxError;
+
+    async fn serve(&self, stream: TcpStream) -> Result<Self::Output, Self::Error> {
+        let ip_addr = stream
+            .extensions()
+            .get::<SocketInfo>()
+            .context("no socket info found")?
+            .peer_addr()
+            .ip_addr
+            .to_smolstr();
+
+        if let Some(_is_banned) = self.firewall.is_banned(&ip_addr).await {
+            rama_core::telemetry::tracing::warn!(ip_addr = %ip_addr, "dropping connection for blocked IP Address" );
+            return Err(
+                BoxError::from("drop connection for blocked ip").context_field("ip_addr", ip_addr)
+            );
+        }
+        self.inner.serve(stream).await.into_box_error()
+    }
+}
+
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for FirewallService<S>
+where
+    S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
+    ReqBody: Send + 'static,
+    ResBody: Send + 'static,
+{
+    type Output = Response<OptionalBody<ResBody>>;
+    type Error = BoxError;
+
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let ip_addr = req
+            .extensions()
+            .get::<SocketInfo>()
+            .context("no socket info found")?
+            .peer_addr()
+            .ip_addr
+            .to_smolstr();
+
+        let user_agent = req
+            .headers()
+            .get(USER_AGENT)
+            .context("no user_agent info found in headers")?
+            .to_str()
+            .context("user_agent is not valid UTF-8")?
+            .to_owned();
+
+        let api_key = req
+            .headers()
+            .typed_get::<ProxyAuthorization<Basic>>()
+            .map(|h| h.0)
+            .or_else(|| req.extensions().get::<Basic>().cloned())
+            .context("user_agent is not valid UTF-8")?
+            .username()
+            .to_owned();
+
+        let is_ip_banned = self.firewall.is_banned(&ip_addr).await;
+        let is_ua_banned = self.firewall.is_banned(&user_agent).await;
+        let is_un_banned = self.firewall.is_banned(&api_key).await;
+
+        if let Some(_ip_ban_info) = is_ip_banned {
+            rama_core::telemetry::tracing::warn!(
+                ip_addr = %ip_addr,
+                "dropping connection for blocked IP Address"
+            );
+            return Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .header(http::header::WARNING, WARNING_MESSAGE)
+                .body(OptionalBody::none())
+                .context("drop connection for blocked ip address")
+                .context_field("ip_addr", ip_addr);
+        }
+
+        if let Some(_un_ban_info) = is_un_banned {
+            rama_core::telemetry::tracing::warn!(
+                api_key = %api_key,
+                "dropping connection for blocked API_KEY",
+            );
+            return Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .header(http::header::WARNING, WARNING_MESSAGE)
+                .body(OptionalBody::none())
+                .context("drop connection for blocked api_key")
+                .context_field("api_key", api_key);
+        }
+
+        if let Some(_ua_ban_info) = is_ua_banned {
+            rama_core::telemetry::tracing::warn!(
+                user_agent = %user_agent,
+                "dropping connection for blocked User Agent",
+            );
+            return Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .header(http::header::WARNING, WARNING_MESSAGE)
+                .body(OptionalBody::none())
+                .context("drop connection for blocked user agent")
+                .context_field("user_agent", user_agent);
+        }
+
+        Ok(self
+            .inner
+            .serve(req)
+            .await
+            .into_box_error()?
+            .map(OptionalBody::some))
     }
 }
 
