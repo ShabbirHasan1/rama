@@ -464,7 +464,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for WhiteListedDomainsMatc
                     return false;
                 }
 
-                tracing::trace!(
+                tracing::warn!(
                     api_key = %api_key,
                     domain = %domain,
                     "DomainMatcher: api_key is not whitelisted for this domain"
@@ -503,7 +503,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for WhiteListedDomainsMatc
                     return false;
                 }
 
-                tracing::trace!(
+                tracing::warn!(
                     api_key = %api_key,
                     address = %address,
                     "DomainMatcher: ignoring request host address, as only domain whitelisting is supported"

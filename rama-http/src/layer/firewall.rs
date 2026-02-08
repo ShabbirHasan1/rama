@@ -12,6 +12,7 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::ExtensionsRef as _;
+use rama_core::telemetry::tracing::warn;
 use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
 use rama_utils::str::smol_str::ToSmolStr as _;
@@ -59,7 +60,10 @@ impl BanInfo {
 
     #[inline]
     pub fn now_nanos() -> u64 {
-        Instant::now().elapsed().as_nanos() as u64
+        chrono::Local::now()
+            .timestamp_nanos_opt()
+            .unwrap_or(0)
+            .cast_unsigned()
     }
 }
 
@@ -566,16 +570,25 @@ where
         };
 
         if is_in_blocked_list {
-            return Err(
-                BoxError::from("drop connection for blocked ip").context_field("ip_addr", ip_addr)
-            );
+            return Err(BoxError::from("drop connection for blocked ip address")
+                .context_field("ip_addr", ip_addr));
         }
 
         if let Some(_is_banned) = self.firewall.is_banned(&ip_addr).await {
-            rama_core::telemetry::tracing::warn!(ip_addr = %ip_addr, "dropping connection for blocked IP Address" );
-            return Err(
-                BoxError::from("drop connection for blocked ip").context_field("ip_addr", ip_addr)
-            );
+            let ban_info = self
+                .firewall
+                .record_violation(&ip_addr)
+                .await
+                .context("ip address record violation entry ban_info not found")?;
+
+            let ban_time = ban_info.calculate_ttl();
+
+            warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked IP Address, ReBanned IP Address With Updated Ban Info");
+
+            warn!(ip_addr = %ip_addr, "dropping connection for blocked IP Address" );
+
+            return Err(BoxError::from("drop connection for blocked ip address")
+                .context_field("ip_addr", ip_addr));
         }
         self.inner.serve(stream).await.into_box_error()
     }
@@ -591,14 +604,6 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let ip_addr = req
-            .extensions()
-            .get::<SocketInfo>()
-            .context("no socket info found")?
-            .peer_addr()
-            .ip_addr
-            .to_smolstr();
-
         let user_agent = req
             .headers()
             .get(USER_AGENT)
@@ -610,15 +615,15 @@ where
         let is_in_allowed_list = match &self.allowed_list.backend {
             FirewallStoreBackend::RwLock(store) => {
                 let data_guard = store.read().await;
-                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str())
             }
             FirewallStoreBackend::ArcSwap(store) => {
                 let data_guard = store.load();
-                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str())
             }
             FirewallStoreBackend::ArcShift(store) => {
                 let data_guard = store.shared_get();
-                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str())
             }
         };
 
@@ -628,46 +633,33 @@ where
                 .serve(req)
                 .await
                 .into_box_error()
-                .context_field("ip_addr", ip_addr)
                 .context_field("user_agent", user_agent);
         }
 
         let is_in_blocked_list = match &self.blocked_list.backend {
             FirewallStoreBackend::RwLock(store) => {
                 let data_guard = store.read().await;
-                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str())
             }
             FirewallStoreBackend::ArcSwap(store) => {
                 let data_guard = store.load();
-                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str())
             }
             FirewallStoreBackend::ArcShift(store) => {
                 let data_guard = store.shared_get();
-                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str())
             }
         };
 
         if is_in_blocked_list {
             return Err(
                 BoxError::from("drop connection for blocked ip or user agent")
-                    .context_field("ip_addr", ip_addr)
                     .context_field("user_agent", user_agent),
             );
         }
 
-        let is_ip_banned = self.firewall.is_banned(&ip_addr).await;
-
-        if let Some(_ip_ban_info) = is_ip_banned {
-            rama_core::telemetry::tracing::warn!(
-                ip_addr = %ip_addr,
-                "dropping connection for blocked IP Address"
-            );
-            return Err(BoxError::from("drop connection for blocked ip address")
-                .context_field("ip_addr", ip_addr));
-        }
-
         if is_bad_user_agent(&user_agent) {
-            rama_core::telemetry::tracing::warn!(
+            warn!(
                 user_agent = %user_agent,
                 "dropping connection for BAD User Agent",
             );
@@ -676,10 +668,16 @@ where
         } else {
             let is_ua_banned = self.firewall.is_banned(&user_agent).await;
             if let Some(_ua_ban_info) = is_ua_banned {
-                rama_core::telemetry::tracing::warn!(
-                    user_agent = %user_agent,
-                    "dropping connection for blocked User Agent",
-                );
+                let ban_info = self
+                    .firewall
+                    .record_violation(&user_agent)
+                    .await
+                    .context("user_agent record violation entry ban_info not found")?;
+
+                let ban_time = ban_info.calculate_ttl();
+
+                warn!(user_agent = %user_agent, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked User Agent, ReBanned IP Address With Updated Ban Info");
+
                 return Err(BoxError::from("drop connection for blocked user agent")
                     .context_field("user_agent", user_agent));
             }
@@ -688,7 +686,6 @@ where
             .serve(req)
             .await
             .into_box_error()
-            .context_field("ip_addr", ip_addr)
             .context_field("user_agent", user_agent)
     }
 }
@@ -1025,7 +1022,7 @@ pub enum ThreatLevel {
 
 // /// Thread-local cache for user agent lowercasing (avoid repeated allocations)
 thread_local! {
-    static UA_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(1024));
+    static UA_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(512));
 }
 
 /// Get threat level with optimized checks
