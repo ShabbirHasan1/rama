@@ -520,6 +520,12 @@ pub struct UserCredInfoHashMap<C: Clone + Debug + PartialEq + Eq + Hash>(
     pub AHashMap<C, UserCredInfo<C>>,
 );
 
+impl<C: Clone + Debug + PartialEq + Eq + Hash> UserCredInfoHashMap<C> {
+    pub fn new(users: AHashMap<C, UserCredInfo<C>>) -> Self {
+        Self(users)
+    }
+}
+
 impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for UserCredInfoHashMap<Basic> {
     fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
         tracing::debug!(
