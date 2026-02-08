@@ -718,6 +718,30 @@ where
         }
     }
 
+    /// Create a new store using RwLockHashmap backend.
+    #[must_use]
+    pub fn new_hmap(users: UserCredInfoHashMap<A>) -> Self {
+        Self {
+            backend: UserCredStoreBackend::RwLockHashmap(Arc::new(RwLock::new(users))),
+        }
+    }
+
+    /// Create a new store using ArcSwapHashmap backend for lock-free reads.
+    #[must_use]
+    pub fn new_arc_swap_hmap(users: UserCredInfoHashMap<A>) -> Self {
+        Self {
+            backend: UserCredStoreBackend::ArcSwapHashmap(Arc::new(ArcSwap::from(Arc::new(users)))),
+        }
+    }
+
+    /// Create a new store using ArcShiftHashmap backend.
+    #[must_use]
+    pub fn new_arc_shift_hmap(users: UserCredInfoHashMap<A>) -> Self {
+        Self {
+            backend: UserCredStoreBackend::ArcShiftHashmap(ArcShift::new(users)),
+        }
+    }
+
     /// Try to update credentials without blocking (only works with RwLock backend).
     pub fn try_update_vectors(
         &self,

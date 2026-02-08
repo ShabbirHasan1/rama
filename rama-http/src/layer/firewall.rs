@@ -1,8 +1,7 @@
-// use crate::layer::custom_proxy_auth::WARNING_MESSAGE;
 use crate::{Request, Response};
+use ahash::AHashSet;
 use ahash::RandomState;
 use crossbeam_epoch::{self as epoch, Atomic, Owned};
-// use http::StatusCode;
 use http::header::USER_AGENT;
 use moka::Expiry;
 use moka::future::Cache;
@@ -10,10 +9,7 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::ExtensionsRef as _;
-// use rama_http_headers::{HeaderMapExt as _, ProxyAuthorization};
-// use rama_http_types::body::OptionalBody;
 use rama_net::stream::SocketInfo;
-// use rama_net::user::Basic;
 use rama_tcp::TcpStream;
 use rama_utils::str::smol_str::ToSmolStr as _;
 use std::sync::Arc;
@@ -381,21 +377,72 @@ impl Firewall {
 
 // rama_utils::macros::impl_deref!(Firewall);
 
+/// Storage backend for user credentials.
+pub enum FirewallStoreBackend {
+    /// Uses RwLock for thread-safe access with blocking updates for hashmap backend.
+    RwLock(Arc<tokio::sync::RwLock<AHashSet<&'static str>>>),
+    /// Uses ArcSwap for lock-free reads with atomic updates for hashmap backend.
+    ArcSwap(Arc<arc_swap::ArcSwapAny<Arc<AHashSet<&'static str>>>>),
+    /// Uses ArcShift for efficient updates with shared access for hashmap backend.
+    ArcShift(arcshift::ArcShift<AHashSet<&'static str>>),
+}
+
+impl std::fmt::Debug for FirewallStoreBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RwLock(_) => f.debug_tuple("RwLock").finish(),
+            Self::ArcSwap(_) => f.debug_tuple("ArcSwap").finish(),
+            Self::ArcShift(_) => f.debug_tuple("ArcShift").finish(),
+        }
+    }
+}
+
+impl Clone for FirewallStoreBackend {
+    fn clone(&self) -> Self {
+        match self {
+            Self::RwLock(lock) => Self::RwLock(lock.clone()),
+            Self::ArcSwap(swap) => Self::ArcSwap(swap.clone()),
+            Self::ArcShift(shift) => Self::ArcShift(shift.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FirewallStore {
+    pub backend: FirewallStoreBackend,
+}
+
 #[derive(Debug, Clone)]
 pub struct FirewallLayer {
     pub firewall: Arc<Firewall>,
+    pub allowed_list: FirewallStore,
+    pub blocked_list: FirewallStore,
+    pub strict: bool,
 }
 
 impl FirewallLayer {
-    pub fn new(firewall: Arc<Firewall>) -> Self {
-        Self { firewall }
+    pub fn new(
+        firewall: Arc<Firewall>,
+        allowed_list: FirewallStore,
+        blocked_list: FirewallStore,
+        strict: bool,
+    ) -> Self {
+        Self {
+            firewall,
+            allowed_list,
+            blocked_list,
+            strict,
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct FirewallService<S> {
-    inner: S,
-    firewall: Arc<Firewall>,
+    pub inner: S,
+    pub firewall: Arc<Firewall>,
+    pub allowed_list: FirewallStore,
+    pub blocked_list: FirewallStore,
+    pub strict: bool,
 }
 
 impl<S> Layer<S> for FirewallLayer {
@@ -405,6 +452,9 @@ impl<S> Layer<S> for FirewallLayer {
         FirewallService {
             inner,
             firewall: self.firewall.clone(),
+            allowed_list: self.allowed_list.clone(),
+            blocked_list: self.blocked_list.clone(),
+            strict: self.strict,
         }
     }
 
@@ -412,6 +462,9 @@ impl<S> Layer<S> for FirewallLayer {
         FirewallService {
             inner,
             firewall: self.firewall,
+            allowed_list: self.allowed_list,
+            blocked_list: self.blocked_list,
+            strict: self.strict,
         }
     }
 }
@@ -440,6 +493,46 @@ where
             .peer_addr()
             .ip_addr
             .to_smolstr();
+
+        let is_in_allowed_list = match &self.allowed_list.backend {
+            FirewallStoreBackend::RwLock(store) => {
+                let data_guard = store.read().await;
+                data_guard.contains(ip_addr.as_str())
+            }
+            FirewallStoreBackend::ArcSwap(store) => {
+                let data_guard = store.load();
+                data_guard.contains(ip_addr.as_str())
+            }
+            FirewallStoreBackend::ArcShift(store) => {
+                let data_guard = store.shared_get();
+                data_guard.contains(ip_addr.as_str())
+            }
+        };
+
+        if is_in_allowed_list {
+            return self.inner.serve(stream).await.into_box_error();
+        }
+
+        let is_in_blocked_list = match &self.blocked_list.backend {
+            FirewallStoreBackend::RwLock(store) => {
+                let data_guard = store.read().await;
+                data_guard.contains(ip_addr.as_str())
+            }
+            FirewallStoreBackend::ArcSwap(store) => {
+                let data_guard = store.load();
+                data_guard.contains(ip_addr.as_str())
+            }
+            FirewallStoreBackend::ArcShift(store) => {
+                let data_guard = store.shared_get();
+                data_guard.contains(ip_addr.as_str())
+            }
+        };
+
+        if is_in_blocked_list {
+            return Err(
+                BoxError::from("drop connection for blocked ip").context_field("ip_addr", ip_addr)
+            );
+        }
 
         if let Some(_is_banned) = self.firewall.is_banned(&ip_addr).await {
             rama_core::telemetry::tracing::warn!(ip_addr = %ip_addr, "dropping connection for blocked IP Address" );
@@ -477,8 +570,49 @@ where
             .context("user_agent is not valid UTF-8")?
             .to_owned();
 
+        let is_in_allowed_list = match &self.allowed_list.backend {
+            FirewallStoreBackend::RwLock(store) => {
+                let data_guard = store.read().await;
+                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+            }
+            FirewallStoreBackend::ArcSwap(store) => {
+                let data_guard = store.load();
+                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+            }
+            FirewallStoreBackend::ArcShift(store) => {
+                let data_guard = store.shared_get();
+                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+            }
+        };
+
+        if is_in_allowed_list {
+            return self.inner.serve(req).await.into_box_error();
+        }
+
+        let is_in_blocked_list = match &self.blocked_list.backend {
+            FirewallStoreBackend::RwLock(store) => {
+                let data_guard = store.read().await;
+                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+            }
+            FirewallStoreBackend::ArcSwap(store) => {
+                let data_guard = store.load();
+                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+            }
+            FirewallStoreBackend::ArcShift(store) => {
+                let data_guard = store.shared_get();
+                data_guard.contains(ip_addr.as_str()) || data_guard.contains(user_agent.as_str())
+            }
+        };
+
+        if is_in_blocked_list {
+            return Err(
+                BoxError::from("drop connection for blocked ip or user agent")
+                    .context_field("ip_addr", ip_addr)
+                    .context_field("user_agent", user_agent),
+            );
+        }
+
         let is_ip_banned = self.firewall.is_banned(&ip_addr).await;
-        let is_ua_banned = self.firewall.is_banned(&user_agent).await;
 
         if let Some(_ip_ban_info) = is_ip_banned {
             rama_core::telemetry::tracing::warn!(
@@ -487,13 +621,9 @@ where
             );
             return Err(BoxError::from("drop connection for blocked ip address")
                 .context_field("ip_addr", ip_addr));
-            // return Response::builder()
-            //     .status(StatusCode::FORBIDDEN)
-            //     .header(http::header::WARNING, WARNING_MESSAGE)
-            //     .body(ResBody::from("hello"))
-            //     .context("drop connection for blocked ip address")
-            //     .context_field("ip_addr", ip_addr);
         }
+
+        let is_ua_banned = self.firewall.is_banned(&user_agent).await;
 
         if let Some(_ua_ban_info) = is_ua_banned {
             rama_core::telemetry::tracing::warn!(
@@ -502,12 +632,6 @@ where
             );
             return Err(BoxError::from("drop connection for blocked user agent")
                 .context_field("user_agent", user_agent));
-            // return Response::builder()
-            //     .status(StatusCode::FORBIDDEN)
-            //     .header(http::header::WARNING, WARNING_MESSAGE)
-            //     .body(())
-            //     .context("drop connection for blocked user agent")
-            //     .context_field("user_agent", user_agent);
         }
 
         self.inner.serve(req).await.into_box_error()

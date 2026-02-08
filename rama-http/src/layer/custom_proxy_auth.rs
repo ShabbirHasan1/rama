@@ -2,18 +2,17 @@
 //!
 //! If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
 
-// use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::authorization::Authority;
 use crate::headers::authorization::AuthoritySync;
 use crate::headers::authorization::UserCredStore;
 use crate::headers::authorization::UserCredStoreBackend;
 use crate::headers::{HeaderMapExt, ProxyAuthorization};
-use crate::layer::firewall::Firewall;
+use crate::layer::firewall::FirewallLayer;
+use crate::layer::firewall::FirewallStoreBackend;
 use crate::{Request, Response, StatusCode};
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
-// use rama_core::username::UsernameLabelParser;
-use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::telemetry::tracing::warn;
 use rama_core::{Layer, Service};
 use rama_http_headers::authorization::UserCredInfo;
@@ -23,7 +22,6 @@ use rama_net::user::{Basic, UserId};
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::smol_str::ToSmolStr as _;
 use std::fmt;
-// use std::marker::PhantomData;
 
 /// Layer that applies the [`CustomProxyAuthService`] middleware which apply a timeout to requests.
 ///
@@ -31,6 +29,7 @@ use std::fmt;
 pub struct CustomProxyAuthLayer {
     proxy_auth: UserCredStore<Basic>,
     allow_anonymous: bool,
+    firewall_layer: FirewallLayer,
 }
 
 impl fmt::Debug for CustomProxyAuthLayer {
@@ -38,6 +37,7 @@ impl fmt::Debug for CustomProxyAuthLayer {
         f.debug_struct("CustomProxyAuthLayer")
             .field("proxy_auth", &self.proxy_auth)
             .field("allow_anonymous", &self.allow_anonymous)
+            .field("firewall_layer", &self.firewall_layer)
             .finish()
     }
 }
@@ -47,6 +47,7 @@ impl Clone for CustomProxyAuthLayer {
         Self {
             proxy_auth: self.proxy_auth.clone(),
             allow_anonymous: self.allow_anonymous,
+            firewall_layer: self.firewall_layer.clone(),
         }
     }
 }
@@ -54,10 +55,11 @@ impl Clone for CustomProxyAuthLayer {
 impl CustomProxyAuthLayer {
     /// Creates a new [`CustomProxyAuthLayer`] with UserCredStore.
     #[must_use]
-    pub const fn new(proxy_auth: UserCredStore<Basic>) -> Self {
+    pub const fn new(proxy_auth: UserCredStore<Basic>, firewall_layer: FirewallLayer) -> Self {
         Self {
             proxy_auth,
             allow_anonymous: false,
+            firewall_layer,
         }
     }
 
@@ -79,12 +81,12 @@ impl<S> Layer<S> for CustomProxyAuthLayer {
     type Service = CustomProxyAuthService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        CustomProxyAuthService::new(self.proxy_auth.clone(), inner)
+        CustomProxyAuthService::new(self.proxy_auth.clone(), self.firewall_layer.clone(), inner)
             .with_allow_anonymous(self.allow_anonymous)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        CustomProxyAuthService::new(self.proxy_auth, inner)
+        CustomProxyAuthService::new(self.proxy_auth, self.firewall_layer, inner)
             .with_allow_anonymous(self.allow_anonymous)
     }
 }
@@ -99,16 +101,22 @@ impl<S> Layer<S> for CustomProxyAuthLayer {
 pub struct CustomProxyAuthService<S> {
     proxy_auth: UserCredStore<Basic>,
     allow_anonymous: bool,
+    firewall_layer: FirewallLayer,
     inner: S,
 }
 
 impl<S> CustomProxyAuthService<S> {
     /// Creates a new [`CustomProxyAuthService`].
     #[must_use]
-    pub const fn new(proxy_auth: UserCredStore<Basic>, inner: S) -> Self {
+    pub const fn new(
+        proxy_auth: UserCredStore<Basic>,
+        firewall_layer: FirewallLayer,
+        inner: S,
+    ) -> Self {
         Self {
             proxy_auth,
             allow_anonymous: false,
+            firewall_layer,
             inner,
         }
     }
@@ -134,6 +142,7 @@ impl<S: fmt::Debug> fmt::Debug for CustomProxyAuthService<S> {
         f.debug_struct("CustomProxyAuthService")
             .field("proxy_auth", &self.proxy_auth)
             .field("allow_anonymous", &self.allow_anonymous)
+            .field("firewall_layer", &self.firewall_layer)
             .field("inner", &self.inner)
             .finish()
     }
@@ -144,6 +153,7 @@ impl<S: Clone> Clone for CustomProxyAuthService<S> {
         Self {
             proxy_auth: self.proxy_auth.clone(),
             allow_anonymous: self.allow_anonymous,
+            firewall_layer: self.firewall_layer.clone(),
             inner: self.inner.clone(),
         }
     }
@@ -162,11 +172,6 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let firewall = req
-            .extensions()
-            .get::<Firewall>()
-            .context("firewall not found")?;
-
         let ip_addr = req
             .extensions()
             .get::<SocketInfo>()
@@ -176,7 +181,9 @@ where
             .to_smolstr();
 
         if req.method() != http::Method::CONNECT {
-            let ban_info = firewall
+            let ban_info = self
+                .firewall_layer
+                .firewall
                 .record_violation(&ip_addr)
                 .await
                 .context("ip address record violation record info not found")?;
@@ -200,8 +207,48 @@ where
             Some(creds) => {
                 tracing::trace!("Proxy credentials found");
                 let api_key = creds.username().to_owned();
-                let is_un_banned = firewall.is_banned(&api_key).await;
-                if let Some(_un_ban_info) = is_un_banned {
+                let is_in_allowed_list = match &self.firewall_layer.allowed_list.backend {
+                    FirewallStoreBackend::RwLock(store) => {
+                        let data_guard = store.read().await;
+                        data_guard.contains(api_key.as_str())
+                    }
+                    FirewallStoreBackend::ArcSwap(store) => {
+                        let data_guard = store.load();
+                        data_guard.contains(api_key.as_str())
+                    }
+                    FirewallStoreBackend::ArcShift(store) => {
+                        let data_guard = store.shared_get();
+                        data_guard.contains(api_key.as_str())
+                    }
+                };
+
+                let is_in_blocked_list = match &self.firewall_layer.blocked_list.backend {
+                    FirewallStoreBackend::RwLock(store) => {
+                        let data_guard = store.read().await;
+                        data_guard.contains(api_key.as_str())
+                    }
+                    FirewallStoreBackend::ArcSwap(store) => {
+                        let data_guard = store.load();
+                        data_guard.contains(api_key.as_str())
+                    }
+                    FirewallStoreBackend::ArcShift(store) => {
+                        let data_guard = store.shared_get();
+                        data_guard.contains(api_key.as_str())
+                    }
+                };
+
+                if is_in_blocked_list {
+                    warn!(api_key = %api_key, "Found Banned API_KEY in blocked list");
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .header(http::header::WARNING, WARNING_MESSAGE)
+                        .body(OptionalBody::none())
+                        .context("create banned api_key response")
+                        .context_field("api_key", api_key);
+                }
+
+                let is_un_banned = self.firewall_layer.firewall.is_banned(&api_key).await;
+                if !is_in_allowed_list && let Some(_un_ban_info) = is_un_banned {
                     rama_core::telemetry::tracing::warn!(
                         api_key = %api_key,
                         "dropping connection for blocked API_KEY",
@@ -304,7 +351,9 @@ where
                         .map_err(|err| BoxError::from(err.into()))?
                         .map(OptionalBody::some))
                 } else {
-                    let ban_info = firewall
+                    let ban_info = self
+                        .firewall_layer
+                        .firewall
                         .record_violation(&api_key)
                         .await
                         .context("api_key record violation record info not found")?;
@@ -335,14 +384,17 @@ where
                         .map_err(|err| BoxError::from(err.into()))?
                         .map(OptionalBody::some))
                 } else {
-                    let ban_info = firewall
+                    let ban_info = self
+                        .firewall_layer
+                        .firewall
                         .record_violation(&ip_addr)
                         .await
                         .context("ip address record violation record info not found")?;
                     let ban_time = ban_info.calculate_ttl();
                     warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Credentials is a must and required, Banned IP Address with Ban Info");
                     Ok(Response::builder()
-                        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                        .status(StatusCode::UNAUTHORIZED)
+                        // .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                         // .header(PROXY_AUTHENTICATE, "Basic")
                         .header(http::header::WARNING, WARNING_MESSAGE)
                         .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
