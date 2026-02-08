@@ -16,6 +16,7 @@ use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
 use rama_utils::str::smol_str::ToSmolStr as _;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -622,7 +623,13 @@ where
         };
 
         if is_in_allowed_list {
-            return self.inner.serve(req).await.into_box_error();
+            return self
+                .inner
+                .serve(req)
+                .await
+                .into_box_error()
+                .context_field("ip_addr", ip_addr)
+                .context_field("user_agent", user_agent);
         }
 
         let is_in_blocked_list = match &self.blocked_list.backend {
@@ -659,19 +666,570 @@ where
                 .context_field("ip_addr", ip_addr));
         }
 
-        let is_ua_banned = self.firewall.is_banned(&user_agent).await;
-
-        if let Some(_ua_ban_info) = is_ua_banned {
+        if is_bad_user_agent(&user_agent) {
             rama_core::telemetry::tracing::warn!(
                 user_agent = %user_agent,
-                "dropping connection for blocked User Agent",
+                "dropping connection for BAD User Agent",
             );
-            return Err(BoxError::from("drop connection for blocked user agent")
+            return Err(BoxError::from("drop connection for bad user agent")
                 .context_field("user_agent", user_agent));
+        } else {
+            let is_ua_banned = self.firewall.is_banned(&user_agent).await;
+            if let Some(_ua_ban_info) = is_ua_banned {
+                rama_core::telemetry::tracing::warn!(
+                    user_agent = %user_agent,
+                    "dropping connection for blocked User Agent",
+                );
+                return Err(BoxError::from("drop connection for blocked user agent")
+                    .context_field("user_agent", user_agent));
+            }
+        }
+        self.inner
+            .serve(req)
+            .await
+            .into_box_error()
+            .context_field("ip_addr", ip_addr)
+            .context_field("user_agent", user_agent)
+    }
+}
+
+/// Bad user agent patterns as const arrays (compiled into binary)
+pub mod patterns {
+    // Critical threats
+    pub const CRITICAL: &[&str] = &[
+        "sqlmap",
+        "nikto",
+        "nessus",
+        "burp",
+        "metasploit",
+        "slowloris",
+        "hulk",
+        "goldeneye",
+        "hydra",
+    ];
+
+    // High threats
+    pub const HIGH: &[&str] = &[
+        "zgrab", "masscan", "nmap", "zmap", "openvas", "acunetix", "w3af", "skipfish", "wapiti",
+    ];
+
+    // Medium threats
+    pub const MEDIUM: &[&str] = &[
+        "semrush", "ahrefs", "mj12bot", "dotbot", "proxy", "scrapy", "httrack",
+    ];
+
+    // Security scanners
+    pub const SECURITY_SCANNERS: &[&str] = &[
+        "zgrab",
+        "masscan",
+        "nmap",
+        "zmap",
+        "nikto",
+        "sqlmap",
+        "nessus",
+        "openvas",
+        "acunetix",
+        "netsparker",
+        "qualys",
+        "burpsuite",
+        "w3af",
+        "skipfish",
+        "wapiti",
+        "havij",
+        "metis",
+        "grabber",
+        "webinspect",
+        "paros",
+        "dirbuster",
+        "dirb",
+        "wfuzz",
+        "hydra",
+    ];
+
+    // Scrapers
+    pub const SCRAPERS: &[&str] = &[
+        "httrack",
+        "teleport",
+        "webcopier",
+        "webcopy",
+        "webzip",
+        "offline explorer",
+        "wget",
+        // "curl",
+        "libwww-perl",
+        // "python-requests",
+        // "pycurl",
+        "grab",
+        "scrapy",
+        "mechanize",
+        "beautifulsoup",
+    ];
+
+    // Attack tools
+    pub const ATTACK_TOOLS: &[&str] = &[
+        "slowhttptest",
+        "slowloris",
+        "goldeneye",
+        "hulk",
+        "torshammer",
+        "thc-",
+    ];
+
+    // Bad bots
+    pub const BAD_BOTS: &[&str] = &[
+        "clickbot",
+        "adbeat",
+        "aihit",
+        "emailcollector",
+        "emailsiphon",
+        "emailwolf",
+        "extractorpro",
+        "harvest",
+    ];
+
+    // SEO spam
+    pub const SEO_SPAM: &[&str] = &[
+        "semrush",
+        "ahrefs",
+        "majestic",
+        "mj12bot",
+        "dotbot",
+        "megaindex",
+        "blexbot",
+        "copyscape",
+        "turnitin",
+    ];
+
+    // Programming languages
+    // pub const PROG_LANGS: &[&str] = &[
+    //     "python",
+    //     "java/",
+    //     "go-http-client",
+    //     "ruby",
+    //     "perl",
+    //     "php",
+    //     "node",
+    //     "axios",
+    //     "httpx",
+    //     "aiohttp",
+    // ];
+
+    // Proxy checkers
+    pub const PROXY_CHECKERS: &[&str] = &["proxy", "proxycheck", "proxyjudge", "checkproxy"];
+
+    // Research scanners
+    pub const RESEARCH: &[&str] = &["censys", "shodan", "project25499", "researchscan"];
+
+    // Misc
+    pub const MISC: &[&str] = &[
+        "sysscan",
+        "scan",
+        "test",
+        "undefined",
+        "null",
+        "mozilla/4.0 (compatible; msie 6.0; windows nt 5.1)",
+        "mozilla/5.0 (compatible)",
+        "opera/9.80",
+        "",
+        "-",
+        ".",
+    ];
+
+    // LLM Crawlers - OpenAI
+    pub const LLM_OPENAI: &[&str] = &["gptbot", "chatgpt-user", "oai-searchbot"];
+
+    // LLM Crawlers - Anthropic
+    pub const LLM_ANTHROPIC: &[&str] = &["anthropic-ai", "claude-web", "claudebot"];
+
+    // LLM Crawlers - Google
+    pub const LLM_GOOGLE: &[&str] = &["google-extended", "googleother", "bard", "gemini"];
+
+    // LLM Crawlers - Meta
+    pub const LLM_META: &[&str] = &["facebookbot", "meta-externalagent", "llama"];
+
+    // LLM Crawlers - Others
+    pub const LLM_OTHERS: &[&str] = &[
+        "ccbot",
+        "cc-crawler",
+        "perplexitybot",
+        "perplexity",
+        "cohere-ai",
+        "coherebot",
+        "ia_archiver",
+        "ai2bot",
+        "diffbot",
+        "applebot-extended",
+        "amazonbot",
+        "anthropic",
+        "bytespider",
+        "bytedance",
+        "yandexbot",
+        "yandexgpt",
+        "character.ai",
+        "characterai",
+        "huggingfacebot",
+        "omgili",
+        "omgilibot",
+        "dataforseobot",
+        "magpie-crawler",
+        "peer39",
+        "istellabot",
+        "semanticscholar",
+        "semanticbot",
+        "researchbot",
+        "academicbot",
+        "youbot",
+        "you.com",
+        "img2dataset",
+        "kangaroo",
+        "webzio-extended",
+        "ai-crawler",
+        "aibot",
+        "llmbot",
+        "ml-bot",
+        "machinelearning",
+    ];
+
+    // Legitimate bots
+    pub const LEGITIMATE: &[&str] = &[
+        "googlebot",
+        "bingbot",
+        "slurp",
+        "duckduckbot",
+        "baiduspider",
+        "yandexbot",
+        "facebookexternalhit",
+        "twitterbot",
+        "linkedinbot",
+        "slackbot",
+        "discordbot",
+        "telegrambot",
+        "whatsapp",
+        "applebot",
+        "petalbot",
+    ];
+
+    // Suspicious keywords
+    pub const SUSPICIOUS_KEYWORDS: &[&str] = &[
+        "scanner",
+        "scraper",
+        "crawler",
+        "spider",
+        "bot",
+        "attack",
+        "hack",
+        "exploit",
+        "inject",
+        "fuzzer",
+        "pentest",
+        "security",
+        "vulnerability",
+        "audit",
+        "benchmark",
+        "stress",
+        "load",
+        "ddos",
+    ];
+
+    // Language patterns (for starts_with check)
+    pub const LANG_PATTERNS: &[&str] = &["python/", "ruby/", "perl/", "php/", "java/", "go/"];
+
+    // Ancient OS patterns
+    pub const ANCIENT_OS: &[&str] = &[
+        "windows nt 4.0",
+        "windows nt 5.0",
+        "windows 98",
+        "windows 95",
+    ];
+}
+
+/// All bad user agents combined (single allocation)
+pub static BAD_USER_AGENTS: LazyLock<AHashSet<&'static str>> = LazyLock::new(|| {
+    let total_size = patterns::SECURITY_SCANNERS.len()
+        + patterns::SCRAPERS.len()
+        + patterns::ATTACK_TOOLS.len()
+        + patterns::BAD_BOTS.len()
+        + patterns::SEO_SPAM.len()
+        // + patterns::PROG_LANGS.len()
+        + patterns::PROXY_CHECKERS.len()
+        + patterns::RESEARCH.len()
+        + patterns::MISC.len();
+
+    let mut set = AHashSet::with_capacity(total_size);
+
+    // Extend from all categories
+    set.extend(patterns::SECURITY_SCANNERS.iter().copied());
+    set.extend(patterns::SCRAPERS.iter().copied());
+    set.extend(patterns::ATTACK_TOOLS.iter().copied());
+    set.extend(patterns::BAD_BOTS.iter().copied());
+    set.extend(patterns::SEO_SPAM.iter().copied());
+    // set.extend(patterns::PROG_LANGS.iter().copied());
+    set.extend(patterns::PROXY_CHECKERS.iter().copied());
+    set.extend(patterns::RESEARCH.iter().copied());
+    set.extend(patterns::MISC.iter().copied());
+
+    set
+});
+
+/// All LLM crawlers combined
+pub static LLM_CRAWLERS: LazyLock<AHashSet<&'static str>> = LazyLock::new(|| {
+    let total_size = patterns::LLM_OPENAI.len()
+        + patterns::LLM_ANTHROPIC.len()
+        + patterns::LLM_GOOGLE.len()
+        + patterns::LLM_META.len()
+        + patterns::LLM_OTHERS.len();
+
+    let mut set = AHashSet::with_capacity(total_size);
+
+    set.extend(patterns::LLM_OPENAI.iter().copied());
+    set.extend(patterns::LLM_ANTHROPIC.iter().copied());
+    set.extend(patterns::LLM_GOOGLE.iter().copied());
+    set.extend(patterns::LLM_META.iter().copied());
+    set.extend(patterns::LLM_OTHERS.iter().copied());
+
+    set
+});
+
+/// Legitimate bots
+pub static LEGITIMATE_BOTS: LazyLock<AHashSet<&'static str>> =
+    LazyLock::new(|| patterns::LEGITIMATE.iter().copied().collect());
+
+/// Critical threat patterns
+pub static CRITICAL_PATTERNS: LazyLock<AHashSet<&'static str>> =
+    LazyLock::new(|| patterns::CRITICAL.iter().copied().collect());
+
+/// High threat patterns
+pub static HIGH_PATTERNS: LazyLock<AHashSet<&'static str>> =
+    LazyLock::new(|| patterns::HIGH.iter().copied().collect());
+
+/// Medium threat patterns
+pub static MEDIUM_PATTERNS: LazyLock<AHashSet<&'static str>> =
+    LazyLock::new(|| patterns::MEDIUM.iter().copied().collect());
+
+/// Suspicious keywords
+pub static SUSPICIOUS_KEYWORDS: LazyLock<AHashSet<&'static str>> =
+    LazyLock::new(|| patterns::SUSPICIOUS_KEYWORDS.iter().copied().collect());
+
+/// Language patterns
+pub static LANG_PATTERNS: LazyLock<AHashSet<&'static str>> =
+    LazyLock::new(|| patterns::LANG_PATTERNS.iter().copied().collect());
+
+/// Ancient OS patterns
+pub static ANCIENT_OS: LazyLock<AHashSet<&'static str>> =
+    LazyLock::new(|| patterns::ANCIENT_OS.iter().copied().collect());
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ThreatLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+// /// Thread-local cache for user agent lowercasing (avoid repeated allocations)
+thread_local! {
+    static UA_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(512));
+}
+
+/// Get threat level with optimized checks
+#[inline]
+pub fn get_threat_level_fast(user_agent: &str) -> Option<ThreatLevel> {
+    // Early exit for empty/short UAs
+    if user_agent.is_empty() || user_agent.len() < 10 {
+        return Some(ThreatLevel::Low);
+    }
+
+    // Use thread-local buffer to avoid allocation
+    UA_BUFFER.with(|buf| {
+        let mut ua_lower = buf.borrow_mut();
+        ua_lower.clear();
+        ua_lower.push_str(user_agent);
+        ua_lower.make_ascii_lowercase();
+
+        // Check critical first (most severe, fast fail)
+        for pattern in patterns::CRITICAL {
+            if ua_lower.contains(pattern) {
+                return Some(ThreatLevel::Critical);
+            }
         }
 
-        self.inner.serve(req).await.into_box_error()
+        // Check high threats
+        for pattern in patterns::HIGH {
+            if ua_lower.contains(pattern) {
+                return Some(ThreatLevel::High);
+            }
+        }
+
+        // Check medium threats
+        for pattern in patterns::MEDIUM {
+            if ua_lower.contains(pattern) {
+                return Some(ThreatLevel::Medium);
+            }
+        }
+
+        // Check if bad at all
+        if is_bad_user_agent_internal(&ua_lower) {
+            return Some(ThreatLevel::Low);
+        }
+
+        None
+    })
+}
+
+/// Internal check that works on already-lowercased string
+#[inline]
+pub fn is_bad_user_agent_internal(ua_lower: &str) -> bool {
+    for pattern in BAD_USER_AGENTS.iter() {
+        if ua_lower.contains(pattern) {
+            return true;
+        }
     }
+    for keyword in CRITICAL_PATTERNS.iter() {
+        if ua_lower.contains(keyword) {
+            return true;
+        }
+    }
+    for keyword in HIGH_PATTERNS.iter() {
+        if ua_lower.contains(keyword) {
+            return true;
+        }
+    }
+    for keyword in MEDIUM_PATTERNS.iter() {
+        if ua_lower.contains(keyword) {
+            return true;
+        }
+    }
+    for keyword in patterns::SUSPICIOUS_KEYWORDS {
+        if ua_lower.contains(keyword) {
+            return true;
+        }
+    }
+    for keyword in LLM_CRAWLERS.iter() {
+        if ua_lower.contains(keyword) {
+            return true;
+        }
+    }
+    for keyword in LEGITIMATE_BOTS.iter() {
+        if ua_lower.contains(keyword) {
+            return true;
+        }
+    }
+
+    for os in patterns::ANCIENT_OS {
+        if ua_lower.contains(os) {
+            return true;
+        }
+    }
+    if ua_lower == "mozilla/5.0" || ua_lower == "mozilla" {
+        return true;
+    }
+    false
+}
+
+/// Public API that allocates (use get_threat_level_fast for hot path)
+#[inline]
+pub fn is_bad_user_agent(user_agent: &str) -> bool {
+    // if user_agent.is_empty() || user_agent.len() < 10 {
+    if user_agent.is_empty() {
+        return true;
+    }
+    let ua_lower = user_agent.to_ascii_lowercase();
+    is_bad_user_agent_internal(&ua_lower)
+}
+
+/// Check if LLM crawler (optimized)
+#[inline]
+pub fn is_llm_crawler(user_agent: &str) -> bool {
+    if user_agent.is_empty() {
+        return false;
+    }
+
+    UA_BUFFER.with(|buf| {
+        let mut ua_lower = buf.borrow_mut();
+        ua_lower.clear();
+        ua_lower.push_str(user_agent);
+        ua_lower.make_ascii_lowercase();
+
+        LLM_CRAWLERS
+            .iter()
+            .any(|pattern| ua_lower.contains(pattern))
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LLMProvider {
+    OpenAI,
+    Anthropic,
+    Google,
+    Meta,
+    Perplexity,
+    CommonCrawl,
+    Cohere,
+    Apple,
+    Amazon,
+    ByteDance,
+    Diffbot,
+    HuggingFace,
+    YouDotCom,
+    Other,
+}
+
+/// Pre-computed mapping for fast provider lookup
+pub static LLM_PROVIDER_MAP: LazyLock<Vec<(&'static str, LLMProvider)>> = LazyLock::new(|| {
+    vec![
+        // OpenAI (check first, most common)
+        ("gptbot", LLMProvider::OpenAI),
+        ("chatgpt", LLMProvider::OpenAI),
+        ("oai-", LLMProvider::OpenAI),
+        // Anthropic
+        ("anthropic", LLMProvider::Anthropic),
+        ("claude", LLMProvider::Anthropic),
+        // Google
+        ("google-extended", LLMProvider::Google),
+        ("bard", LLMProvider::Google),
+        ("gemini", LLMProvider::Google),
+        // Meta
+        ("facebookbot", LLMProvider::Meta),
+        ("meta-external", LLMProvider::Meta),
+        ("llama", LLMProvider::Meta),
+        // Others
+        ("perplexity", LLMProvider::Perplexity),
+        ("ccbot", LLMProvider::CommonCrawl),
+        ("cc-crawler", LLMProvider::CommonCrawl),
+        ("cohere", LLMProvider::Cohere),
+        ("applebot-extended", LLMProvider::Apple),
+        ("amazonbot", LLMProvider::Amazon),
+        ("bytespider", LLMProvider::ByteDance),
+        ("bytedance", LLMProvider::ByteDance),
+        ("diffbot", LLMProvider::Diffbot),
+        ("huggingface", LLMProvider::HuggingFace),
+        ("youbot", LLMProvider::YouDotCom),
+        ("you.com", LLMProvider::YouDotCom),
+    ]
+});
+
+#[inline]
+pub fn identify_llm_provider(user_agent: &str) -> Option<LLMProvider> {
+    UA_BUFFER.with(|buf| {
+        let mut ua_lower = buf.borrow_mut();
+        ua_lower.clear();
+        ua_lower.push_str(user_agent);
+        ua_lower.make_ascii_lowercase();
+
+        // Fast sequential search (ordered by popularity)
+        for (pattern, provider) in LLM_PROVIDER_MAP.iter() {
+            if ua_lower.contains(pattern) {
+                return Some(*provider);
+            }
+        }
+
+        // Fallback
+        if LLM_CRAWLERS.iter().any(|p| ua_lower.contains(p)) {
+            Some(LLMProvider::Other)
+        } else {
+            None
+        }
+    })
 }
 
 // ==================== Usage Example ====================

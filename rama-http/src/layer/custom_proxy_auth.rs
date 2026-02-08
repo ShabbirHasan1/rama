@@ -186,7 +186,7 @@ where
                 .firewall
                 .record_violation(&ip_addr)
                 .await
-                .context("ip address record violation record info not found")?;
+                .context("ip address record violation entry ban_info not found")?;
             let ban_time = ban_info.calculate_ttl();
             warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Invalid method for CONNECT request, Banned IP Address with Ban Info");
             return Response::builder()
@@ -194,7 +194,8 @@ where
                 .header(http::header::WARNING, WARNING_MESSAGE)
                 .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
                 .body(OptionalBody::none())
-                .context("create auth-required response");
+                .context("create auth-required response")
+                .context_field("ip_addr", ip_addr);
         }
 
         let credentials = req
