@@ -830,9 +830,6 @@ pub mod patterns {
         "mozilla/4.0 (compatible; msie 6.0; windows nt 5.1)",
         "mozilla/5.0 (compatible)",
         "opera/9.80",
-        "",
-        "-",
-        ".",
     ];
 
     // LLM Crawlers - OpenAI
@@ -1028,7 +1025,7 @@ pub enum ThreatLevel {
 
 // /// Thread-local cache for user agent lowercasing (avoid repeated allocations)
 thread_local! {
-    static UA_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(512));
+    static UA_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(1024));
 }
 
 /// Get threat level with optimized checks
@@ -1133,8 +1130,18 @@ pub fn is_bad_user_agent(user_agent: &str) -> bool {
     if user_agent.is_empty() {
         return true;
     }
-    let ua_lower = user_agent.to_ascii_lowercase();
-    is_bad_user_agent_internal(&ua_lower)
+
+    // let ua_lower = user_agent.to_ascii_lowercase();
+    // is_bad_user_agent_internal(&ua_lower)
+
+    // Use thread-local buffer to avoid allocation
+    UA_BUFFER.with(|buf| {
+        let mut ua_lower = buf.borrow_mut();
+        ua_lower.clear();
+        ua_lower.push_str(user_agent);
+        ua_lower.make_ascii_lowercase();
+        is_bad_user_agent_internal(&ua_lower)
+    })
 }
 
 /// Check if LLM crawler (optimized)
