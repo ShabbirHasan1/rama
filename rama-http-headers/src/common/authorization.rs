@@ -694,9 +694,15 @@ impl<A> UserCredStore<A>
 where
     A: Clone + Debug + PartialEq + Eq + Hash,
 {
+    /// Create a new store using provided backend.
+    #[must_use]
+    pub fn new(backend: UserCredStoreBackend<A>) -> Self {
+        Self { backend }
+    }
+
     /// Create a new store using RwLock backend.
     #[must_use]
-    pub fn new(users: Vec<UserCredInfo<A>>) -> Self {
+    pub fn new_rwlock_vec(users: Vec<UserCredInfo<A>>) -> Self {
         Self {
             backend: UserCredStoreBackend::RwLock(Arc::new(RwLock::new(users))),
         }
@@ -704,7 +710,7 @@ where
 
     /// Create a new store using ArcSwap backend for lock-free reads.
     #[must_use]
-    pub fn new_arc_swap(users: Vec<UserCredInfo<A>>) -> Self {
+    pub fn new_arc_swap_vec(users: Vec<UserCredInfo<A>>) -> Self {
         Self {
             backend: UserCredStoreBackend::ArcSwap(Arc::new(ArcSwap::from(Arc::new(users)))),
         }
@@ -712,7 +718,7 @@ where
 
     /// Create a new store using ArcShift backend.
     #[must_use]
-    pub fn new_arc_shift(users: Vec<UserCredInfo<A>>) -> Self {
+    pub fn new_arc_shift_vec(users: Vec<UserCredInfo<A>>) -> Self {
         Self {
             backend: UserCredStoreBackend::ArcShift(ArcShift::new(users)),
         }
@@ -720,7 +726,7 @@ where
 
     /// Create a new store using RwLockHashmap backend.
     #[must_use]
-    pub fn new_hmap(users: UserCredInfoHashMap<A>) -> Self {
+    pub fn new_rwlock_hmap(users: UserCredInfoHashMap<A>) -> Self {
         Self {
             backend: UserCredStoreBackend::RwLockHashmap(Arc::new(RwLock::new(users))),
         }

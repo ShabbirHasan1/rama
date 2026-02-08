@@ -1,6 +1,9 @@
 use crate::{Request, Response};
 use ahash::AHashSet;
 use ahash::RandomState;
+use arc_swap::ArcSwap;
+use arc_swap::ArcSwapAny;
+use arcshift::ArcShift;
 use crossbeam_epoch::{self as epoch, Atomic, Owned};
 use http::header::USER_AGENT;
 use moka::Expiry;
@@ -15,6 +18,7 @@ use rama_utils::str::smol_str::ToSmolStr as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
 // ==================== BanInfo ====================
 #[derive(Clone, Copy, Debug)]
@@ -380,11 +384,11 @@ impl Firewall {
 /// Storage backend for user credentials.
 pub enum FirewallStoreBackend {
     /// Uses RwLock for thread-safe access with blocking updates for hashmap backend.
-    RwLock(Arc<tokio::sync::RwLock<AHashSet<&'static str>>>),
+    RwLock(Arc<RwLock<AHashSet<&'static str>>>),
     /// Uses ArcSwap for lock-free reads with atomic updates for hashmap backend.
-    ArcSwap(Arc<arc_swap::ArcSwapAny<Arc<AHashSet<&'static str>>>>),
+    ArcSwap(Arc<ArcSwapAny<Arc<AHashSet<&'static str>>>>),
     /// Uses ArcShift for efficient updates with shared access for hashmap backend.
-    ArcShift(arcshift::ArcShift<AHashSet<&'static str>>),
+    ArcShift(ArcShift<AHashSet<&'static str>>),
 }
 
 impl std::fmt::Debug for FirewallStoreBackend {
@@ -410,6 +414,38 @@ impl Clone for FirewallStoreBackend {
 #[derive(Debug, Clone)]
 pub struct FirewallStore {
     pub backend: FirewallStoreBackend,
+}
+
+impl FirewallStore {
+    /// Create a new store using provided backend.
+    #[must_use]
+    pub fn new(backend: FirewallStoreBackend) -> Self {
+        Self { backend }
+    }
+
+    /// Create a new store using RwLock backend.
+    #[must_use]
+    pub fn new_rwlock_hashset(data: AHashSet<&'static str>) -> Self {
+        Self {
+            backend: FirewallStoreBackend::RwLock(Arc::new(RwLock::new(data))),
+        }
+    }
+
+    /// Create a new store using ArcSwap backend.
+    #[must_use]
+    pub fn new_arcswap_hashset(data: AHashSet<&'static str>) -> Self {
+        Self {
+            backend: FirewallStoreBackend::ArcSwap(Arc::new(ArcSwap::from(Arc::new(data)))),
+        }
+    }
+
+    /// Create a new store using ArcShift backend.
+    #[must_use]
+    pub fn new_arcshift_hashset(data: AHashSet<&'static str>) -> Self {
+        Self {
+            backend: FirewallStoreBackend::ArcShift(ArcShift::new(data)),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
