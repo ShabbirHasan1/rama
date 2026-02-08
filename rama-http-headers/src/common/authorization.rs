@@ -1,6 +1,6 @@
 //! Authorization header and types.
 
-use ahash::RandomState;
+use ahash::AHashMap;
 use arc_swap::{ArcSwap, ArcSwapAny};
 use arcshift::ArcShift;
 use base64::Engine;
@@ -517,7 +517,7 @@ where
 #[allow(clippy::disallowed_types)]
 #[derive(Clone, Debug)]
 pub struct UserCredInfoHashMap<C: Clone + Debug + PartialEq + Eq + Hash>(
-    pub std::collections::HashMap<C, UserCredInfo<C>, RandomState>,
+    pub AHashMap<C, UserCredInfo<C>>,
 );
 
 impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for UserCredInfoHashMap<Basic> {
