@@ -12,7 +12,7 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::ExtensionsRef as _;
-use rama_core::telemetry::tracing::warn;
+use rama_core::telemetry::tracing::{error, warn};
 use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
@@ -615,11 +615,18 @@ where
             .context("user_agent is not valid UTF-8")?
             .to_owned();
 
-        let host = req
-            .uri()
-            .host()
-            .context("no host information found in incoming request")?
-            .to_owned();
+        let host = if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
+            Some(req_ctx.authority.host.to_string())
+        } else {
+            match RequestContext::try_from(&req) {
+                Ok(req_ctx) => Some(req_ctx.authority.host.to_string()),
+                Err(err) => {
+                    error!(error = %err, "Firewall: failed to lazy-make the request ctx");
+                    None
+                }
+            }
+        }
+        .context("Firewall: failed to get host from request context")?;
 
         let is_in_allowed_list = match &self.allowed_list.backend {
             FirewallStoreBackend::RwLock(store) => {
