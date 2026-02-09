@@ -13,6 +13,7 @@ use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::ExtensionsRef as _;
 use rama_core::telemetry::tracing::warn;
+use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
 use rama_utils::str::smol_str::ToSmolStr as _;
@@ -570,8 +571,10 @@ where
         };
 
         if is_in_blocked_list {
-            return Err(BoxError::from("drop connection for blocked ip address")
-                .context_field("ip_addr", ip_addr));
+            return Err(BoxError::from(
+                "drop connection for blacklisted malicious peer ip address",
+            )
+            .context_field("ip_addr", ip_addr));
         }
 
         if let Some(_is_banned) = self.firewall.is_banned(&ip_addr).await {
@@ -583,7 +586,7 @@ where
 
             let ban_time = ban_info.calculate_ttl();
 
-            warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked IP Address, ReBanned IP Address With Updated Ban Info");
+            warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Malicious Blocked Peer IP Address, ReBanned Peer IP Address With Updated Ban Info");
 
             warn!(ip_addr = %ip_addr, "dropping connection for blocked IP Address" );
 
@@ -610,6 +613,12 @@ where
             .context("no user_agent info found in headers")?
             .to_str()
             .context("user_agent is not valid UTF-8")?
+            .to_owned();
+
+        let host = req
+            .uri()
+            .host()
+            .context("no host information found in incoming request")?
             .to_owned();
 
         let is_in_allowed_list = match &self.allowed_list.backend {
@@ -639,32 +648,37 @@ where
         let is_in_blocked_list = match &self.blocked_list.backend {
             FirewallStoreBackend::RwLock(store) => {
                 let data_guard = store.read().await;
-                data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str()) || data_guard.contains(host.as_str())
             }
             FirewallStoreBackend::ArcSwap(store) => {
                 let data_guard = store.load();
-                data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str()) || data_guard.contains(host.as_str())
             }
             FirewallStoreBackend::ArcShift(store) => {
                 let data_guard = store.shared_get();
-                data_guard.contains(user_agent.as_str())
+                data_guard.contains(user_agent.as_str()) || data_guard.contains(host.as_str())
             }
         };
 
         if is_in_blocked_list {
-            return Err(
-                BoxError::from("drop connection for blocked ip or user agent")
-                    .context_field("user_agent", user_agent),
-            );
+            warn!("Dropping Connection For Blacklisted Malicious Peer Hostname or Bad User Agent");
+
+            return Err(BoxError::from(
+                "drop connection for blacklisted malicious peer hostname or bad user agent",
+            )
+            .context_field("host", host)
+            .context_field("user_agent", user_agent));
         }
 
         if is_bad_user_agent(&user_agent) {
             warn!(
                 user_agent = %user_agent,
-                "dropping connection for BAD User Agent",
+                "dropping connection for BAD Malicious Peer User Agent",
             );
-            return Err(BoxError::from("drop connection for bad user agent")
-                .context_field("user_agent", user_agent));
+            return Err(
+                BoxError::from("drop connection for malicious bad peer user agent")
+                    .context_field("user_agent", user_agent),
+            );
         } else {
             let is_ua_banned = self.firewall.is_banned(&user_agent).await;
             if let Some(_ua_ban_info) = is_ua_banned {
