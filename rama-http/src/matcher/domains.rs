@@ -396,12 +396,12 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for WhiteListedDomainsMatc
             tracing::error!("Failed to extract host");
             return true;
         };
-        self.matches_host_user(host, user)
+        self.matches_host_user(&host, user)
     }
 }
 
 impl WhiteListedDomainsMatcher {
-    pub fn matches_host_ext(&self, host: Host, ext: &Extensions) -> bool {
+    pub fn matches_host_ext(&self, host: &Host, ext: &Extensions) -> bool {
         let Some(user) = ext.get::<UserCredInfo<Basic>>() else {
             tracing::error!("UserCredInfo not found");
             return true;
@@ -409,7 +409,7 @@ impl WhiteListedDomainsMatcher {
         self.matches_host_user(host, user)
     }
 
-    pub fn matches_host_user(&self, host: Host, user: &UserCredInfo<Basic>) -> bool {
+    pub fn matches_host_user(&self, host: &Host, user: &UserCredInfo<Basic>) -> bool {
         let api_key = user.credential.username();
         match host {
             Host::Name(domain) => {
@@ -431,7 +431,7 @@ impl WhiteListedDomainsMatcher {
                     return false;
                 }
 
-                if WhiteListedDomains::is_allowed_general_domain(&domain) {
+                if WhiteListedDomains::is_allowed_general_domain(domain) {
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
@@ -444,9 +444,9 @@ impl WhiteListedDomainsMatcher {
                     && !allowed_domains.is_empty()
                     && allowed_domains.iter().any(|d| {
                         if self.sub {
-                            d.is_parent_of(&domain)
+                            d.is_parent_of(domain)
                         } else {
-                            d.as_domain() == &domain
+                            d.as_domain() == domain
                         }
                     })
                 {
@@ -461,9 +461,9 @@ impl WhiteListedDomainsMatcher {
                 if let Some(acd) = &user.allowed_custom_domains
                     && acd.iter().any(|d| {
                         if self.sub {
-                            d.is_parent_of(&domain)
+                            d.is_parent_of(domain)
                         } else {
-                            d == &domain
+                            d == domain
                         }
                     })
                 {
@@ -493,7 +493,7 @@ impl WhiteListedDomainsMatcher {
                 }
 
                 if let Some(ips) = &user.allowed_ips
-                    && ips.iter().any(|ip| ip == &address)
+                    && ips.iter().any(|ip| ip == address)
                 {
                     tracing::trace!(
                         api_key = %api_key,
@@ -504,7 +504,7 @@ impl WhiteListedDomainsMatcher {
                 }
 
                 if let Some(cips) = &user.allowed_custom_ips
-                    && cips.iter().any(|ip| ip == &address)
+                    && cips.iter().any(|ip| ip == address)
                 {
                     tracing::trace!(
                         api_key = %api_key,
