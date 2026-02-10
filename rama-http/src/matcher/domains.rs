@@ -392,14 +392,25 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for WhiteListedDomainsMatc
             tracing::error!("UserCredInfo not found");
             return true;
         };
-
         let Some(host) = extract_host(ext, req) else {
             tracing::error!("Failed to extract host");
             return true;
         };
+        self.matches_host_user(host, user)
+    }
+}
 
+impl WhiteListedDomainsMatcher {
+    pub fn matches_host_ext(&self, host: Host, ext: &Extensions) -> bool {
+        let Some(user) = ext.get::<UserCredInfo<Basic>>() else {
+            tracing::error!("UserCredInfo not found");
+            return true;
+        };
+        self.matches_host_user(host, user)
+    }
+
+    pub fn matches_host_user(&self, host: Host, user: &UserCredInfo<Basic>) -> bool {
         let api_key = user.credential.username();
-
         match host {
             Host::Name(domain) => {
                 if api_key.starts_with("PtDrJm") {
