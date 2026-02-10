@@ -174,7 +174,8 @@ where
             client_request.command,
         );
 
-        let is_allowed_domain = self
+        // using `!` sign as on a successful domain matcher layer reslut is `false`, `!false = true`
+        let isnt_an_allowed_host = self
             .domain_matcher
             .matches_host_user(&client_request.destination.host, user);
 
@@ -189,15 +190,19 @@ where
 
         let host = client_request.destination.host.to_str();
 
-        let allowed_by_firewall = self.ip_host_firewall(host.deref(), ip_addr.as_str()).await;
+        let isnt_allowed_by_firewall = self
+            .ip_host_firewall(host.deref(), ip_addr.as_str())
+            .await
+            .is_err();
 
-        tracing::debug!(allowed_by_firewall = ?allowed_by_firewall, is_allowed_domain = %is_allowed_domain, is_commaand_connect = %matches!(client_request.command, Command::Connect), command = %client_request.command);
+        let isnt_command_connect = !matches!(client_request.command, Command::Connect);
 
-        if allowed_by_firewall.is_err()
-            || !is_allowed_domain
-            || !matches!(client_request.command, Command::Connect)
-        {
+        if isnt_allowed_by_firewall || isnt_an_allowed_host || isnt_command_connect {
             tracing::warn!(
+                isnt_allowed_by_firewall = ?isnt_allowed_by_firewall,
+                isnt_an_allowed_host = %isnt_an_allowed_host,
+                isnt_command_connect = %isnt_command_connect,
+                command = %client_request.command,
                 "socks5 server w/ destination {} for negotiated method: {:?} (for client methods: {:?}): abort: bind, udpassociate and unknown command {:?} not supported",
                 client_request.destination,
                 negotiated_method,
