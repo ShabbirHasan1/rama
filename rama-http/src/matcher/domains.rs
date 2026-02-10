@@ -517,7 +517,7 @@ impl WhiteListedDomainsMatcher {
                 tracing::warn!(
                     api_key = %api_key,
                     address = %address,
-                    "DomainMatcher: ignoring request host address, as only domain whitelisting is supported"
+                    "DomainMatcher: api_key is not whitelisted for this IP Address"
                 );
                 true
             }
