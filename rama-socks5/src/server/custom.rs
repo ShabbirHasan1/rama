@@ -39,7 +39,7 @@ use rama_utils::str::smol_str::ToSmolStr as _;
 use std::{fmt, ops::Deref, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServerType {
+pub enum Socks5ServerType {
     Primary,
     Fallback,
 }
@@ -59,15 +59,15 @@ pub enum ServerType {
 /// but custom connectors as well as binders and udp associators
 /// are optionally possible.
 #[derive(Debug, Clone)]
-pub struct Socks5Acceptor<A = ()> {
+pub struct Socks5CustomAcceptor<A = ()> {
     pub exec: Executor,
     pub auth: A,
     pub firewall: FirewallLayer,
     pub domain_matcher: WhiteListedDomainsMatcher,
-    pub server_type: ServerType,
+    pub server_type: Socks5ServerType,
 }
 
-impl<A> Socks5Acceptor<A> {
+impl<A> Socks5CustomAcceptor<A> {
     /// Create a new [`Socks5Acceptor`] which supports none of the valid [`Command`]s.
     ///
     /// Use [`Socks5Acceptor::default`] instead if you wish to create a default
@@ -78,7 +78,7 @@ impl<A> Socks5Acceptor<A> {
         auth: A,
         firewall: FirewallLayer,
         domain_matcher: WhiteListedDomainsMatcher,
-        server_type: ServerType,
+        server_type: Socks5ServerType,
     ) -> Self {
         Self {
             exec,
@@ -120,7 +120,7 @@ thread_local! {
     static IP_WISE_VIOLATION_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(64));
 }
 
-impl<A> Socks5Acceptor<A>
+impl<A> Socks5CustomAcceptor<A>
 where
     A: Authorizer<user::Basic, Error: fmt::Debug>,
 {
@@ -179,9 +179,9 @@ where
             .matches_host_user(&client_request.destination.host, user);
 
         let connector = match self.server_type {
-            ServerType::Primary => DefaultConnector::default()
+            Socks5ServerType::Primary => DefaultConnector::default()
                 .with_connector(TcpConnector::default().with_connector(user.primary_connector())),
-            ServerType::Fallback => DefaultConnector::default()
+            Socks5ServerType::Fallback => DefaultConnector::default()
                 .with_connector(TcpConnector::default().with_connector(user.secondary_connector())),
         };
 
@@ -324,7 +324,7 @@ where
     }
 }
 
-impl<A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<A> {
+impl<A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5CustomAcceptor<A> {
     async fn handle_method<S: Stream + Unpin>(
         &self,
         methods: &[SocksMethod],
@@ -521,7 +521,7 @@ impl<A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<A> {
     }
 }
 
-impl<A, S> Service<S> for Socks5Acceptor<A>
+impl<A, S> Service<S> for Socks5CustomAcceptor<A>
 where
     A: Authorizer<user::Basic, Error: fmt::Debug>,
     S: Stream + Unpin + ExtensionsMut,
@@ -538,7 +538,7 @@ where
     }
 }
 
-impl<A> Socks5Acceptor<A>
+impl<A> Socks5CustomAcceptor<A>
 where
     A: Authorizer<user::Basic, Error: fmt::Debug>,
 {

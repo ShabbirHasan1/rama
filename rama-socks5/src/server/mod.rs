@@ -42,6 +42,7 @@ pub mod udp;
 pub use udp::{DefaultUdpRelay, Socks5UdpAssociator, UdpRelay};
 
 pub mod custom;
+pub use custom::{Socks5CustomAcceptor, Socks5ServerType};
 
 /// Socks5 server implementation of [RFC 1928]
 ///

@@ -56,6 +56,7 @@ pub use client::{Socks5ProxyConnector, Socks5ProxyConnectorLayer};
 
 pub mod server;
 pub use server::Socks5Acceptor;
+pub use server::{Socks5CustomAcceptor, Socks5ServerType};
 
 mod auth;
 pub use auth::Socks5Auth;
