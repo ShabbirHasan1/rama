@@ -189,16 +189,15 @@ where
 
         let host = client_request.destination.host.to_str();
 
-        let is_allowed_by_firewall = self
-            .ip_host_firewall(host.deref(), ip_addr.as_str())
-            .await
-            .is_ok();
+        let allowed_by_firewall = self.ip_host_firewall(host.deref(), ip_addr.as_str()).await;
 
-        if !is_allowed_by_firewall
+        tracing::debug!(allowed_by_firewall = ?allowed_by_firewall, is_allowed_domain = %is_allowed_domain, is_commaand_connect = %matches!(client_request.command, Command::Connect), command = %client_request.command);
+
+        if allowed_by_firewall.is_err()
             || !is_allowed_domain
             || !matches!(client_request.command, Command::Connect)
         {
-            tracing::debug!(
+            tracing::warn!(
                 "socks5 server w/ destination {} for negotiated method: {:?} (for client methods: {:?}): abort: bind, udpassociate and unknown command {:?} not supported",
                 client_request.destination,
                 negotiated_method,
