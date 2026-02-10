@@ -573,13 +573,11 @@ where
         if is_in_blocked_list {
             warn!(ip_addr = %ip_addr, "Dropping Connection For Blacklisted and Malicious Peer IP Address, ReBanned Peer IP Address With Updated Ban Info");
 
-            return Err(BoxError::from(
-                "drop connection for blacklisted malicious peer ip address",
+            Err(
+                BoxError::from("drop connection for blacklisted malicious peer ip address")
+                    .context_field("ip_addr", ip_addr),
             )
-            .context_field("ip_addr", ip_addr));
-        }
-
-        if let Some(_is_banned) = self.firewall.is_banned(&ip_addr).await {
+        } else if let Some(_is_banned) = self.firewall.is_banned(&ip_addr).await {
             let ban_info = self
                 .firewall
                 .record_violation(&ip_addr)
@@ -590,10 +588,11 @@ where
 
             warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Malicious Blocked Peer IP Address, ReBanned Peer IP Address With Updated Ban Info");
 
-            return Err(BoxError::from("drop connection for blocked ip address")
-                .context_field("ip_addr", ip_addr));
+            Err(BoxError::from("drop connection for blocked ip address")
+                .context_field("ip_addr", ip_addr))
+        } else {
+            self.inner.serve(stream).await.into_box_error()
         }
-        self.inner.serve(stream).await.into_box_error()
     }
 }
 
@@ -670,14 +669,12 @@ where
         if is_in_blocked_list {
             warn!(user_agent = %user_agent, host = %host, "Dropping Connection For Blacklisted Malicious Peer Hostname or Bad User Agent");
 
-            return Err(BoxError::from(
+            Err(BoxError::from(
                 "drop connection for blacklisted malicious peer hostname or bad user agent",
             )
             .context_field("host", host)
-            .context_field("user_agent", user_agent));
-        }
-
-        if is_bad_user_agent(&user_agent) {
+            .context_field("user_agent", user_agent))
+        } else if is_bad_user_agent(&user_agent) {
             warn!(
                 user_agent = %user_agent,
                 host = %host,
