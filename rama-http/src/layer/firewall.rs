@@ -571,6 +571,8 @@ where
         };
 
         if is_in_blocked_list {
+            warn!(ip_addr = %ip_addr, "Dropping Connection For Blacklisted and Malicious Peer IP Address, ReBanned Peer IP Address With Updated Ban Info");
+
             return Err(BoxError::from(
                 "drop connection for blacklisted malicious peer ip address",
             )
@@ -587,8 +589,6 @@ where
             let ban_time = ban_info.calculate_ttl();
 
             warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Malicious Blocked Peer IP Address, ReBanned Peer IP Address With Updated Ban Info");
-
-            warn!(ip_addr = %ip_addr, "dropping connection for blocked IP Address" );
 
             return Err(BoxError::from("drop connection for blocked ip address")
                 .context_field("ip_addr", ip_addr));
@@ -668,7 +668,7 @@ where
         };
 
         if is_in_blocked_list {
-            warn!("Dropping Connection For Blacklisted Malicious Peer Hostname or Bad User Agent");
+            warn!(user_agent = %user_agent, host = %host, "Dropping Connection For Blacklisted Malicious Peer Hostname or Bad User Agent");
 
             return Err(BoxError::from(
                 "drop connection for blacklisted malicious peer hostname or bad user agent",
@@ -680,34 +680,46 @@ where
         if is_bad_user_agent(&user_agent) {
             warn!(
                 user_agent = %user_agent,
+                host = %host,
                 "dropping connection for BAD Malicious Peer User Agent",
             );
-            return Err(
+            Err(
                 BoxError::from("drop connection for malicious bad peer user agent")
                     .context_field("user_agent", user_agent),
-            );
+            )
+        } else if let Some(_ua_ban_info) = self.firewall.is_banned(&user_agent).await {
+            let ban_info = self
+                .firewall
+                .record_violation(&user_agent)
+                .await
+                .context("user_agent record violation entry ban_info not found")?;
+
+            let ban_time = ban_info.calculate_ttl();
+
+            warn!(user_agent = %user_agent, host = %host, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked User Agent, ReBanned IP Address With Updated Ban Info");
+
+            Err(BoxError::from("drop connection for blocked user agent")
+                .context_field("user_agent", user_agent))
+        } else if let Some(_host_ban_info) = self.firewall.is_banned(host.as_str()).await {
+            let ban_info = self
+                .firewall
+                .record_violation(host.as_str())
+                .await
+                .context("hostname record violation entry ban_info not found")?;
+
+            let ban_time = ban_info.calculate_ttl();
+
+            warn!(user_agent = %user_agent, host = %host, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked User Agent, ReBanned IP Address With Updated Ban Info");
+
+            Err(BoxError::from("drop connection for blocked user agent")
+                .context_field("host", host))
         } else {
-            let is_ua_banned = self.firewall.is_banned(&user_agent).await;
-            if let Some(_ua_ban_info) = is_ua_banned {
-                let ban_info = self
-                    .firewall
-                    .record_violation(&user_agent)
-                    .await
-                    .context("user_agent record violation entry ban_info not found")?;
-
-                let ban_time = ban_info.calculate_ttl();
-
-                warn!(user_agent = %user_agent, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked User Agent, ReBanned IP Address With Updated Ban Info");
-
-                return Err(BoxError::from("drop connection for blocked user agent")
-                    .context_field("user_agent", user_agent));
-            }
+            self.inner
+                .serve(req)
+                .await
+                .into_box_error()
+                .context_field("user_agent", user_agent)
         }
-        self.inner
-            .serve(req)
-            .await
-            .into_box_error()
-            .context_field("user_agent", user_agent)
     }
 }
 
