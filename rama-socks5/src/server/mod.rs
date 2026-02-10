@@ -41,6 +41,8 @@ pub use bind::{Binder, DefaultBinder, Socks5Binder};
 pub mod udp;
 pub use udp::{DefaultUdpRelay, Socks5UdpAssociator, UdpRelay};
 
+pub mod custom;
+
 /// Socks5 server implementation of [RFC 1928]
 ///
 /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
@@ -229,7 +231,7 @@ pub struct Error {
 }
 
 #[derive(Debug)]
-enum ErrorContext {
+pub(crate) enum ErrorContext {
     None,
     Message(&'static str),
     ReplyKind(ReplyKind),
@@ -248,7 +250,7 @@ impl From<ReplyKind> for ErrorContext {
 }
 
 impl Error {
-    fn io(err: std::io::Error) -> Self {
+    pub(crate) fn io(err: std::io::Error) -> Self {
         Self {
             kind: ErrorKind::IO,
             context: ErrorContext::None,
@@ -256,7 +258,7 @@ impl Error {
         }
     }
 
-    fn protocol(err: ProtocolError) -> Self {
+    pub(crate) fn protocol(err: ProtocolError) -> Self {
         Self {
             kind: ErrorKind::Protocol,
             context: ErrorContext::None,
@@ -264,7 +266,7 @@ impl Error {
         }
     }
 
-    fn aborted(reason: &'static str) -> Self {
+    pub(crate) fn aborted(reason: &'static str) -> Self {
         Self {
             kind: ErrorKind::Aborted(reason),
             context: ErrorContext::None,
@@ -272,7 +274,7 @@ impl Error {
         }
     }
 
-    fn service(error: impl Into<BoxError>) -> Self {
+    pub(crate) fn service(error: impl Into<BoxError>) -> Self {
         Self {
             kind: ErrorKind::Service,
             context: ErrorContext::None,
@@ -280,19 +282,19 @@ impl Error {
         }
     }
 
-    fn with_context(mut self, context: impl Into<ErrorContext>) -> Self {
+    pub(crate) fn with_context(mut self, context: impl Into<ErrorContext>) -> Self {
         self.context = context.into();
         self
     }
 
-    fn with_source(mut self, err: impl Into<BoxError>) -> Self {
+    pub(crate) fn with_source(mut self, err: impl Into<BoxError>) -> Self {
         self.source = Some(err.into());
         self
     }
 }
 
 #[derive(Debug)]
-enum ErrorKind {
+pub(crate) enum ErrorKind {
     IO,
     Protocol,
     Aborted(&'static str),
