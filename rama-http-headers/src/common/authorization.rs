@@ -566,7 +566,7 @@ impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorize
                     credentials = ?&c,
                     "authorization succeeded for credentials"
                 );
-                ext.insert(self.clone());
+                ext.insert(user_cred_info.clone());
                 if maybe_ext.is_none() {
                     return AuthorizeResult {
                         credentials: c,
@@ -613,7 +613,7 @@ impl<C: PartialEq + Clone + Debug + Eq + Hash + Send + Sync + 'static> Authorize
                     credentials = ?&c,
                     "authorization succeeded for credentials"
                 );
-                ext.insert(self.clone());
+                ext.insert(user_cred_info.clone());
                 if maybe_ext.is_none() {
                     return AuthorizeResult {
                         credentials: c,
