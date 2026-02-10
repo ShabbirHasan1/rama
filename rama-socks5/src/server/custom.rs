@@ -411,22 +411,16 @@ impl<A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5CustomAcceptor<A> {
                     "Found Blacklisted API_KEY, username-password: client unauthorized",
                 ));
             }
-            let is_un_banned = self.firewall.firewall.is_banned(&api_key).await;
-            let is_ip_banned = self.firewall.firewall.is_banned(&ip_wise_violation).await;
-            if !is_in_allowed_list && let Some(_un_ban_info) = is_un_banned {
+            if let Some(_un_ban_info) = self.firewall.firewall.is_banned(&api_key).await {
                 let ban_info = self
                     .firewall
                     .firewall
                     .record_violation(&api_key)
                     .await
                     .ok_or_else(|| Error::service("Failed to record violation for API_KEY"))?;
-                let ban_time = ban_info.calculate_ttl();
-                warn!(api_key = %api_key, ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked API_KEY, ReBanned API_KEY With Updated Ban Info");
 
-                if let Some(ip_ban_info) = is_ip_banned
-                    && ip_ban_info.violation_count >= 3
-                {
-                    for _ in 0..ip_ban_info.violation_count {
+                if ban_info.violation_count >= 3 {
+                    for _ in 0..ban_info.violation_count {
                         self.firewall
                             .firewall
                             .record_violation(ip_addr)
@@ -436,11 +430,48 @@ impl<A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5CustomAcceptor<A> {
                             })?;
                     }
                     let ban_time = {
-                        let seconds = 1u64 << ip_ban_info.violation_count.min(12);
+                        let seconds = 1u64 << ban_info.violation_count.min(12);
                         std::time::Duration::from_secs(seconds * 60)
                     };
                     warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
                 }
+
+                let ban_time = ban_info.calculate_ttl();
+                warn!(api_key = %api_key, ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked API_KEY, ReBanned API_KEY With Updated Ban Info");
+
+                UsernamePasswordResponse::new_invalid_credentails()
+                    .write_to(stream)
+                    .await
+                    .map_err(|err| {
+                        Error::io(err).with_context(
+                            "write server auth sub-negotiation error response: unauthorized",
+                        )
+                    })?;
+                return Err(Error::aborted(
+                    "Found Blocked API_KEY or Possible BruteForce Attack with Worng Credentials, username-password: client unauthorized",
+                ));
+            }
+
+            let is_ip_banned = self.firewall.firewall.is_banned(&ip_wise_violation).await;
+
+            if !is_in_allowed_list
+                && let Some(ip_ban_info) = is_ip_banned
+                && ip_ban_info.violation_count >= 3
+            {
+                for _ in 0..ip_ban_info.violation_count {
+                    self.firewall
+                        .firewall
+                        .record_violation(ip_addr)
+                        .await
+                        .ok_or_else(|| {
+                            Error::service("Failed to record violation for IP address")
+                        })?;
+                }
+                let ban_time = {
+                    let seconds = 1u64 << ip_ban_info.violation_count.min(12);
+                    std::time::Duration::from_secs(seconds * 60)
+                };
+                warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
 
                 UsernamePasswordResponse::new_invalid_credentails()
                     .write_to(stream)

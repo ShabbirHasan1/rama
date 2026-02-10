@@ -245,26 +245,17 @@ where
                     .context("create banned api_key response")
                     .context_field("api_key", api_key);
             }
-            let is_un_banned = self.firewall_layer.firewall.is_banned(&api_key).await;
-            let is_ip_banned = self
-                .firewall_layer
-                .firewall
-                .is_banned(&ip_wise_violation)
-                .await;
-            if !is_in_allowed_list && let Some(_un_ban_info) = is_un_banned {
+
+            if let Some(_un_ban_info) = self.firewall_layer.firewall.is_banned(&api_key).await {
                 let ban_info = self
                     .firewall_layer
                     .firewall
                     .record_violation(&api_key)
                     .await
                     .context("api_key record violation entry ban_info not found")?;
-                let ban_time = ban_info.calculate_ttl();
-                warn!(api_key = %api_key, ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked API_KEY, ReBanned API_KEY With Updated Ban Info");
 
-                if let Some(ip_ban_info) = is_ip_banned
-                    && ip_ban_info.violation_count >= 3
-                {
-                    for _ in 0..ip_ban_info.violation_count {
+                if ban_info.violation_count >= 3 {
+                    for _ in 0..ban_info.violation_count {
                         self.firewall_layer
                             .firewall
                             .record_violation(&ip_addr)
@@ -272,11 +263,14 @@ where
                             .context("ip address record violation entry ban_info not found")?;
                     }
                     let ban_time = {
-                        let seconds = 1u64 << ip_ban_info.violation_count.min(12);
+                        let seconds = 1u64 << ban_info.violation_count.min(12);
                         std::time::Duration::from_secs(seconds * 60)
                     };
                     warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
                 }
+
+                let ban_time = ban_info.calculate_ttl();
+                warn!(api_key = %api_key, ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Blocked API_KEY, ReBanned API_KEY With Updated Ban Info");
 
                 return Response::builder()
                     .status(StatusCode::FORBIDDEN)
@@ -286,6 +280,39 @@ where
                     .context("drop connection for blocked api_key")
                     .context_field("api_key", api_key);
             }
+
+            let is_ip_banned = self
+                .firewall_layer
+                .firewall
+                .is_banned(&ip_wise_violation)
+                .await;
+
+            if !is_in_allowed_list
+                && let Some(ip_ban_info) = is_ip_banned
+                && ip_ban_info.violation_count >= 3
+            {
+                for _ in 0..ip_ban_info.violation_count {
+                    self.firewall_layer
+                        .firewall
+                        .record_violation(&ip_addr)
+                        .await
+                        .context("ip address record violation entry ban_info not found")?;
+                }
+                let ban_time = {
+                    let seconds = 1u64 << ip_ban_info.violation_count.min(12);
+                    std::time::Duration::from_secs(seconds * 60)
+                };
+                warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
+
+                return Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .header(http::header::WARNING, WARNING_MESSAGE)
+                    .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
+                    .body(OptionalBody::none())
+                    .context("drop connection for blocked api_key")
+                    .context_field("api_key", api_key);
+            }
+
             let auth_result = match &self.proxy_auth.backend {
                 UserCredStoreBackend::RwLock(store) => {
                     let data_guard = store.read().await;
