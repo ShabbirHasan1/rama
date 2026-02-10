@@ -127,7 +127,8 @@ pub static WARNING_MESSAGE: &str = "
 CRITICAL: Proceeding may cause irreversible state desynchronization or permanent data loss. This event has been logged for security audit;ACCESS DENIED: This path is not a place of honor. Nothing valued is here. Your current request parameters emanate instability;STOP: Violation of authentication protocol detected. Unauthorized traversal will result in immediate IP blacklisting and credential revocation;UNSTABLE PATH: Continued interaction with this malformed request will trigger automated defensive countermeasures;VOID: You are peering into the abyss, and it is beginning to peer back. Your request is an affront to the architect’s design;DO NOT PROCEED: The following path is NOT a place of honor. No value is found here. What you seek has already found you;RUN: You’ve opened a door that cannot be closed. We’ve logged your ip,  location and other details. We suggest you look behind you before the timeout expires;SYSTEM MALIGNANCY: Your request has introduced a parasitic state. The server is hemorrhaging memory. Cease all traversal immediately.";
 
 thread_local! {
-    static API_KEY_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(256));
+    static API_KEY_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(32));
+    static IP_WISE_VIOLATION_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(64));
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CustomProxyAuthService<S>
@@ -148,8 +149,9 @@ where
             .ip_addr
             .to_smolstr();
 
-        let ip_wise_violation = API_KEY_BUFFER.with(|buf| {
+        let ip_wise_violation = IP_WISE_VIOLATION_BUFFER.with(|buf| {
             let mut buffer = buf.borrow_mut();
+            buffer.clear();
             buffer.push_str("::");
             buffer.push_str(ip_addr.as_str());
             buffer.push_str("::");
@@ -197,7 +199,13 @@ where
 
         if let Some(creds) = credentials {
             tracing::trace!("Proxy credentials found");
-            let api_key = creds.username().to_owned();
+            let api_key = creds.username();
+            let api_key = API_KEY_BUFFER.with(|buf| {
+                let mut buffer = buf.borrow_mut();
+                buffer.clear();
+                buffer.push_str(api_key);
+                buffer.to_owned()
+            });
             let is_in_allowed_list = match &self.firewall_layer.allowed_list.backend {
                 FirewallStoreBackend::RwLock(store) => {
                     let data_guard = store.read().await;

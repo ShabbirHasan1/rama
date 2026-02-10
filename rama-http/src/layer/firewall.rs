@@ -596,6 +596,10 @@ where
     }
 }
 
+thread_local! {
+    static USER_AGENT_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(128));
+}
+
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for FirewallService<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
@@ -611,8 +615,14 @@ where
             .get(USER_AGENT)
             .context("no user_agent info found in headers")?
             .to_str()
-            .context("user_agent is not valid UTF-8")?
-            .to_owned();
+            .context("user_agent is not valid UTF-8")?;
+
+        let user_agent = USER_AGENT_BUFFER.with(|buffer| {
+            let mut buffer = buffer.borrow_mut();
+            buffer.clear();
+            buffer.push_str(user_agent);
+            buffer.to_owned()
+        });
 
         let host = if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
             Some(req_ctx.authority.host.to_string())
@@ -1052,7 +1062,7 @@ pub enum ThreatLevel {
 
 // /// Thread-local cache for user agent lowercasing (avoid repeated allocations)
 thread_local! {
-    static UA_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(512));
+    static UA_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(128));
 }
 
 /// Get threat level with optimized checks
