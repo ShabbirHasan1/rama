@@ -25,6 +25,7 @@ dns = ["dep:rama-dns", "dep:rand"]
 byteorder = { workspace = true }
 rama-core = { workspace = true }
 rama-dns = { workspace = true, optional = true }
+rama-http = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-tcp = { workspace = true, features = ["http"] }
 rama-udp = { workspace = true }

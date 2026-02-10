@@ -3307,6 +3307,7 @@ dependencies = [
  "byteorder",
  "rama-core",
  "rama-dns",
+ "rama-http",
  "rama-net",
  "rama-tcp",
  "rama-udp",
