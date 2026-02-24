@@ -11,10 +11,11 @@ use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address::{Domain, SocketAddress};
 use rama_net::user::authority::{AuthorizeResult, Authorizer, StaticAuthorizer, Unauthorized};
+use rama_net::user::credentials::basic;
 use rama_net::user::{Basic, Bearer, UserId};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -351,24 +352,113 @@ pub struct UserCredInfo<A> {
     pub primary_ip: IpAddr,
     pub secondary_ip: IpAddr,
     pub allowed_any_domain: bool,
+    pub allowed_wl_domains: bool,
     pub allowed_domains: Option<Vec<WhiteListedDomains>>,
     pub allowed_custom_domains: Option<Vec<Domain>>,
     pub allowed_any_ip: bool,
+    pub allowed_wl_ips: bool,
     pub allowed_ips: Option<Vec<IpAddr>>,
     pub allowed_custom_ips: Option<Vec<IpAddr>>,
 }
 
+impl Default for UserCredInfo<Basic> {
+    fn default() -> Self {
+        Self {
+            credential: basic!("Johny", "Secrets#8520@"),
+            primary_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            secondary_ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            allowed_any_domain: false,
+            allowed_wl_domains: false,
+            allowed_domains: None,
+            allowed_custom_domains: None,
+            allowed_any_ip: false,
+            allowed_wl_ips: false,
+            allowed_ips: None,
+            allowed_custom_ips: None,
+        }
+    }
+}
+
 impl UserCredInfo<Basic> {
     #[must_use]
+    pub fn with_credential(mut self, credential: Basic) -> Self {
+        self.credential = credential;
+        self
+    }
+
+    #[must_use]
+    pub fn with_primary_ip(mut self, ip: IpAddr) -> Self {
+        self.primary_ip = ip;
+        self
+    }
+
+    #[must_use]
+    pub fn with_secondary_ip(mut self, ip: IpAddr) -> Self {
+        self.secondary_ip = ip;
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_any_ip(mut self, allowed: bool) -> Self {
+        self.allowed_any_ip = allowed;
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_any_domain(mut self, allowed: bool) -> Self {
+        self.allowed_any_domain = allowed;
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_wl_domains(mut self, allowed: bool) -> Self {
+        self.allowed_wl_domains = allowed;
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_wl_ips(mut self, allowed: bool) -> Self {
+        self.allowed_wl_ips = allowed;
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_domains(mut self, domains: Option<Vec<WhiteListedDomains>>) -> Self {
+        self.allowed_domains = domains;
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_ips(mut self, ips: Option<Vec<IpAddr>>) -> Self {
+        self.allowed_ips = ips;
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_custom_domains(mut self, domains: Option<Vec<Domain>>) -> Self {
+        self.allowed_custom_domains = domains;
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_custom_ips(mut self, ips: Option<Vec<IpAddr>>) -> Self {
+        self.allowed_custom_ips = ips;
+        self
+    }
+
+    #[must_use]
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::fn_params_excessive_bools)]
     pub fn new_static(
         credential: Basic,
         primary_ip: IpAddr,
         secondary_ip: IpAddr,
         allowed_any_domain: bool,
+        allowed_wl_domains: bool,
         allowed_domains: Option<Vec<WhiteListedDomains>>,
         allowed_custom_domains: Option<Vec<Domain>>,
         allowed_any_ip: bool,
+        allowed_wl_ips: bool,
         allowed_ips: Option<Vec<IpAddr>>,
         allowed_custom_ips: Option<Vec<IpAddr>>,
     ) -> Self {
@@ -382,7 +472,39 @@ impl UserCredInfo<Basic> {
             allowed_any_ip,
             allowed_ips,
             allowed_custom_ips,
+            allowed_wl_domains,
+            allowed_wl_ips,
         }
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::fn_params_excessive_bools)]
+    pub fn new(
+        credential: Basic,
+        primary_ip: IpAddr,
+        secondary_ip: IpAddr,
+        allowed_any_domain: bool,
+        allowed_wl_domains: bool,
+        allowed_domains: Option<Vec<WhiteListedDomains>>,
+        allowed_custom_domains: Option<Vec<Domain>>,
+        allowed_any_ip: bool,
+        allowed_wl_ips: bool,
+        allowed_ips: Option<Vec<IpAddr>>,
+        allowed_custom_ips: Option<Vec<IpAddr>>,
+    ) -> Self {
+        Self::default()
+            .with_credential(credential)
+            .with_primary_ip(primary_ip)
+            .with_secondary_ip(secondary_ip)
+            .with_allowed_any_domain(allowed_any_domain)
+            .with_allowed_wl_domains(allowed_wl_domains)
+            .with_allowed_domains(allowed_domains)
+            .with_allowed_custom_domains(allowed_custom_domains)
+            .with_allowed_any_ip(allowed_any_ip)
+            .with_allowed_wl_ips(allowed_wl_ips)
+            .with_allowed_ips(allowed_ips)
+            .with_allowed_custom_ips(allowed_custom_ips)
     }
 
     #[must_use]
