@@ -212,7 +212,7 @@ where
                 if check_static_whitelist(&domain, self.sub) {
                     tracing::trace!(
                         domain = %domain,
-                        "DomainMatcher: domain is whitelisted for static domain"
+                        "DomainMatcher: domain is whitelisted for static (Sub)Domain"
                     );
                     return false;
                 }
@@ -222,13 +222,13 @@ where
                 if is_whitelisted {
                     tracing::trace!(
                         domain = %domain,
-                        "DomainMatcher: domain is whitelisted for dynamic domain"
+                        "DomainMatcher: domain is whitelisted for dynamic (Sub)Domain"
                     );
                     false
                 } else {
                     tracing::trace!(
                         domain = %domain,
-                        "DomainMatcher: domain is not whitelisted for dynamic domain"
+                        "DomainMatcher: domain is not whitelisted for dynamic (Sub)Domain"
                     );
                     true
                 }
@@ -270,7 +270,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>>
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: api_key is whitelisted for static domain"
+                        "DomainMatcher: api_key is whitelisted for static (Sub)Domain"
                     );
                     return false;
                 }
@@ -279,14 +279,14 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>>
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: api_key is whitelisted for domain"
+                        "DomainMatcher: api_key is whitelisted for (Sub)Domain"
                     );
                     false
                 } else {
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: api_key is not whitelisted for this domain"
+                        "DomainMatcher: api_key is not whitelisted for this (Sub)Domain"
                     );
                     true
                 }
@@ -328,7 +328,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>>
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: api_key is whitelisted for static domain"
+                        "DomainMatcher: api_key is whitelisted for static (Sub)Domain"
                     );
                     return false;
                 }
@@ -337,14 +337,14 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>>
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: api_key is whitelisted for domain"
+                        "DomainMatcher: api_key is whitelisted for (Sub)Domain"
                     );
                     false
                 } else {
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: api_key is not whitelisted for this domain"
+                        "DomainMatcher: api_key is not whitelisted for this (Sub)Domain"
                     );
                     true
                 }
@@ -426,16 +426,27 @@ impl WhiteListedDomainsMatcher {
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: api_key is whitelisted for ANY or ALL (sub)domains"
+                        "DomainMatcher: api_key is whitelisted for ANY or ALL (Sub)Domain"
                     );
                     return false;
                 }
 
-                if WhiteListedDomains::is_allowed_general_domain(domain) {
+                if WhiteListedDomains::is_allowed_general_domain(domain, self.sub) {
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: requested (sub)domain is a whitelisted general domain"
+                        "DomainMatcher: requested (sub)domain is a Whitelisted General (Sub)Domain"
+                    );
+                    return false;
+                }
+
+                if user.allowed_wl_domains
+                    && WhiteListedDomains::is_allowed_broker_domain(domain, self.sub)
+                {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        domain = %domain,
+                        "DomainMatcher: api_key is whitelisted for ANY or ALL Whitelisted Broker (Sub)Domains"
                     );
                     return false;
                 }
@@ -446,14 +457,14 @@ impl WhiteListedDomainsMatcher {
                         if self.sub {
                             d.is_parent_of(domain)
                         } else {
-                            d.as_domain() == domain
+                            d.is_equal_to(domain)
                         }
                     })
                 {
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: requested (sub)domain is whitelisted for this api_key"
+                        "DomainMatcher: requested (Sub)Domain is whitelisted for this api_key"
                     );
                     return false;
                 }
@@ -470,7 +481,7 @@ impl WhiteListedDomainsMatcher {
                     tracing::trace!(
                         api_key = %api_key,
                         domain = %domain,
-                        "DomainMatcher: requested custom (sub)domain is whitelisted for this api_key"
+                        "DomainMatcher: requested custom (Sub)Domains is whitelisted for this api_key"
                     );
                     return false;
                 }
@@ -478,7 +489,7 @@ impl WhiteListedDomainsMatcher {
                 tracing::warn!(
                     api_key = %api_key,
                     domain = %domain,
-                    "DomainMatcher: api_key is not whitelisted for this domain"
+                    "DomainMatcher: api_key is not whitelisted for this (Sub)Domains"
                 );
                 true
             }
