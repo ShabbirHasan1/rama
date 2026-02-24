@@ -7,7 +7,7 @@ use rama_core::{
     rt::Executor,
     stream::Stream,
 };
-use rama_dns::GlobalDnsResolver;
+use rama_dns::client::GlobalDnsResolver;
 use rama_net::{
     address::{HostWithPort, SocketAddress},
     client::{ConnectorService, EstablishedClientConnection},
