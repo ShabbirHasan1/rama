@@ -1,9 +1,13 @@
 // NOTE: spec can be found in ./spec.md
 
 use std::fmt::Debug;
+use std::net::IpAddr;
 use std::str::FromStr;
 
 use crate::layer::har::extensions::RequestComment;
+use crate::layer::remove_header::{
+    remove_sensitive_request_headers, remove_sensitive_response_headers,
+};
 use crate::proto::HeaderByteLength;
 use crate::request::Parts as ReqParts;
 use crate::response::Parts as RespParts;
@@ -21,7 +25,6 @@ use rama_http_types::mime::Mime;
 use rama_http_types::proto::h1::Http1HeaderName;
 use rama_http_types::proto::h1::ext::ReasonPhrase;
 use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
-use rama_net::address::SocketAddress;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
@@ -87,11 +90,11 @@ mod chrono_serializer {
 rama_utils::macros::enums::enum_builder! {
     @String
     pub enum HttpVersion {
-        Http09 => "0.9" | "HTTP/0.9",
-        Http10 => "1.0" | "HTTP/1" | "HTTP/1.0",
-        Http11 => "1.1" | "HTTP/1.1",
-        Http2 => "2" | "HTTP/2" | "h2",
-        Http3 => "3" | "HTTP/3" | "h3",
+        Http09 => "HTTP/0.9" | "0.9",
+        Http10 => "HTTP/1.0" | "1.0" | "HTTP/1",
+        Http11 => "HTTP/1.1" | "1.1",
+        Http2 => "HTTP/2" | "2" | "h2",
+        Http3 => "HTTP/3" | "3" | "h3",
     }
 }
 
@@ -282,7 +285,7 @@ pub struct Entry {
     /// Reference to the parent page.
     ///
     /// Leave out this field if the application does not support grouping by pages.
-    #[serde(rename = "pageRef")]
+    #[serde(rename = "pageref")]
     pub page_ref: Option<ArcStr>,
     /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
     #[serde(with = "chrono_serializer", rename = "startedDateTime")]
@@ -302,8 +305,8 @@ pub struct Entry {
     /// IP address of the server that was connected
     ///
     /// (result of DNS resolution).
-    #[serde(rename = "serverAddress")]
-    pub server_address: Option<SocketAddress>, // TODO: be able to provide for client middleware
+    #[serde(rename = "serverIPAddress")]
+    pub server_ip_address: Option<IpAddr>, // TODO: be able to provide for client middleware
     /// Unique ID of the parent TCP/IP connection,
     /// can be the client or server port number.
     ///
@@ -409,7 +412,11 @@ impl TryFrom<Request> for crate::Request {
 }
 
 impl Request {
-    pub fn from_http_request_parts(parts: &ReqParts, payload: &[u8]) -> Result<Self, BoxError> {
+    pub fn from_http_request_parts(
+        parts: &ReqParts,
+        payload: &[u8],
+        preserve_sensitive: bool,
+    ) -> Result<Self, BoxError> {
         let post_data = if !payload.is_empty() {
             let mime_type = get_mime(&parts.headers);
             let params = if mime_type
@@ -463,7 +470,13 @@ impl Request {
 
         let query_string = into_query_string(parts);
         let headers_order = parts.extensions.get().cloned().unwrap_or_default();
-        let header_map = Http1HeaderMap::from_parts(parts.headers.clone(), headers_order);
+
+        let mut headers = parts.headers.clone();
+        if !preserve_sensitive {
+            remove_sensitive_request_headers(&mut headers);
+        }
+
+        let header_map = Http1HeaderMap::from_parts(headers, headers_order);
 
         let headers_size_ext = parts.extensions.get::<HeaderByteLength>();
         let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
@@ -501,7 +514,7 @@ pub struct Response {
     /// Details about the response body.
     pub content: Content,
     /// Redirection target URL from the Location response header.
-    #[serde(rename = "redirectUrl")]
+    #[serde(rename = "redirectURL")]
     pub redirect_url: Option<ArcStr>,
     /// Total number of bytes from the start of the HTTP response message
     ///
@@ -568,7 +581,11 @@ impl TryFrom<Response> for crate::Response {
 }
 
 impl Response {
-    pub fn from_http_response_parts(parts: &RespParts, payload: &[u8]) -> Result<Self, BoxError> {
+    pub fn from_http_response_parts(
+        parts: &RespParts,
+        payload: &[u8],
+        preserve_sensitive: bool,
+    ) -> Result<Self, BoxError> {
         let content = Content {
             size: payload.len() as i64,
             compression: None,
@@ -606,7 +623,13 @@ impl Response {
             .unwrap_or_default();
 
         let headers_order = parts.extensions.get().cloned().unwrap_or_default();
-        let header_map = Http1HeaderMap::from_parts(parts.headers.clone(), headers_order);
+
+        let mut headers = parts.headers.clone();
+        if !preserve_sensitive {
+            remove_sensitive_response_headers(&mut headers);
+        }
+
+        let header_map = Http1HeaderMap::from_parts(headers, headers_order);
 
         let headers_size_ext = parts.extensions.get::<HeaderByteLength>();
         let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
@@ -882,7 +905,7 @@ mod tests {
         assert_eq!("www.igvita.com", host);
 
         // rama Request to HAR Request
-        let req0_back = Request::from_http_request_parts(&req0_parts, &[]).unwrap();
+        let req0_back = Request::from_http_request_parts(&req0_parts, &[], false).unwrap();
         assert_eq!(entry0.request.method, req0_back.method);
         assert_eq!(entry0.request.url, req0_back.url);
         assert!(matches!(req0_back.http_version, HttpVersion::Http11));
@@ -901,7 +924,7 @@ mod tests {
         let (req5_parts, req5_body) = req5.into_parts();
         drop(req5_body);
 
-        let req5_back = Request::from_http_request_parts(&req5_parts, &[]).unwrap();
+        let req5_back = Request::from_http_request_parts(&req5_parts, &[], false).unwrap();
         assert_eq!(5, req5_back.query_string.len(), "req: {req5_back:?}");
         assert!(
             req5_back
@@ -952,7 +975,7 @@ mod tests {
         assert_eq!("gzip", ce);
 
         // rama Response to HAR Response
-        let res0_back = Response::from_http_response_parts(&res0_parts, &[]).unwrap();
+        let res0_back = Response::from_http_response_parts(&res0_parts, &[], false).unwrap();
         assert_eq!(200, res0_back.status);
         assert_eq!(Some("OK"), res0_back.status_text.as_deref());
         assert!(matches!(res0_back.http_version, HttpVersion::Http11));
@@ -981,7 +1004,8 @@ mod tests {
         assert_eq!(req_payload, req_bytes);
 
         // rama request parts + payload -> HAR request payload
-        let har_req_back = Request::from_http_request_parts(&req_parts, &req_payload).unwrap();
+        let har_req_back =
+            Request::from_http_request_parts(&req_parts, &req_payload, false).unwrap();
         let post_data = har_req_back.post_data.unwrap();
         assert_eq!(
             Some(Mime::from_str("application/octet-stream").unwrap()),
@@ -1000,7 +1024,8 @@ mod tests {
         assert_eq!(res_payload, res_bytes);
 
         // rama response parts + payload -> HAR response payload
-        let har_res_back = Response::from_http_response_parts(&res_parts, &res_payload).unwrap();
+        let har_res_back =
+            Response::from_http_response_parts(&res_parts, &res_payload, false).unwrap();
         assert_eq!(res_payload.len() as i64, har_res_back.content.size);
         assert_eq!(
             Some(Mime::from_str("application/octet-stream").unwrap()),

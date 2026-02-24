@@ -131,6 +131,7 @@ iri-string = "0.7"
 itertools = "0.14"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
+libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
 matchit = "0.9"
@@ -174,8 +175,8 @@ quickcheck_macros = "1.1"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.3.0-rc1", path = "." }
-rama-boring = "0.5.10"
-rama-boring-tokio = "0.5.10"
+rama-boring = "0.5.12"
+rama-boring-tokio = "0.5.12"
 rama-core = { version = "0.3.0-rc1", path = "./rama-core" }
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns" }
@@ -534,9 +535,9 @@ required-features = ["http-full"]
 harness = false
 
 [[bench]]
-name = "e2e_h1_client_server"
+name = "e2e_http_client_server"
 path = "benches/e2e_http_client_server.rs"
-required-features = ["http-full"]
+required-features = ["http-full", "rustls", "boring"]
 harness = false
 
 [[example]]
