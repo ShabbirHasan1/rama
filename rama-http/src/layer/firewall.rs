@@ -600,6 +600,8 @@ thread_local! {
     static USER_AGENT_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(128));
 }
 
+static NO_USER_AGENT: &str = "StaticIpIn-FireWall-No-User-Agent-Found";
+
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for FirewallService<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>, Error: Into<BoxError>>,
@@ -610,12 +612,10 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let user_agent = req
-            .headers()
-            .get(USER_AGENT)
-            .context("no user_agent info found in headers")?
-            .to_str()
-            .context("user_agent is not valid UTF-8")?;
+        let user_agent = match req.headers().get(USER_AGENT) {
+            Some(ua) => ua.to_str().context("user_agent is not valid UTF-8")?,
+            None => NO_USER_AGENT,
+        };
 
         let user_agent = USER_AGENT_BUFFER.with(|buffer| {
             let mut buffer = buffer.borrow_mut();
