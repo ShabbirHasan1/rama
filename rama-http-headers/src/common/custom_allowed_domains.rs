@@ -12,6 +12,7 @@ pub static ABSOLUTEBROKINGCOM: Domain = Domain::from_static("absolutebroking.com
 pub static ACAGARWALCOM: Domain = Domain::from_static("acagarwal.com");
 pub static ACEMONEYINDIACOM: Domain = Domain::from_static("acemoneyindia.com");
 pub static ACHINTYANETIN: Domain = Domain::from_static("achintya.net.in");
+pub static ACHINTYACOIN: Domain = Domain::from_static("achintya.co.in");
 pub static ADITYATRADINGIN: Domain = Domain::from_static("adityatrading.in");
 pub static ADROITFINANCIALCOM: Domain = Domain::from_static("adroitfinancial.com");
 pub static AGROYCOM: Domain = Domain::from_static("agroy.com");
@@ -91,6 +92,7 @@ pub static KUNJEENET: Domain = Domain::from_static("kunjee.net");
 pub static LAKSHMISHREECOM: Domain = Domain::from_static("lakshmishree.com");
 pub static LIBORDBROKINGCOM: Domain = Domain::from_static("libordbroking.com");
 pub static LKPONLINECOM: Domain = Domain::from_static("lkponline.com");
+pub static LKPSECCOM: Domain = Domain::from_static("lkpsec.com");
 pub static MAITRACOMMODITIESCOM: Domain = Domain::from_static("maitracommodities.com");
 pub static MANDOTSECURITIESCOM: Domain = Domain::from_static("mandotsecurities.com");
 pub static MARFATIANET: Domain = Domain::from_static("marfatia.net");
@@ -159,6 +161,7 @@ pub static UPSTOXCOM: Domain = Domain::from_static("upstox.com");
 pub static URJAGLOBALINVESTMENTCOM: Domain = Domain::from_static("urjaglobalinvestment.com");
 pub static VARUNCAPITALCOM: Domain = Domain::from_static("varuncapital.com");
 pub static VARUNINDIACOM: Domain = Domain::from_static("varunindia.com");
+pub static VEDIKASTOCKCOM: Domain = Domain::from_static("vedikastock.com");
 pub static VEDIKAVANIJYACOM: Domain = Domain::from_static("vedikavanijya.com");
 pub static VENTURASECURITIESCOM: Domain = Domain::from_static("venturasecurities.com");
 pub static VIVEKFINANCIALCOM: Domain = Domain::from_static("vivekfinancial.com");
@@ -171,7 +174,7 @@ pub static ZERODHACOM: Domain = Domain::from_static("zerodha.com");
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 6] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 159] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 162] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -188,6 +191,7 @@ pub enum WhiteListedDomains {
     AbsolutebrokingCom,
     AcagarwalCom,
     AcemoneyindiaCom,
+    AchintyaCoIn,
     AchintyaNetIn,
     AdityatradingIn,
     AdroitfinancialCom,
@@ -268,6 +272,7 @@ pub enum WhiteListedDomains {
     LakshmishreeCom,
     LibordbrokingCom,
     LkponlineCom,
+    LkpsecCom,
     MaitracommoditiesCom,
     MandotsecuritiesCom,
     MarfatiaNet,
@@ -336,6 +341,7 @@ pub enum WhiteListedDomains {
     UrjaglobalinvestmentCom,
     VaruncapitalCom,
     VarunindiaCom,
+    VedikastockCom,
     VedikavanijyaCom,
     VenturasecuritiesCom,
     VivekfinancialCom,
@@ -358,6 +364,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::AbsolutebrokingCom => ABSOLUTEBROKINGCOM.as_ref(),
             Self::AcagarwalCom => ACAGARWALCOM.as_ref(),
             Self::AcemoneyindiaCom => ACEMONEYINDIACOM.as_ref(),
+            Self::AchintyaCoIn => ACHINTYACOIN.as_ref(),
             Self::AchintyaNetIn => ACHINTYANETIN.as_ref(),
             Self::AdityatradingIn => ADITYATRADINGIN.as_ref(),
             Self::AdroitfinancialCom => ADROITFINANCIALCOM.as_ref(),
@@ -438,6 +445,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::LakshmishreeCom => LAKSHMISHREECOM.as_ref(),
             Self::LibordbrokingCom => LIBORDBROKINGCOM.as_ref(),
             Self::LkponlineCom => LKPONLINECOM.as_ref(),
+            Self::LkpsecCom => LKPSECCOM.as_ref(),
             Self::MaitracommoditiesCom => MAITRACOMMODITIESCOM.as_ref(),
             Self::MandotsecuritiesCom => MANDOTSECURITIESCOM.as_ref(),
             Self::MarfatiaNet => MARFATIANET.as_ref(),
@@ -507,6 +515,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::VaruncapitalCom => VARUNCAPITALCOM.as_ref(),
             Self::VarunindiaCom => VARUNINDIACOM.as_ref(),
             Self::VedikavanijyaCom => VEDIKAVANIJYACOM.as_ref(),
+            Self::VedikastockCom => VEDIKASTOCKCOM.as_ref(),
             Self::VenturasecuritiesCom => VENTURASECURITIESCOM.as_ref(),
             Self::VivekfinancialCom => VIVEKFINANCIALCOM.as_ref(),
             Self::WealthdiscoveryIn => WEALTHDISCOVERYIN.as_ref(),
@@ -532,6 +541,7 @@ impl WhiteListedDomains {
             Self::AbsolutebrokingCom => &ABSOLUTEBROKINGCOM,
             Self::AcagarwalCom => &ACAGARWALCOM,
             Self::AcemoneyindiaCom => &ACEMONEYINDIACOM,
+            Self::AchintyaCoIn => &ACHINTYACOIN,
             Self::AchintyaNetIn => &ACHINTYANETIN,
             Self::AdityatradingIn => &ADITYATRADINGIN,
             Self::AdroitfinancialCom => &ADROITFINANCIALCOM,
@@ -612,6 +622,7 @@ impl WhiteListedDomains {
             Self::LakshmishreeCom => &LAKSHMISHREECOM,
             Self::LibordbrokingCom => &LIBORDBROKINGCOM,
             Self::LkponlineCom => &LKPONLINECOM,
+            Self::LkpsecCom => &LKPSECCOM,
             Self::MaitracommoditiesCom => &MAITRACOMMODITIESCOM,
             Self::MandotsecuritiesCom => &MANDOTSECURITIESCOM,
             Self::MarfatiaNet => &MARFATIANET,
@@ -681,6 +692,7 @@ impl WhiteListedDomains {
             Self::VaruncapitalCom => &VARUNCAPITALCOM,
             Self::VarunindiaCom => &VARUNINDIACOM,
             Self::VedikavanijyaCom => &VEDIKAVANIJYACOM,
+            Self::VedikastockCom => &VEDIKASTOCKCOM,
             Self::VenturasecuritiesCom => &VENTURASECURITIESCOM,
             Self::VivekfinancialCom => &VIVEKFINANCIALCOM,
             Self::WealthdiscoveryIn => &WEALTHDISCOVERYIN,
@@ -706,11 +718,12 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 159] {
+    pub const fn allowed_broker_domains() -> [Self; 162] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
             Self::AcemoneyindiaCom,
+            Self::AchintyaCoIn,
             Self::AchintyaNetIn,
             Self::AdityatradingIn,
             Self::AdroitfinancialCom,
@@ -791,6 +804,7 @@ impl WhiteListedDomains {
             Self::LakshmishreeCom,
             Self::LibordbrokingCom,
             Self::LkponlineCom,
+            Self::LkpsecCom,
             Self::MaitracommoditiesCom,
             Self::MandotsecuritiesCom,
             Self::MarfatiaNet,
@@ -860,6 +874,7 @@ impl WhiteListedDomains {
             Self::VaruncapitalCom,
             Self::VarunindiaCom,
             Self::VedikavanijyaCom,
+            Self::VedikastockCom,
             Self::VenturasecuritiesCom,
             Self::VivekfinancialCom,
             Self::WealthdiscoveryIn,
