@@ -43,6 +43,7 @@ pub static COMPOSITECOIN: Domain = Domain::from_static("composite.co.in");
 pub static COMPOSITEDGECOM: Domain = Domain::from_static("compositedge.com");
 pub static DBONLINEIN: Domain = Domain::from_static("dbonline.in");
 pub static DBONLINETRADECOM: Domain = Domain::from_static("dbonlinetrade.com");
+pub static DELTADOTEXCHANGE: Domain = Domain::from_static("delta.exchange");
 pub static DELTAEXCHANGECOM: Domain = Domain::from_static("deltaexchange.com");
 pub static DHANCO: Domain = Domain::from_static("dhan.co");
 pub static DHANHQCO: Domain = Domain::from_static("dhanhq.co");
@@ -174,7 +175,7 @@ pub static ZERODHACOM: Domain = Domain::from_static("zerodha.com");
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 6] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 162] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 163] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -223,6 +224,7 @@ pub enum WhiteListedDomains {
     CompositedgeCom,
     DbonlineIn,
     DbonlinetradeCom,
+    DeltaDotExchange,
     DeltaexchangeCom,
     DhanCo,
     DhanhqCo,
@@ -396,6 +398,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::CompositedgeCom => COMPOSITEDGECOM.as_ref(),
             Self::DbonlineIn => DBONLINEIN.as_ref(),
             Self::DbonlinetradeCom => DBONLINETRADECOM.as_ref(),
+            Self::DeltaDotExchange => DELTADOTEXCHANGE.as_ref(),
             Self::DeltaexchangeCom => DELTAEXCHANGECOM.as_ref(),
             Self::DhanCo => DHANCO.as_ref(),
             Self::DhanhqCo => DHANHQCO.as_ref(),
@@ -573,6 +576,7 @@ impl WhiteListedDomains {
             Self::CompositedgeCom => &COMPOSITEDGECOM,
             Self::DbonlineIn => &DBONLINEIN,
             Self::DbonlinetradeCom => &DBONLINETRADECOM,
+            Self::DeltaDotExchange => &DELTADOTEXCHANGE,
             Self::DeltaexchangeCom => &DELTAEXCHANGECOM,
             Self::DhanCo => &DHANCO,
             Self::DhanhqCo => &DHANHQCO,
@@ -718,7 +722,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 162] {
+    pub const fn allowed_broker_domains() -> [Self; 163] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -755,6 +759,7 @@ impl WhiteListedDomains {
             Self::CompositedgeCom,
             Self::DbonlineIn,
             Self::DbonlinetradeCom,
+            Self::DeltaDotExchange,
             Self::DeltaexchangeCom,
             Self::DhanCo,
             Self::DhanhqCo,
@@ -995,6 +1000,7 @@ https://composite.co.in
 https://compositedge.com
 https://dbonline.in
 https://dbonlinetrade.com
+https://delta.exchange
 https://deltaexchange.com
 https://dhan.co
 https://dhanhq.co
