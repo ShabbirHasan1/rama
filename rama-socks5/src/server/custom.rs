@@ -411,7 +411,9 @@ impl<A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5CustomAcceptor<A> {
                     "Found Blacklisted API_KEY, username-password: client unauthorized",
                 ));
             }
-            if let Some(_un_ban_info) = self.firewall.firewall.is_banned(&api_key).await {
+            if !is_in_allowed_list
+                && let Some(_un_ban_info) = self.firewall.firewall.is_banned(&api_key).await
+            {
                 let ban_info = self
                     .firewall
                     .firewall
@@ -430,8 +432,8 @@ impl<A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5CustomAcceptor<A> {
                             })?;
                     }
                     let ban_time = {
-                        let seconds = 1u64 << ban_info.violation_count.min(12);
-                        std::time::Duration::from_secs(seconds * 60)
+                        let seconds = 1u64 << ban_info.violation_count.min(63);
+                        std::time::Duration::from_secs(seconds)
                     };
                     warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
                 }
@@ -468,8 +470,8 @@ impl<A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5CustomAcceptor<A> {
                         })?;
                 }
                 let ban_time = {
-                    let seconds = 1u64 << ip_ban_info.violation_count.min(12);
-                    std::time::Duration::from_secs(seconds * 60)
+                    let seconds = 1u64 << ip_ban_info.violation_count.min(63);
+                    std::time::Duration::from_secs(seconds)
                 };
                 warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
 

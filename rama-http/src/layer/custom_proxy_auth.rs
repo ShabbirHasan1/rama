@@ -239,14 +239,16 @@ where
             if is_in_blocked_list {
                 warn!(api_key = %api_key, "Found Banned API_KEY in blocked list");
                 return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
+                    .status(StatusCode::UNAUTHORIZED)
                     .header(http::header::WARNING, WARNING_MESSAGE)
                     .body(OptionalBody::none())
                     .context("create banned api_key response")
                     .context_field("api_key", api_key);
             }
 
-            if let Some(_un_ban_info) = self.firewall_layer.firewall.is_banned(&api_key).await {
+            if !is_in_allowed_list
+                && let Some(_un_ban_info) = self.firewall_layer.firewall.is_banned(&api_key).await
+            {
                 let ban_info = self
                     .firewall_layer
                     .firewall
@@ -263,8 +265,8 @@ where
                             .context("ip address record violation entry ban_info not found")?;
                     }
                     let ban_time = {
-                        let seconds = 1u64 << ban_info.violation_count.min(12);
-                        std::time::Duration::from_secs(seconds * 60)
+                        let seconds = 1u64 << ban_info.violation_count.min(63);
+                        std::time::Duration::from_secs(seconds)
                     };
                     warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
                 }
@@ -299,8 +301,8 @@ where
                         .context("ip address record violation entry ban_info not found")?;
                 }
                 let ban_time = {
-                    let seconds = 1u64 << ip_ban_info.violation_count.min(12);
-                    std::time::Duration::from_secs(seconds * 60)
+                    let seconds = 1u64 << ip_ban_info.violation_count.min(63);
+                    std::time::Duration::from_secs(seconds)
                 };
                 warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
 
@@ -419,7 +421,7 @@ where
                     .await
                     .context("ip_wise_violation record_violation record info not found")?;
                 Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
+                    .status(StatusCode::UNAUTHORIZED)
                     .header(http::header::WARNING, WARNING_MESSAGE)
                     .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
                     .body(OptionalBody::none())
@@ -442,9 +444,8 @@ where
             let ban_time = ban_info.calculate_ttl();
             warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Credentials is a must and required, Banned IP Address with Ban Info");
             Ok(Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                // .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                // .header(PROXY_AUTHENTICATE, "Basic")
+                .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                .header(http::header::PROXY_AUTHENTICATE, "Basic")
                 .header(http::header::WARNING, WARNING_MESSAGE)
                 .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
                 .body(OptionalBody::none())
