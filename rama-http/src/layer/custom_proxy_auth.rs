@@ -173,7 +173,19 @@ where
             }
         };
 
-        if !is_ip_in_allowed_list && req.method() != http::Method::CONNECT {
+        let allowed_req_method = matches!(
+            req.method(),
+            &http::Method::CONNECT
+                | &http::Method::GET
+                | &http::Method::POST
+                | &http::Method::PUT
+                | &http::Method::PATCH
+                | &http::Method::DELETE
+                | &http::Method::OPTIONS
+                | &http::Method::HEAD
+        );
+
+        if !is_ip_in_allowed_list && !allowed_req_method {
             let ban_info = self
                 .firewall_layer
                 .firewall
@@ -181,7 +193,7 @@ where
                 .await
                 .context("ip address record violation entry ban_info not found")?;
             let ban_time = ban_info.calculate_ttl();
-            warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Invalid method for CONNECT request, Banned IP Address with Ban Info");
+            warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Invalid request method for proxy request, Banned IP Address with Ban Info");
             return Response::builder()
                 .status(StatusCode::METHOD_NOT_ALLOWED)
                 .header(http::header::WARNING, WARNING_MESSAGE)
@@ -264,10 +276,7 @@ where
                             .await
                             .context("ip address record violation entry ban_info not found")?;
                     }
-                    let ban_time = {
-                        let seconds = 1u64 << ban_info.violation_count.min(63);
-                        std::time::Duration::from_secs(seconds)
-                    };
+                    let ban_time = ban_info.calculate_ttl();
                     warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
                 }
 
@@ -300,10 +309,7 @@ where
                         .await
                         .context("ip address record violation entry ban_info not found")?;
                 }
-                let ban_time = {
-                    let seconds = 1u64 << ip_ban_info.violation_count.min(63);
-                    std::time::Duration::from_secs(seconds)
-                };
+                let ban_time = ip_ban_info.calculate_ttl();
                 warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
 
                 return Response::builder()

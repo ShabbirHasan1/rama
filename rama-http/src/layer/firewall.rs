@@ -55,8 +55,11 @@ impl BanInfo {
     #[inline]
     pub fn calculate_ttl(&self) -> Duration {
         let exponent = self.violation_count.min(63);
-        let seconds = 1u64 << exponent;
-        Duration::from_secs(seconds)
+        match exponent {
+            0..3 => Duration::from_secs(5),
+            3 => Duration::from_secs(10),
+            _ => Duration::from_secs(1u64 << exponent),
+        }
     }
 
     #[inline]
