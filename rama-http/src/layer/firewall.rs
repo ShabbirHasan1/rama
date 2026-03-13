@@ -574,14 +574,6 @@ where
 
         let deny_all = self.firewall.deny_all.load(Ordering::Relaxed);
 
-        if deny_all {
-            warn!(ip_addr = %ip_addr, "Denying And Dropping Connection as Firewall is in DenyAll Mode");
-            return Err(
-                BoxError::from("drop connection for as firewall is in deny all mode")
-                    .context_field("ip_addr", ip_addr),
-            );
-        }
-
         let is_in_allowed_list = match &self.allowed_list.backend {
             FirewallStoreBackend::RwLock(store) => {
                 let data_guard = store.read().await;
@@ -599,6 +591,14 @@ where
 
         if is_in_allowed_list {
             return self.inner.serve(stream).await.into_box_error();
+        }
+
+        if deny_all {
+            warn!(ip_addr = %ip_addr, "Denying And Dropping Connection as Firewall is in DenyAll Mode");
+            return Err(
+                BoxError::from("drop connection for as firewall is in deny all mode")
+                    .context_field("ip_addr", ip_addr),
+            );
         }
 
         let is_in_blocked_list = match &self.blocked_list.backend {
