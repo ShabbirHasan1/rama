@@ -171,11 +171,12 @@ pub static WISDOMCAPITALIN: Domain = Domain::from_static("wisdomcapital.in");
 pub static YASHWICOM: Domain = Domain::from_static("yashwi.com");
 pub static ZEBUETRADECOM: Domain = Domain::from_static("zebuetrade.com");
 pub static ZERODHACOM: Domain = Domain::from_static("zerodha.com");
+pub static ANANDRATHICOM: Domain = Domain::from_static("anandrathi.com");
 
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 6] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 163] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 164] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -352,6 +353,7 @@ pub enum WhiteListedDomains {
     YashwiCom,
     ZebuetradeCom,
     ZerodhaCom,
+    AnandrathiCom,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -526,6 +528,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::YashwiCom => YASHWICOM.as_ref(),
             Self::ZebuetradeCom => ZEBUETRADECOM.as_ref(),
             Self::ZerodhaCom => ZERODHACOM.as_ref(),
+            Self::AnandrathiCom => ANANDRATHICOM.as_ref(),
         }
     }
 }
@@ -704,6 +707,7 @@ impl WhiteListedDomains {
             Self::YashwiCom => &YASHWICOM,
             Self::ZebuetradeCom => &ZEBUETRADECOM,
             Self::ZerodhaCom => &ZERODHACOM,
+            Self::AnandrathiCom => &ANANDRATHICOM,
         }
     }
 
@@ -722,7 +726,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 163] {
+    pub const fn allowed_broker_domains() -> [Self; 164] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -887,6 +891,7 @@ impl WhiteListedDomains {
             Self::YashwiCom,
             Self::ZebuetradeCom,
             Self::ZerodhaCom,
+            Self::AnandrathiCom,
         ]
     }
 
