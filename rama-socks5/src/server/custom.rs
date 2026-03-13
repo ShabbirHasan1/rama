@@ -22,7 +22,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsMut},
     rt::Executor,
     stream::Stream,
-    telemetry::tracing::{self, warn},
+    telemetry::tracing::{self, info, warn},
 };
 use rama_http::{
     headers::authorization::UserCredInfo,
@@ -36,7 +36,11 @@ use rama_net::{
 };
 use rama_tcp::{client::service::TcpConnector, server::TcpListener};
 use rama_utils::str::smol_str::ToSmolStr as _;
-use std::{fmt, ops::Deref, sync::Arc};
+use std::{
+    fmt,
+    ops::Deref,
+    sync::{Arc, atomic::Ordering},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Socks5ServerType {
@@ -229,6 +233,23 @@ where
     }
 
     pub async fn ip_host_firewall(&self, host: &str, ip_addr: &str) -> Result<(), BoxError> {
+        let allow_all = self.firewall.firewall.allow_all.load(Ordering::Relaxed);
+
+        if allow_all {
+            info!(ip_addr = %ip_addr, "Allowing the connection forward as Firewall is in AllowAll Mode");
+            return Ok(());
+        }
+
+        let deny_all = self.firewall.firewall.deny_all.load(Ordering::Relaxed);
+
+        if deny_all {
+            warn!(ip_addr = %ip_addr, "Denying And Dropping Connection as Firewall is in DenyAll Mode");
+            return Err(BoxError::from(
+                "Denying And Dropping Connection as Firewall is in DenyAll Mode",
+            )
+            .context_field("ip_addr", ip_addr.to_owned()));
+        }
+
         let is_in_allowed_list = match &self.firewall.allowed_list.backend {
             FirewallStoreBackend::RwLock(store) => {
                 let data_guard = store.read().await;
