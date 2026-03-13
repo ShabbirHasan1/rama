@@ -12,6 +12,7 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::ExtensionsRef as _;
+use rama_core::telemetry::tracing::info;
 use rama_core::telemetry::tracing::{error, warn};
 use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
@@ -19,6 +20,7 @@ use rama_tcp::TcpStream;
 use rama_utils::str::smol_str::ToSmolStr as _;
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -248,6 +250,8 @@ pub struct Firewall {
     pub bloom_refresh_interval: Duration,
     pub last_bloom_refresh: Arc<AtomicU64>,
     pub max_entries: u64,
+    pub allow_all: Arc<AtomicBool>,
+    pub deny_all: Arc<AtomicBool>,
 }
 
 impl Default for Firewall {
@@ -273,6 +277,8 @@ impl Firewall {
             bloom_refresh_interval: Duration::from_secs(30),
             last_bloom_refresh: Arc::new(AtomicU64::new(0)),
             max_entries,
+            allow_all: Arc::new(AtomicBool::default()),
+            deny_all: Arc::new(AtomicBool::default()),
         }
     }
 
@@ -385,6 +391,26 @@ impl Firewall {
         let now_secs = Instant::now().elapsed().as_secs();
         self.last_bloom_refresh.store(now_secs, Ordering::Release);
         rama_core::telemetry::tracing::trace!("Finished Refreshing Bloom Filter");
+    }
+
+    pub async fn allow_all(&self) {
+        self.allow_all.store(true, Ordering::Relaxed);
+        rama_core::telemetry::tracing::warn!("Firewall Enabled Allow All");
+    }
+
+    pub async fn disallow_all(&self) {
+        self.allow_all.store(false, Ordering::Relaxed);
+        rama_core::telemetry::tracing::info!("Firewall Disabled Allow All");
+    }
+
+    pub async fn deny_all(&self) {
+        self.deny_all.store(true, Ordering::Relaxed);
+        rama_core::telemetry::tracing::warn!("Firewall Enabled Deny All");
+    }
+
+    pub async fn undeny_all(&self) {
+        self.deny_all.store(false, Ordering::Relaxed);
+        rama_core::telemetry::tracing::info!("Firewall Disabled Deny All");
     }
 }
 
@@ -538,6 +564,23 @@ where
             .peer_addr()
             .ip_addr
             .to_smolstr();
+
+        let allow_all = self.firewall.allow_all.load(Ordering::Relaxed);
+
+        if allow_all {
+            info!(ip_addr = %ip_addr, "Allowing the connection forward as Firewall is in AllowAll Mode");
+            return self.inner.serve(stream).await.into_box_error();
+        }
+
+        let deny_all = self.firewall.deny_all.load(Ordering::Relaxed);
+
+        if deny_all {
+            warn!(ip_addr = %ip_addr, "Denying And Dropping Connection as Firewall is in DenyAll Mode");
+            return Err(
+                BoxError::from("drop connection for as firewall is in deny all mode")
+                    .context_field("ip_addr", ip_addr),
+            );
+        }
 
         let is_in_allowed_list = match &self.allowed_list.backend {
             FirewallStoreBackend::RwLock(store) => {
