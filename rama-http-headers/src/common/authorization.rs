@@ -20,8 +20,8 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::WhiteListedDomains;
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use crate::{WhiteListedDomains, WhiteListedIps};
 
 /// `Authorization` header, defined in [RFC7235](https://tools.ietf.org/html/rfc7235#section-4.2)
 ///
@@ -357,7 +357,7 @@ pub struct UserCredInfo<A> {
     pub allowed_custom_domains: Option<Vec<Domain>>,
     pub allowed_any_ip: bool,
     pub allowed_wl_ips: bool,
-    pub allowed_ips: Option<Vec<IpAddr>>,
+    pub allowed_ips: Option<Vec<WhiteListedIps>>,
     pub allowed_custom_ips: Option<Vec<IpAddr>>,
 }
 
@@ -429,7 +429,7 @@ impl UserCredInfo<Basic> {
     }
 
     #[must_use]
-    pub fn with_allowed_ips(mut self, ips: Option<Vec<IpAddr>>) -> Self {
+    pub fn with_allowed_ips(mut self, ips: Option<Vec<WhiteListedIps>>) -> Self {
         self.allowed_ips = ips;
         self
     }
@@ -459,7 +459,7 @@ impl UserCredInfo<Basic> {
         allowed_custom_domains: Option<Vec<Domain>>,
         allowed_any_ip: bool,
         allowed_wl_ips: bool,
-        allowed_ips: Option<Vec<IpAddr>>,
+        allowed_ips: Option<Vec<WhiteListedIps>>,
         allowed_custom_ips: Option<Vec<IpAddr>>,
     ) -> Self {
         Self {
@@ -490,7 +490,7 @@ impl UserCredInfo<Basic> {
         allowed_custom_domains: Option<Vec<Domain>>,
         allowed_any_ip: bool,
         allowed_wl_ips: bool,
-        allowed_ips: Option<Vec<IpAddr>>,
+        allowed_ips: Option<Vec<WhiteListedIps>>,
         allowed_custom_ips: Option<Vec<IpAddr>>,
     ) -> Self {
         Self::default()

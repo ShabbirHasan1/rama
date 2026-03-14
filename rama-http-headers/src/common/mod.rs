@@ -73,6 +73,7 @@ pub use self::user_agent::UserAgent;
 pub use self::vary::Vary;
 //pub use self::warning::Warning;
 pub use self::custom_allowed_domains::*;
+pub use self::custom_allowed_ips::*;
 
 #[cfg(test)]
 fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
@@ -199,3 +200,4 @@ mod user_agent;
 mod vary;
 //mod warning;
 mod custom_allowed_domains;
+mod custom_allowed_ips;

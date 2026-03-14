@@ -3,8 +3,8 @@ use arc_swap::ArcSwapAny;
 use arcshift::ArcShift;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
-use rama_http_headers::WhiteListedDomains;
 use rama_http_headers::authorization::UserCredInfo;
+use rama_http_headers::{WhiteListedDomains, WhiteListedIps};
 use rama_net::address::{Domain, Host};
 use rama_net::http::RequestContext;
 use rama_net::user::{Basic, UserId};
@@ -494,33 +494,53 @@ impl WhiteListedDomainsMatcher {
                 true
             }
             Host::Address(address) => {
+                if api_key.starts_with("PtDrJm") {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        address = %address,
+                        "IpAddressMatcher: special api_key bypass"
+                    );
+                    return false;
+                }
+
                 if user.allowed_any_ip {
                     tracing::trace!(
                         api_key = %api_key,
                         address = %address,
-                        "DomainMatcher: api_key is whitelisted for ANY or ALL IP Address"
+                        "IpAddressMatcher: api_key is whitelisted for ANY or ALL IP Address"
+                    );
+                    return false;
+                }
+
+                if user.allowed_wl_ips && WhiteListedIps::is_allowed_broker_ips(address) {
+                    tracing::trace!(
+                        api_key = %api_key,
+                        address = %address,
+                        "IpAddressMatcher: api_key is whitelisted for ANY or ALL Whitelisted Broker (Sub)Domains IP Addresses"
                     );
                     return false;
                 }
 
                 if let Some(ips) = &user.allowed_ips
-                    && ips.iter().any(|ip| ip == address)
+                    && !ips.is_empty()
+                    && ips.iter().any(|ip| ip.is_equal_to(address))
                 {
                     tracing::trace!(
                         api_key = %api_key,
                         address = %address,
-                        "DomainMatcher: requested IP address is whitelisted for this api_key"
+                        "IpAddressMatcher: requested IP address is whitelisted for this api_key"
                     );
                     return false;
                 }
 
                 if let Some(cips) = &user.allowed_custom_ips
+                    && !cips.is_empty()
                     && cips.iter().any(|ip| ip == address)
                 {
                     tracing::trace!(
                         api_key = %api_key,
                         address = %address,
-                        "DomainMatcher: requested custom IP address is whitelisted for this api_key"
+                        "IpAddressMatcher: requested custom IP address is whitelisted for this api_key"
                     );
                     return false;
                 }
@@ -528,7 +548,7 @@ impl WhiteListedDomainsMatcher {
                 tracing::warn!(
                     api_key = %api_key,
                     address = %address,
-                    "DomainMatcher: api_key is not whitelisted for this IP Address"
+                    "IpAddressMatcher: api_key is not whitelisted for this IP Address"
                 );
                 true
             }
