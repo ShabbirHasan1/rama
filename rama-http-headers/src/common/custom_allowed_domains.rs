@@ -172,11 +172,13 @@ pub static YASHWICOM: Domain = Domain::from_static("yashwi.com");
 pub static ZEBUETRADECOM: Domain = Domain::from_static("zebuetrade.com");
 pub static ZERODHACOM: Domain = Domain::from_static("zerodha.com");
 pub static ANANDRATHICOM: Domain = Domain::from_static("anandrathi.com");
+pub static IIFLCAPITALCOM: Domain = Domain::from_static("iiflcapital.com");
+pub static IIFLSECURITIESCOM: Domain = Domain::from_static("iiflsecurities.com");
 
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 6] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 164] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 166] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -354,6 +356,8 @@ pub enum WhiteListedDomains {
     ZebuetradeCom,
     ZerodhaCom,
     AnandrathiCom,
+    IiflcapitalCom,
+    IiflsecuritiesCom,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -529,6 +533,8 @@ impl AsRef<str> for WhiteListedDomains {
             Self::ZebuetradeCom => ZEBUETRADECOM.as_ref(),
             Self::ZerodhaCom => ZERODHACOM.as_ref(),
             Self::AnandrathiCom => ANANDRATHICOM.as_ref(),
+            Self::IiflcapitalCom => IIFLCAPITALCOM.as_ref(),
+            Self::IiflsecuritiesCom => IIFLSECURITIESCOM.as_ref(),
         }
     }
 }
@@ -708,6 +714,8 @@ impl WhiteListedDomains {
             Self::ZebuetradeCom => &ZEBUETRADECOM,
             Self::ZerodhaCom => &ZERODHACOM,
             Self::AnandrathiCom => &ANANDRATHICOM,
+            Self::IiflcapitalCom => &IIFLCAPITALCOM,
+            Self::IiflsecuritiesCom => &IIFLSECURITIESCOM,
         }
     }
 
@@ -726,7 +734,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 164] {
+    pub const fn allowed_broker_domains() -> [Self; 166] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -892,6 +900,8 @@ impl WhiteListedDomains {
             Self::ZebuetradeCom,
             Self::ZerodhaCom,
             Self::AnandrathiCom,
+            Self::IiflcapitalCom,
+            Self::IiflsecuritiesCom,
         ]
     }
 
