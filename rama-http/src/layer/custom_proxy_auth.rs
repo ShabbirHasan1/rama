@@ -15,6 +15,7 @@ use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::telemetry::tracing::warn;
 use rama_core::{Layer, Service};
+use rama_http_headers::authorization::Credentials;
 use rama_http_headers::authorization::UserCredInfo;
 use rama_http_types::body::OptionalBody;
 use rama_net::stream::SocketInfo;
@@ -475,7 +476,7 @@ where
 
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                .header(http::header::PROXY_AUTHENTICATE, "Basic")
+                .header(http::header::PROXY_AUTHENTICATE, Basic::SCHEME)
                 .header(http::header::WARNING, WARNING_MESSAGE)
                 .header(http::header::RETRY_AFTER, format!("{ip_ban_time:?}"))
                 .body(OptionalBody::none())
