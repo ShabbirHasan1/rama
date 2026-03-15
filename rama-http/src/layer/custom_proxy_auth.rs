@@ -420,12 +420,14 @@ where
                     .context("api_key record_violation record info not found")?;
                 let ban_time = ban_info.calculate_ttl();
                 warn!(api_key = %api_key, ban_info = ?ban_info, ban_time = ?ban_time, "Possible BruteForce Attack with Worng Credentials, Banned API_KEY with Ban Info");
-                let _ban_info = self
+                let ip_wise_ban_info = self
                     .firewall_layer
                     .firewall
                     .record_violation(&ip_wise_violation)
                     .await
                     .context("ip_wise_violation record_violation record info not found")?;
+                let ip_wise_ban_time = ip_wise_ban_info.calculate_ttl();
+                warn!(ban_info = ?ip_wise_ban_info, ip_wise_violation = %ip_wise_violation, ban_time = ?ip_wise_ban_time, "IP Wise Voilation Info Recorded");
                 Ok(Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
                     .header(http::header::WARNING, WARNING_MESSAGE)
@@ -441,19 +443,41 @@ where
                 // .context("create auth-required response")?),
             }
         } else {
-            let ban_info = self
+            let ip_ban_info = self
                 .firewall_layer
                 .firewall
-                .record_violation(&ip_addr)
+                .record_violation(&ip_wise_violation)
                 .await
-                .context("ip address record violation record info not found")?;
-            let ban_time = ban_info.calculate_ttl();
-            warn!(ip_addr = %ip_addr, ban_info = ?ban_info, ban_time = ?ban_time, "Credentials is a must and required, Banned IP Address with Ban Info");
+                .context("ip_wise_violation record_violation record info not found")?;
+
+            let ip_ban_time = ip_ban_info.calculate_ttl();
+
+            warn!(ip_addr = %ip_addr, ban_time = ?ip_ban_time, ip_wise_violation = %ip_wise_violation, ban_info = ?ip_ban_info, "Credentials is a must and required, IP Wise Voilation Info Recorded");
+
+            if ip_ban_info.violation_count >= 3 {
+                for _ in 0..ip_ban_info.violation_count {
+                    self.firewall_layer
+                        .firewall
+                        .record_violation(&ip_addr)
+                        .await
+                        .context("ip address record violation entry ban_info not found")?;
+                }
+                warn!(ip_addr = %ip_addr, ban_time = ?ip_ban_time, ip_wise_violation = %ip_wise_violation, ban_info = ?ip_ban_info, "Exceeded Maximum 3 Attempts Without Credentials, Possible BruteForce Attack with NO Credentials, Credentials is a must and required, Banned IP Address with Ban Info");
+
+                return Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .header(http::header::WARNING, WARNING_MESSAGE)
+                    .header(http::header::RETRY_AFTER, format!("{ip_ban_time:?}"))
+                    .body(OptionalBody::none())
+                    .context("drop connection for blocked ip address")
+                    .context_field("ip_address", ip_addr);
+            }
+
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
                 .header(http::header::PROXY_AUTHENTICATE, "Basic")
                 .header(http::header::WARNING, WARNING_MESSAGE)
-                .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
+                .header(http::header::RETRY_AFTER, format!("{ip_ban_time:?}"))
                 .body(OptionalBody::none())
                 .context("create auth-required response")?)
         }
