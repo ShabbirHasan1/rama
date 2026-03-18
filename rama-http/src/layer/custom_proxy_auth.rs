@@ -454,24 +454,41 @@ where
 
             warn!(ip_addr = %ip_addr, ban_time = ?ip_ban_time, ip_wise_violation = %ip_wise_violation, ban_info = ?ip_ban_info, "Credentials is a must and required, IP Wise Voilation Info Recorded");
 
-            if ip_ban_info.violation_count >= 3 {
-                for _ in 0..ip_ban_info.violation_count {
-                    self.firewall_layer
-                        .firewall
-                        .record_violation(&ip_addr)
-                        .await
-                        .context("ip address record violation entry ban_info not found")?;
-                }
-                warn!(ip_addr = %ip_addr, ban_time = ?ip_ban_time, ip_wise_violation = %ip_wise_violation, ban_info = ?ip_ban_info, "Exceeded Maximum 3 Attempts Without Credentials, Possible BruteForce Attack with NO Credentials, Credentials is a must and required, Banned IP Address with Ban Info");
+            if ip_ban_info.violation_count >= 250 {
+                warn!(ip_addr = %ip_addr, ban_time = ?ip_ban_time, ip_wise_violation = %ip_wise_violation, "Exceeded Maximum Possible Attempts Without Credentials, Possible BruteForce Attack with NO Credentials, Credentials is a must and required, IP Wise Voilation Info Recorded, Going to Sleep for 7 seconds");
+
+                self.firewall_layer.firewall.unban(&ip_wise_violation).await;
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(7)).await;
 
                 return Response::builder()
-                    .status(StatusCode::FORBIDDEN)
+                    .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                    .header(http::header::PROXY_AUTHENTICATE, Basic::SCHEME)
                     .header(http::header::WARNING, WARNING_MESSAGE)
                     .header(http::header::RETRY_AFTER, format!("{ip_ban_time:?}"))
                     .body(OptionalBody::none())
                     .context("drop connection for blocked ip address")
                     .context_field("ip_address", ip_addr);
             }
+
+            // if ip_ban_info.violation_count >= 3 {
+            //     for _ in 0..ip_ban_info.violation_count {
+            //         self.firewall_layer
+            //             .firewall
+            //             .record_violation(&ip_addr)
+            //             .await
+            //             .context("ip address record violation entry ban_info not found")?;
+            //     }
+            //     warn!(ip_addr = %ip_addr, ban_time = ?ip_ban_time, ip_wise_violation = %ip_wise_violation, ban_info = ?ip_ban_info, "Exceeded Maximum 3 Attempts Without Credentials, Possible BruteForce Attack with NO Credentials, Credentials is a must and required, Banned IP Address with Ban Info");
+
+            //     return Response::builder()
+            //         .status(StatusCode::FORBIDDEN)
+            //         .header(http::header::WARNING, WARNING_MESSAGE)
+            //         .header(http::header::RETRY_AFTER, format!("{ip_ban_time:?}"))
+            //         .body(OptionalBody::none())
+            //         .context("drop connection for blocked ip address")
+            //         .context_field("ip_address", ip_addr);
+            // }
 
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
