@@ -13,6 +13,7 @@ use rama_net::address::{Domain, SocketAddress};
 use rama_net::user::authority::{AuthorizeResult, Authorizer, StaticAuthorizer, Unauthorized};
 use rama_net::user::credentials::basic;
 use rama_net::user::{Basic, Bearer, UserId};
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -346,7 +347,22 @@ where
 
 // HashMap<i32, i32, RandomState>
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserStatus {
+    Active,
+    #[default]
+    Inactive,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub struct UserValidity {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Hash, PartialOrd, Ord)]
 pub struct UserCredInfo<A> {
     pub credential: A,
     pub primary_ip: IpAddr,
@@ -359,6 +375,8 @@ pub struct UserCredInfo<A> {
     pub allowed_wl_ips: bool,
     pub allowed_ips: Option<Vec<WhiteListedIps>>,
     pub allowed_custom_ips: Option<Vec<IpAddr>>,
+    pub status: UserStatus,
+    pub validity: Option<UserValidity>,
 }
 
 impl Default for UserCredInfo<Basic> {
@@ -375,6 +393,8 @@ impl Default for UserCredInfo<Basic> {
             allowed_wl_ips: false,
             allowed_ips: None,
             allowed_custom_ips: None,
+            status: UserStatus::default(),
+            validity: None,
         }
     }
 }
@@ -447,6 +467,18 @@ impl UserCredInfo<Basic> {
     }
 
     #[must_use]
+    pub fn with_status(mut self, status: UserStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    #[must_use]
+    pub fn with_validity(mut self, validity: Option<UserValidity>) -> Self {
+        self.validity = validity;
+        self
+    }
+
+    #[must_use]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
     pub fn new_static(
@@ -461,6 +493,8 @@ impl UserCredInfo<Basic> {
         allowed_wl_ips: bool,
         allowed_ips: Option<Vec<WhiteListedIps>>,
         allowed_custom_ips: Option<Vec<IpAddr>>,
+        status: UserStatus,
+        validity: Option<UserValidity>,
     ) -> Self {
         Self {
             credential,
@@ -474,6 +508,8 @@ impl UserCredInfo<Basic> {
             allowed_custom_ips,
             allowed_wl_domains,
             allowed_wl_ips,
+            status,
+            validity,
         }
     }
 
@@ -492,6 +528,8 @@ impl UserCredInfo<Basic> {
         allowed_wl_ips: bool,
         allowed_ips: Option<Vec<WhiteListedIps>>,
         allowed_custom_ips: Option<Vec<IpAddr>>,
+        status: UserStatus,
+        validity: Option<UserValidity>,
     ) -> Self {
         Self::default()
             .with_credential(credential)
@@ -505,6 +543,8 @@ impl UserCredInfo<Basic> {
             .with_allowed_wl_ips(allowed_wl_ips)
             .with_allowed_ips(allowed_ips)
             .with_allowed_custom_ips(allowed_custom_ips)
+            .with_status(status)
+            .with_validity(validity)
     }
 
     #[must_use]
