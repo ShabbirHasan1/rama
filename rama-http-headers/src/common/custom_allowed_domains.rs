@@ -147,6 +147,7 @@ pub static SSCORPORATECOM: Domain = Domain::from_static("sscorporate.com");
 pub static SSPLONLINECOM: Domain = Domain::from_static("ssplonline.com");
 pub static STARFINVESTIN: Domain = Domain::from_static("starfinvest.in");
 pub static STOXKARTCOM: Domain = Domain::from_static("stoxkart.com");
+pub static STOCKOIN: Domain = Domain::from_static("stocko.in");
 pub static SUKESHJAINCOM: Domain = Domain::from_static("sukeshjain.com");
 pub static SUVRIDHICOM: Domain = Domain::from_static("suvridhi.com");
 pub static SWASTIKACOIN: Domain = Domain::from_static("swastika.co.in");
@@ -179,7 +180,7 @@ pub static AJIRAIN: Domain = Domain::from_static("ajira.in");
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 6] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 167] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 168] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -360,6 +361,7 @@ pub enum WhiteListedDomains {
     IiflcapitalCom,
     IiflsecuritiesCom,
     AjiraIn,
+    StockoIn,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -538,6 +540,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::IiflcapitalCom => IIFLCAPITALCOM.as_ref(),
             Self::IiflsecuritiesCom => IIFLSECURITIESCOM.as_ref(),
             Self::AjiraIn => AJIRAIN.as_ref(),
+            Self::StockoIn => STOCKOIN.as_ref(),
         }
     }
 }
@@ -720,6 +723,7 @@ impl WhiteListedDomains {
             Self::IiflcapitalCom => &IIFLCAPITALCOM,
             Self::IiflsecuritiesCom => &IIFLSECURITIESCOM,
             Self::AjiraIn => &AJIRAIN,
+            Self::StockoIn => &STOCKOIN,
         }
     }
 
@@ -738,7 +742,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 167] {
+    pub const fn allowed_broker_domains() -> [Self; 168] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -907,6 +911,7 @@ impl WhiteListedDomains {
             Self::IiflcapitalCom,
             Self::IiflsecuritiesCom,
             Self::AjiraIn,
+            Self::StockoIn,
         ]
     }
 
