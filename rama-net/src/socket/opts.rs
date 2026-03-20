@@ -979,6 +979,19 @@ pub struct SocketOptions {
     /// [`set_freebind`]: SocketOptions::freebind
     pub freebind_ipv6: Option<bool>,
 
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
+    /// Set value for the `IP_BIND_ADDRESS_NO_PORT` option on this [`Socket`].
+    ///
+    /// If enabled, this informs the kernel to not reserve an ephemeral port when
+    /// using `bind` with a port number of 0. The port will later be automatically
+    /// chosen at `connect` time, allowing millions of outbound connections from
+    /// a single IP address by guaranteeing 4-tuple uniqueness.
+    pub bind_address_no_port: Option<bool>,
+
     #[cfg(target_os = "linux")]
     #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
     /// Set value for the `SO_INCOMING_CPU` option on this [`Socket`].
@@ -1274,6 +1287,30 @@ impl SocketOptions {
             }
             if let Some(freebind_ipv6) = self.freebind_ipv6 {
                 socket.set_freebind_v6(freebind_ipv6)?;
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(no_port) = self.bind_address_no_port {
+                    use std::os::unix::io::AsRawFd;
+
+                    let fd = socket.as_raw_fd();
+                    let val: libc::c_int = if no_port { 1 } else { 0 };
+
+                    let res = unsafe {
+                        libc::setsockopt(
+                            fd,
+                            libc::IPPROTO_IP,
+                            libc::IP_BIND_ADDRESS_NO_PORT, // Hidden from Mac compiler!
+                            &val as *const _ as *const libc::c_void,
+                            std::mem::size_of_val(&val) as libc::socklen_t,
+                        )
+                    };
+
+                    if res != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
             }
         }
 
