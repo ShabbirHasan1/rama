@@ -292,35 +292,6 @@ where
                     .context_field("api_key", api_key);
             }
 
-            let is_ip_banned = self
-                .firewall_layer
-                .firewall
-                .is_banned(&ip_wise_violation)
-                .await;
-
-            if !is_in_allowed_list
-                && let Some(ip_ban_info) = is_ip_banned
-                && ip_ban_info.violation_count >= 3
-            {
-                for _ in 0..ip_ban_info.violation_count {
-                    self.firewall_layer
-                        .firewall
-                        .record_violation(&ip_addr)
-                        .await
-                        .context("ip address record violation entry ban_info not found")?;
-                }
-                let ban_time = ip_ban_info.calculate_ttl();
-                warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
-
-                return Response::builder()
-                    .status(StatusCode::FORBIDDEN)
-                    .header(http::header::WARNING, WARNING_MESSAGE)
-                    .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
-                    .body(OptionalBody::none())
-                    .context("drop connection for blocked api_key")
-                    .context_field("api_key", api_key);
-            }
-
             let auth_result = match &self.proxy_auth.backend {
                 UserCredStoreBackend::RwLock(store) => {
                     let data_guard = store.read().await;
@@ -418,22 +389,43 @@ where
                     .record_violation(&api_key)
                     .await
                     .context("api_key record_violation record info not found")?;
+
                 let ban_time = ban_info.calculate_ttl();
-                warn!(api_key = %api_key, ban_info = ?ban_info, ban_time = ?ban_time, "Possible BruteForce Attack with Worng Credentials, Banned API_KEY with Ban Info");
+
+                warn!(api_key = %api_key, ban_info = ?ban_info, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned API_KEY with Ban Info");
+
                 let ip_wise_ban_info = self
                     .firewall_layer
                     .firewall
                     .record_violation(&ip_wise_violation)
                     .await
                     .context("ip_wise_violation record_violation record info not found")?;
+
                 let ip_wise_ban_time = ip_wise_ban_info.calculate_ttl();
-                warn!(ban_info = ?ip_wise_ban_info, ip_wise_violation = %ip_wise_violation, ban_time = ?ip_wise_ban_time, "IP Wise Voilation Info Recorded");
+
+                warn!(ban_info = ?ip_wise_ban_info, ip_wise_violation = %ip_wise_violation, ban_time = ?ip_wise_ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, IP Wise Voilation Info Recorded");
+
+                if !is_in_allowed_list && ip_wise_ban_info.violation_count >= 250 {
+                    for _ in 0..ip_wise_ban_info.violation_count {
+                        self.firewall_layer
+                            .firewall
+                            .record_violation(&ip_addr)
+                            .await
+                            .context("ip address record violation entry ban_info not found")?;
+                    }
+
+                    warn!(api_key = %api_key, c = %ip_addr, ip_wise_violation = %ip_wise_violation, ban_time = ?ip_wise_ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials From Same IP Address, Banned IP Address with Ban Info");
+                }
+
+                let retry_after = format!("{:?}", ban_time.max(ip_wise_ban_time));
+
                 Ok(Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
                     .header(http::header::WARNING, WARNING_MESSAGE)
-                    .header(http::header::RETRY_AFTER, format!("{ban_time:?}"))
+                    .header(http::header::RETRY_AFTER, format!("{retry_after:?}"))
                     .body(OptionalBody::none())
-                    .context("create banned api_key response")
+                    .context("create banned api_key and ip_addr response")
+                    .context_field("ip_addr", ip_addr)
                     .context_field("api_key", api_key)?)
                 // Ok(Response::builder()
                 // .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)

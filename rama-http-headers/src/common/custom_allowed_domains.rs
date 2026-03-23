@@ -178,11 +178,12 @@ pub static IIFLSECURITIESCOM: Domain = Domain::from_static("iiflsecurities.com")
 pub static AJIRAIN: Domain = Domain::from_static("ajira.in");
 pub static MYALGOMATE: Domain = Domain::from_static("myalgomate.com");
 pub static ALGOBABA: Domain = Domain::from_static("algobaba.com");
+pub static RMONEYINDIACOM: Domain = Domain::from_static("rmoneyindia.com");
 
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 8] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 168] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 169] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -366,6 +367,7 @@ pub enum WhiteListedDomains {
     StockoIn,
     Myalgomate,
     Algobaba,
+    RmoneyindiaCom,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -547,6 +549,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::StockoIn => STOCKOIN.as_ref(),
             Self::Myalgomate => MYALGOMATE.as_ref(),
             Self::Algobaba => ALGOBABA.as_ref(),
+            Self::RmoneyindiaCom => RMONEYINDIACOM.as_ref(),
         }
     }
 }
@@ -732,6 +735,7 @@ impl WhiteListedDomains {
             Self::StockoIn => &STOCKOIN,
             Self::Myalgomate => &MYALGOMATE,
             Self::Algobaba => &ALGOBABA,
+            Self::RmoneyindiaCom => &RMONEYINDIACOM,
         }
     }
 
@@ -752,7 +756,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 168] {
+    pub const fn allowed_broker_domains() -> [Self; 169] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -922,6 +926,7 @@ impl WhiteListedDomains {
             Self::IiflsecuritiesCom,
             Self::AjiraIn,
             Self::StockoIn,
+            Self::RmoneyindiaCom,
         ]
     }
 
