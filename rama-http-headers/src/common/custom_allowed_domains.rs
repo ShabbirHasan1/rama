@@ -179,11 +179,16 @@ pub static AJIRAIN: Domain = Domain::from_static("ajira.in");
 pub static MYALGOMATE: Domain = Domain::from_static("myalgomate.com");
 pub static ALGOBABA: Domain = Domain::from_static("algobaba.com");
 pub static RMONEYINDIACOM: Domain = Domain::from_static("rmoneyindia.com");
+pub static MATAALIACOIN: Domain = Domain::from_static("matalia.co.in");
+pub static HKKRFINSERVINFINNIN: Domain = Domain::from_static("infinn.in");
+pub static PROSTOCKSCOM: Domain = Domain::from_static("prostocks.com");
+pub static DHANISTOCKSCOM: Domain = Domain::from_static("dhanistocks.com");
+pub static IBULLSSECURITIESCOM: Domain = Domain::from_static("ibullssecurities.com");
 
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 8] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 169] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 174] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -368,6 +373,11 @@ pub enum WhiteListedDomains {
     Myalgomate,
     Algobaba,
     RmoneyindiaCom,
+    MataaliaCoin,
+    HkkrFinServInfinNin,
+    ProstocksCom,
+    DhanistocksCom,
+    IbullsSecuritiesCom,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -550,6 +560,11 @@ impl AsRef<str> for WhiteListedDomains {
             Self::Myalgomate => MYALGOMATE.as_ref(),
             Self::Algobaba => ALGOBABA.as_ref(),
             Self::RmoneyindiaCom => RMONEYINDIACOM.as_ref(),
+            Self::MataaliaCoin => MATAALIACOIN.as_ref(),
+            Self::HkkrFinServInfinNin => HKKRFINSERVINFINNIN.as_ref(),
+            Self::ProstocksCom => PROSTOCKSCOM.as_ref(),
+            Self::DhanistocksCom => DHANISTOCKSCOM.as_ref(),
+            Self::IbullsSecuritiesCom => IBULLSSECURITIESCOM.as_ref(),
         }
     }
 }
@@ -736,6 +751,11 @@ impl WhiteListedDomains {
             Self::Myalgomate => &MYALGOMATE,
             Self::Algobaba => &ALGOBABA,
             Self::RmoneyindiaCom => &RMONEYINDIACOM,
+            Self::MataaliaCoin => &MATAALIACOIN,
+            Self::HkkrFinServInfinNin => &HKKRFINSERVINFINNIN,
+            Self::ProstocksCom => &PROSTOCKSCOM,
+            Self::DhanistocksCom => &DHANISTOCKSCOM,
+            Self::IbullsSecuritiesCom => &IBULLSSECURITIESCOM,
         }
     }
 
@@ -756,7 +776,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 169] {
+    pub const fn allowed_broker_domains() -> [Self; 174] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -927,6 +947,11 @@ impl WhiteListedDomains {
             Self::AjiraIn,
             Self::StockoIn,
             Self::RmoneyindiaCom,
+            Self::MataaliaCoin,
+            Self::HkkrFinServInfinNin,
+            Self::ProstocksCom,
+            Self::DhanistocksCom,
+            Self::IbullsSecuritiesCom,
         ]
     }
 
