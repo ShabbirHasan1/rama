@@ -184,11 +184,13 @@ pub static HKKRFINSERVINFINNIN: Domain = Domain::from_static("infinn.in");
 pub static PROSTOCKSCOM: Domain = Domain::from_static("prostocks.com");
 pub static DHANISTOCKSCOM: Domain = Domain::from_static("dhanistocks.com");
 pub static IBULLSSECURITIESCOM: Domain = Domain::from_static("ibullssecurities.com");
+pub static EUREKASECCOM: Domain = Domain::from_static("eurekasec.com");
+pub static EUREKASECURETICESNET: Domain = Domain::from_static("eurekasecurities.net");
 
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 8] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 174] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 176] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -378,6 +380,8 @@ pub enum WhiteListedDomains {
     ProstocksCom,
     DhanistocksCom,
     IbullsSecuritiesCom,
+    EurekasecCom,
+    EurekasecuritiesNet,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -565,6 +569,8 @@ impl AsRef<str> for WhiteListedDomains {
             Self::ProstocksCom => PROSTOCKSCOM.as_ref(),
             Self::DhanistocksCom => DHANISTOCKSCOM.as_ref(),
             Self::IbullsSecuritiesCom => IBULLSSECURITIESCOM.as_ref(),
+            Self::EurekasecCom => EUREKASECCOM.as_ref(),
+            Self::EurekasecuritiesNet => EUREKASECURETICESNET.as_ref(),
         }
     }
 }
@@ -756,6 +762,8 @@ impl WhiteListedDomains {
             Self::ProstocksCom => &PROSTOCKSCOM,
             Self::DhanistocksCom => &DHANISTOCKSCOM,
             Self::IbullsSecuritiesCom => &IBULLSSECURITIESCOM,
+            Self::EurekasecCom => &EUREKASECCOM,
+            Self::EurekasecuritiesNet => &EUREKASECURETICESNET,
         }
     }
 
@@ -776,7 +784,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 174] {
+    pub const fn allowed_broker_domains() -> [Self; 176] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -952,6 +960,8 @@ impl WhiteListedDomains {
             Self::ProstocksCom,
             Self::DhanistocksCom,
             Self::IbullsSecuritiesCom,
+            Self::EurekasecCom,
+            Self::EurekasecuritiesNet,
         ]
     }
 
