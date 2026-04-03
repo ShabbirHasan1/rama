@@ -186,11 +186,15 @@ pub static DHANISTOCKSCOM: Domain = Domain::from_static("dhanistocks.com");
 pub static IBULLSSECURITIESCOM: Domain = Domain::from_static("ibullssecurities.com");
 pub static EUREKASECCOM: Domain = Domain::from_static("eurekasec.com");
 pub static EUREKASECURETICESNET: Domain = Domain::from_static("eurekasecurities.net");
+pub static DEFINEDGESECURITIESCOM: Domain = Domain::from_static("definedgesecurities.com");
+pub static GLOBECAPITALCOM: Domain = Domain::from_static("globecapital.com");
+pub static ODINAWSAPI: Domain =
+    Domain::from_static("jri4df7kaa.execute-api.ap-south-1.amazonaws.com");
 
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 8] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 176] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 179] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -382,6 +386,9 @@ pub enum WhiteListedDomains {
     IbullsSecuritiesCom,
     EurekasecCom,
     EurekasecuritiesNet,
+    DefinedgeSecuritiesCom,
+    GlobeCapitalCom,
+    OdinAwsApi,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -571,6 +578,9 @@ impl AsRef<str> for WhiteListedDomains {
             Self::IbullsSecuritiesCom => IBULLSSECURITIESCOM.as_ref(),
             Self::EurekasecCom => EUREKASECCOM.as_ref(),
             Self::EurekasecuritiesNet => EUREKASECURETICESNET.as_ref(),
+            Self::DefinedgeSecuritiesCom => DEFINEDGESECURITIESCOM.as_ref(),
+            Self::GlobeCapitalCom => GLOBECAPITALCOM.as_ref(),
+            Self::OdinAwsApi => ODINAWSAPI.as_ref(),
         }
     }
 }
@@ -764,6 +774,9 @@ impl WhiteListedDomains {
             Self::IbullsSecuritiesCom => &IBULLSSECURITIESCOM,
             Self::EurekasecCom => &EUREKASECCOM,
             Self::EurekasecuritiesNet => &EUREKASECURETICESNET,
+            Self::DefinedgeSecuritiesCom => &DEFINEDGESECURITIESCOM,
+            Self::GlobeCapitalCom => &GLOBECAPITALCOM,
+            Self::OdinAwsApi => &ODINAWSAPI,
         }
     }
 
@@ -784,7 +797,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 176] {
+    pub const fn allowed_broker_domains() -> [Self; 179] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -962,6 +975,9 @@ impl WhiteListedDomains {
             Self::IbullsSecuritiesCom,
             Self::EurekasecCom,
             Self::EurekasecuritiesNet,
+            Self::DefinedgeSecuritiesCom,
+            Self::GlobeCapitalCom,
+            Self::OdinAwsApi,
         ]
     }
 
