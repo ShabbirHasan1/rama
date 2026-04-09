@@ -190,8 +190,9 @@ pub static DEFINEDGESECURITIESCOM: Domain = Domain::from_static("definedgesecuri
 pub static GLOBECAPITALCOM: Domain = Domain::from_static("globecapital.com");
 pub static ODINAWSAPI: Domain =
     Domain::from_static("jri4df7kaa.execute-api.ap-south-1.amazonaws.com");
+pub static QUANTIPLY: Domain = Domain::from_static("quantiply.tech");
 
-pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 8] =
+pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 9] =
     WhiteListedDomains::allowed_general_domains();
 
 pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 179] =
@@ -389,6 +390,7 @@ pub enum WhiteListedDomains {
     DefinedgeSecuritiesCom,
     GlobeCapitalCom,
     OdinAwsApi,
+    Quantiply,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -581,6 +583,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::DefinedgeSecuritiesCom => DEFINEDGESECURITIESCOM.as_ref(),
             Self::GlobeCapitalCom => GLOBECAPITALCOM.as_ref(),
             Self::OdinAwsApi => ODINAWSAPI.as_ref(),
+            Self::Quantiply => QUANTIPLY.as_ref(),
         }
     }
 }
@@ -777,6 +780,7 @@ impl WhiteListedDomains {
             Self::DefinedgeSecuritiesCom => &DEFINEDGESECURITIESCOM,
             Self::GlobeCapitalCom => &GLOBECAPITALCOM,
             Self::OdinAwsApi => &ODINAWSAPI,
+            Self::Quantiply => &QUANTIPLY,
         }
     }
 
@@ -784,7 +788,7 @@ impl WhiteListedDomains {
         matches!(self, Self::StaticipIn)
     }
 
-    pub const fn allowed_general_domains() -> [Self; 8] {
+    pub const fn allowed_general_domains() -> [Self; 9] {
         [
             Self::StaticipIn,
             Self::IpifyOrg,
@@ -794,6 +798,7 @@ impl WhiteListedDomains {
             Self::BeeceptorCom,
             Self::Myalgomate,
             Self::Algobaba,
+            Self::Quantiply,
         ]
     }
 
