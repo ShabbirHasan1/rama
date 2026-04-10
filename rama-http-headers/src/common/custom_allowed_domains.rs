@@ -192,7 +192,20 @@ pub static ODINAWSAPI: Domain =
     Domain::from_static("jri4df7kaa.execute-api.ap-south-1.amazonaws.com");
 pub static QUANTIPLY: Domain = Domain::from_static("quantiply.tech");
 
-pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 9] =
+pub static CHECKIP_GLOBAL_API_AWS: Domain = Domain::from_static("checkip.global.api.aws");
+pub static CHECKIP_AMAZONAWS_COM: Domain = Domain::from_static("checkip.amazonaws.com");
+pub static IPV4_ICANHAZIP_COM: Domain = Domain::from_static("ipv4.icanhazip.com");
+pub static IPV6_ICANHAZIP_COM: Domain = Domain::from_static("ipv6.icanhazip.com");
+pub static IDENT_ME: Domain = Domain::from_static("ident.me");
+pub static L2_IO: Domain = Domain::from_static("l2.io");
+pub static MYEXTERNALIP_COM: Domain = Domain::from_static("myexternalip.com");
+pub static WHATISMYIP_AKAMAI_COM: Domain = Domain::from_static("whatismyip.akamai.com");
+pub static IPECHO_NET: Domain = Domain::from_static("ipecho.net");
+pub static IPINFO_IO: Domain = Domain::from_static("ipinfo.io");
+pub static MYIP_DNSOMATIC_COM: Domain = Domain::from_static("myip.dnsomatic.com");
+pub static TRACKIP_NET: Domain = Domain::from_static("trackip.net");
+
+pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 21] =
     WhiteListedDomains::allowed_general_domains();
 
 pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 179] =
@@ -391,6 +404,18 @@ pub enum WhiteListedDomains {
     GlobeCapitalCom,
     OdinAwsApi,
     Quantiply,
+    CheckipGlobalApiAws,
+    CheckipAmazonawsCom,
+    Ipv4IcanhazipCom,
+    Ipv6IcanhazipCom,
+    IdentMe,
+    L2Io,
+    MyexternalipCom,
+    WhatismyipAkamaiCom,
+    IpechoNet,
+    IpinfoIo,
+    MyipDnsomaticCom,
+    TrackipNet,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -584,6 +609,18 @@ impl AsRef<str> for WhiteListedDomains {
             Self::GlobeCapitalCom => GLOBECAPITALCOM.as_ref(),
             Self::OdinAwsApi => ODINAWSAPI.as_ref(),
             Self::Quantiply => QUANTIPLY.as_ref(),
+            Self::CheckipGlobalApiAws => CHECKIP_GLOBAL_API_AWS.as_ref(),
+            Self::CheckipAmazonawsCom => CHECKIP_AMAZONAWS_COM.as_ref(),
+            Self::Ipv4IcanhazipCom => IPV4_ICANHAZIP_COM.as_ref(),
+            Self::Ipv6IcanhazipCom => IPV6_ICANHAZIP_COM.as_ref(),
+            Self::IdentMe => IDENT_ME.as_ref(),
+            Self::L2Io => L2_IO.as_ref(),
+            Self::MyexternalipCom => MYEXTERNALIP_COM.as_ref(),
+            Self::WhatismyipAkamaiCom => WHATISMYIP_AKAMAI_COM.as_ref(),
+            Self::IpechoNet => IPECHO_NET.as_ref(),
+            Self::IpinfoIo => IPINFO_IO.as_ref(),
+            Self::MyipDnsomaticCom => MYIP_DNSOMATIC_COM.as_ref(),
+            Self::TrackipNet => TRACKIP_NET.as_ref(),
         }
     }
 }
@@ -781,6 +818,18 @@ impl WhiteListedDomains {
             Self::GlobeCapitalCom => &GLOBECAPITALCOM,
             Self::OdinAwsApi => &ODINAWSAPI,
             Self::Quantiply => &QUANTIPLY,
+            Self::CheckipGlobalApiAws => &CHECKIP_GLOBAL_API_AWS,
+            Self::CheckipAmazonawsCom => &CHECKIP_AMAZONAWS_COM,
+            Self::Ipv4IcanhazipCom => &IPV4_ICANHAZIP_COM,
+            Self::Ipv6IcanhazipCom => &IPV6_ICANHAZIP_COM,
+            Self::IdentMe => &IDENT_ME,
+            Self::L2Io => &L2_IO,
+            Self::MyexternalipCom => &MYEXTERNALIP_COM,
+            Self::WhatismyipAkamaiCom => &WHATISMYIP_AKAMAI_COM,
+            Self::IpechoNet => &IPECHO_NET,
+            Self::IpinfoIo => &IPINFO_IO,
+            Self::MyipDnsomaticCom => &MYIP_DNSOMATIC_COM,
+            Self::TrackipNet => &TRACKIP_NET,
         }
     }
 
@@ -788,7 +837,7 @@ impl WhiteListedDomains {
         matches!(self, Self::StaticipIn)
     }
 
-    pub const fn allowed_general_domains() -> [Self; 9] {
+    pub const fn allowed_general_domains() -> [Self; 21] {
         [
             Self::StaticipIn,
             Self::IpifyOrg,
@@ -799,6 +848,18 @@ impl WhiteListedDomains {
             Self::Myalgomate,
             Self::Algobaba,
             Self::Quantiply,
+            Self::CheckipGlobalApiAws,
+            Self::CheckipAmazonawsCom,
+            Self::Ipv4IcanhazipCom,
+            Self::Ipv6IcanhazipCom,
+            Self::IdentMe,
+            Self::L2Io,
+            Self::MyexternalipCom,
+            Self::WhatismyipAkamaiCom,
+            Self::IpechoNet,
+            Self::IpinfoIo,
+            Self::MyipDnsomaticCom,
+            Self::TrackipNet,
         ]
     }
 
@@ -1643,5 +1704,26 @@ pub static YASHWICOM: Domain = Domain::from_static("yashwi.com");
 pub static ZEBUETRADECOM: Domain = Domain::from_static("zebuetrade.com");
 pub static ZERODHACOM: Domain = Domain::from_static("zerodha.com");
 
+https://checkip.global.api.aws/
+https://checkip.amazonaws.com/
+https://api.ipify.org/
+https://api6.ipify.org/
+https://api64.ipify.org/
+https://ipv4.icanhazip.com/
+https://ipv6.icanhazip.com/
+https://www.ident.me/
+https://myexternalip.com/raw
+https://whatismyip.akamai.com/
+https://ipecho.net/plain
+https://ipinfo.io/ip
+https://myip.dnsomatic.com/
+https://www.trackip.net/ip
+https://www.l2.io/ip
+https://ifconfig.me/
+https://ifconfig.co/
+https://httpbin.org/ip
+https://ip.staticip.in/
+https://ip6.staticip.in/
+https://ip64.staticip.in/
 
 */
