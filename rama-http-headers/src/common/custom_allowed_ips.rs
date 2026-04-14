@@ -3,8 +3,9 @@ use std::net::{IpAddr, Ipv4Addr};
 
 pub static JAINAM: IpAddr = IpAddr::V4(Ipv4Addr::new(103, 217, 67, 124));
 pub static SYMPHONYXTSDEVELOPER: IpAddr = IpAddr::V4(Ipv4Addr::new(160, 30, 125, 84));
+pub static RIKHAVSECURITIES: IpAddr = IpAddr::V4(Ipv4Addr::new(182, 156, 6, 41));
 
-pub static ALLOWED_BROKER_IPS: [WhiteListedIps; 2] = WhiteListedIps::allowed_broker_ips();
+pub static ALLOWED_BROKER_IPS: [WhiteListedIps; 3] = WhiteListedIps::allowed_broker_ips();
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize_repr, Deserialize_repr,
@@ -13,6 +14,7 @@ pub static ALLOWED_BROKER_IPS: [WhiteListedIps; 2] = WhiteListedIps::allowed_bro
 pub enum WhiteListedIps {
     Jainam,
     SymphonyXtsDeveloper,
+    RikhavSecurities,
 }
 
 impl AsRef<IpAddr> for WhiteListedIps {
@@ -20,13 +22,18 @@ impl AsRef<IpAddr> for WhiteListedIps {
         match self {
             Self::Jainam => &JAINAM,
             Self::SymphonyXtsDeveloper => &SYMPHONYXTSDEVELOPER,
+            Self::RikhavSecurities => &RIKHAVSECURITIES,
         }
     }
 }
 
 impl WhiteListedIps {
-    pub const fn allowed_broker_ips() -> [Self; 2] {
-        [Self::Jainam, Self::SymphonyXtsDeveloper]
+    pub const fn allowed_broker_ips() -> [Self; 3] {
+        [
+            Self::Jainam,
+            Self::SymphonyXtsDeveloper,
+            Self::RikhavSecurities,
+        ]
     }
 
     #[inline]
