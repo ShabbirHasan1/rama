@@ -10,7 +10,7 @@ pub static ALLOWED_BROKER_IPS: [WhiteListedIps; 3] = WhiteListedIps::allowed_bro
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize_repr, Deserialize_repr,
 )]
-#[repr(u8)]
+#[repr(u16)]
 pub enum WhiteListedIps {
     Jainam,
     SymphonyXtsDeveloper,

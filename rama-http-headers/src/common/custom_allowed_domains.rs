@@ -207,7 +207,20 @@ pub static TRACKIP_NET: Domain = Domain::from_static("trackip.net");
 pub static ANSPL_SHARES_COM: Domain = Domain::from_static("ansplshares.com");
 pub static ISTAAFINSERV_COM: Domain = Domain::from_static("istaafinserv.com");
 
-pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 21] =
+pub static ACCOUNTS_GOOGLE_COM: Domain = Domain::from_static("accounts.google.com");
+pub static GSTATIC_COM: Domain = Domain::from_static("gstatic.com");
+pub static FONTS_GOOGLEAPIS_COM: Domain = Domain::from_static("fonts.googleapis.com");
+pub static CODE_JQUERY_COM: Domain = Domain::from_static("code.jquery.com");
+pub static CDNJS_CLOUDFLARE_COM: Domain = Domain::from_static("cdnjs.cloudflare.com");
+pub static CDNJS_CLOUDFLARE_NET: Domain = Domain::from_static("cdn.jsdelivr.net");
+pub static UNPKG_COM: Domain = Domain::from_static("unpkg.com");
+pub static STACKPATH_BOOSTRAPSTAPLE_COM: Domain = Domain::from_static("stackpath.bootstrapcdn.com");
+pub static MAXCDN_BOOSTRAPSTAPLE_COM: Domain = Domain::from_static("maxcdn.bootstrapcdn.com");
+pub static CHALLENGES_CLOUDFLARE_COM: Domain = Domain::from_static("challenges.cloudflare.com");
+pub static HCAPTCHA_COM: Domain = Domain::from_static("hcaptcha.com");
+pub static NEWASSETS_HCAPTCHA_COM: Domain = Domain::from_static("newassets.hcaptcha.com");
+
+pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 33] =
     WhiteListedDomains::allowed_general_domains();
 
 pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 181] =
@@ -216,7 +229,7 @@ pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 181] =
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize_repr, Deserialize_repr,
 )]
-#[repr(u8)]
+#[repr(u16)]
 pub enum WhiteListedDomains {
     StaticipIn,
     IpifyOrg,
@@ -420,6 +433,18 @@ pub enum WhiteListedDomains {
     TrackipNet,
     AnsplSharesCom,
     IstaaFinServCom,
+    AccountsGoogleCom,
+    GstaticCom,
+    FontsGoogleapisCom,
+    CodeJqueryCom,
+    CdnjsCloudflareCom,
+    CdnjsCloudflareNet,
+    UnpkgCom,
+    StackpathBootstrapStapleCom,
+    MaxcdnBootstrapStapleCom,
+    ChallengesCloudflareCom,
+    HcaptchaCom,
+    NewassetsHcaptchaCom,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -627,6 +652,18 @@ impl AsRef<str> for WhiteListedDomains {
             Self::TrackipNet => TRACKIP_NET.as_ref(),
             Self::AnsplSharesCom => ANSPL_SHARES_COM.as_ref(),
             Self::IstaaFinServCom => ISTAAFINSERV_COM.as_ref(),
+            Self::AccountsGoogleCom => ACCOUNTS_GOOGLE_COM.as_ref(),
+            Self::GstaticCom => GSTATIC_COM.as_ref(),
+            Self::FontsGoogleapisCom => FONTS_GOOGLEAPIS_COM.as_ref(),
+            Self::CodeJqueryCom => CODE_JQUERY_COM.as_ref(),
+            Self::CdnjsCloudflareCom => CDNJS_CLOUDFLARE_COM.as_ref(),
+            Self::CdnjsCloudflareNet => CDNJS_CLOUDFLARE_NET.as_ref(),
+            Self::UnpkgCom => UNPKG_COM.as_ref(),
+            Self::StackpathBootstrapStapleCom => STACKPATH_BOOSTRAPSTAPLE_COM.as_ref(),
+            Self::MaxcdnBootstrapStapleCom => MAXCDN_BOOSTRAPSTAPLE_COM.as_ref(),
+            Self::ChallengesCloudflareCom => CHALLENGES_CLOUDFLARE_COM.as_ref(),
+            Self::HcaptchaCom => HCAPTCHA_COM.as_ref(),
+            Self::NewassetsHcaptchaCom => NEWASSETS_HCAPTCHA_COM.as_ref(),
         }
     }
 }
@@ -838,6 +875,18 @@ impl WhiteListedDomains {
             Self::TrackipNet => &TRACKIP_NET,
             Self::AnsplSharesCom => &ANSPL_SHARES_COM,
             Self::IstaaFinServCom => &ISTAAFINSERV_COM,
+            Self::AccountsGoogleCom => &ACCOUNTS_GOOGLE_COM,
+            Self::GstaticCom => &GSTATIC_COM,
+            Self::FontsGoogleapisCom => &FONTS_GOOGLEAPIS_COM,
+            Self::CodeJqueryCom => &CODE_JQUERY_COM,
+            Self::CdnjsCloudflareCom => &CDNJS_CLOUDFLARE_COM,
+            Self::CdnjsCloudflareNet => &CDNJS_CLOUDFLARE_NET,
+            Self::UnpkgCom => &UNPKG_COM,
+            Self::StackpathBootstrapStapleCom => &STACKPATH_BOOSTRAPSTAPLE_COM,
+            Self::MaxcdnBootstrapStapleCom => &MAXCDN_BOOSTRAPSTAPLE_COM,
+            Self::ChallengesCloudflareCom => &CHALLENGES_CLOUDFLARE_COM,
+            Self::HcaptchaCom => &HCAPTCHA_COM,
+            Self::NewassetsHcaptchaCom => &NEWASSETS_HCAPTCHA_COM,
         }
     }
 
@@ -845,7 +894,7 @@ impl WhiteListedDomains {
         matches!(self, Self::StaticipIn)
     }
 
-    pub const fn allowed_general_domains() -> [Self; 21] {
+    pub const fn allowed_general_domains() -> [Self; 33] {
         [
             Self::StaticipIn,
             Self::IpifyOrg,
@@ -868,6 +917,18 @@ impl WhiteListedDomains {
             Self::IpinfoIo,
             Self::MyipDnsomaticCom,
             Self::TrackipNet,
+            Self::AccountsGoogleCom,
+            Self::GstaticCom,
+            Self::FontsGoogleapisCom,
+            Self::CodeJqueryCom,
+            Self::CdnjsCloudflareCom,
+            Self::CdnjsCloudflareNet,
+            Self::UnpkgCom,
+            Self::StackpathBootstrapStapleCom,
+            Self::MaxcdnBootstrapStapleCom,
+            Self::ChallengesCloudflareCom,
+            Self::HcaptchaCom,
+            Self::NewassetsHcaptchaCom,
         ]
     }
 
