@@ -101,6 +101,41 @@ impl<S> CustomProxyAuthService<S> {
         }
     }
 
+    pub async fn is_in_user_cred_store(&self, username: &str) -> bool {
+        match &self.proxy_auth.backend {
+            UserCredStoreBackend::RwLock(store) => {
+                let data_guard = store.read().await;
+                data_guard
+                    .iter()
+                    .any(|user_cred_info| user_cred_info.credential.username() == username)
+            }
+            UserCredStoreBackend::ArcSwap(store) => {
+                let data_guard = store.load();
+                data_guard
+                    .iter()
+                    .any(|user_cred_info| user_cred_info.credential.username() == username)
+            }
+            UserCredStoreBackend::ArcShift(store) => {
+                let data_guard = store.shared_get();
+                data_guard
+                    .iter()
+                    .any(|user_cred_info| user_cred_info.credential.username() == username)
+            }
+            UserCredStoreBackend::RwLockHashmap(store) => {
+                let data_guard = store.read().await;
+                data_guard.0.keys().any(|key| key.username() == username)
+            }
+            UserCredStoreBackend::ArcSwapHashmap(store) => {
+                let data_guard = store.load();
+                data_guard.0.keys().any(|key| key.username() == username)
+            }
+            UserCredStoreBackend::ArcShiftHashmap(store) => {
+                let data_guard = store.shared_get();
+                data_guard.0.keys().any(|key| key.username() == username)
+            }
+        }
+    }
+
     define_inner_service_accessors!();
 }
 
@@ -268,7 +303,7 @@ where
                     .await
                     .context("api_key record violation entry ban_info not found")?;
 
-                if ban_info.violation_count >= 3 {
+                if ban_info.violation_count >= 5 {
                     for _ in 0..ban_info.violation_count {
                         self.firewall_layer
                             .firewall
@@ -292,6 +327,7 @@ where
                     .context_field("api_key", api_key);
             }
 
+            let username = creds.username().to_smolstr();
             let auth_result = match &self.proxy_auth.backend {
                 UserCredStoreBackend::RwLock(store) => {
                     let data_guard = store.read().await;
@@ -383,6 +419,18 @@ where
                     .map_err(|err| BoxError::from(err.into()))?
                     .map(OptionalBody::some))
             } else {
+                let is_in_user_cred_store = self.is_in_user_cred_store(&username).await;
+                if is_in_user_cred_store {
+                    warn!(
+                        "The User with api_key=%api_key is found in UserCredStore but trying with wrong credentials or api_secret",
+                    );
+                    return Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(OptionalBody::none())
+                        .context("create banned api_key and ip_addr response")
+                        .context_field("ip_addr", ip_addr)
+                        .context_field("api_key", api_key);
+                }
                 let ban_info = self
                     .firewall_layer
                     .firewall
