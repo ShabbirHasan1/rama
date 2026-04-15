@@ -204,11 +204,13 @@ pub static IPECHO_NET: Domain = Domain::from_static("ipecho.net");
 pub static IPINFO_IO: Domain = Domain::from_static("ipinfo.io");
 pub static MYIP_DNSOMATIC_COM: Domain = Domain::from_static("myip.dnsomatic.com");
 pub static TRACKIP_NET: Domain = Domain::from_static("trackip.net");
+pub static ANSPL_SHARES_COM: Domain = Domain::from_static("ansplshares.com");
+pub static ISTAAFINSERV_COM: Domain = Domain::from_static("istaafinserv.com");
 
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 21] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 179] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 181] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -416,6 +418,8 @@ pub enum WhiteListedDomains {
     IpinfoIo,
     MyipDnsomaticCom,
     TrackipNet,
+    AnsplSharesCom,
+    IstaaFinServCom,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -621,6 +625,8 @@ impl AsRef<str> for WhiteListedDomains {
             Self::IpinfoIo => IPINFO_IO.as_ref(),
             Self::MyipDnsomaticCom => MYIP_DNSOMATIC_COM.as_ref(),
             Self::TrackipNet => TRACKIP_NET.as_ref(),
+            Self::AnsplSharesCom => ANSPL_SHARES_COM.as_ref(),
+            Self::IstaaFinServCom => ISTAAFINSERV_COM.as_ref(),
         }
     }
 }
@@ -830,6 +836,8 @@ impl WhiteListedDomains {
             Self::IpinfoIo => &IPINFO_IO,
             Self::MyipDnsomaticCom => &MYIP_DNSOMATIC_COM,
             Self::TrackipNet => &TRACKIP_NET,
+            Self::AnsplSharesCom => &ANSPL_SHARES_COM,
+            Self::IstaaFinServCom => &ISTAAFINSERV_COM,
         }
     }
 
@@ -863,7 +871,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 179] {
+    pub const fn allowed_broker_domains() -> [Self; 181] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -1044,6 +1052,8 @@ impl WhiteListedDomains {
             Self::DefinedgeSecuritiesCom,
             Self::GlobeCapitalCom,
             Self::OdinAwsApi,
+            Self::AnsplSharesCom,
+            Self::IstaaFinServCom,
         ]
     }
 
