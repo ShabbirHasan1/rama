@@ -422,7 +422,8 @@ where
                 let is_in_user_cred_store = self.is_in_user_cred_store(&username).await;
                 if is_in_user_cred_store {
                     warn!(
-                        "The User with api_key=%api_key is found in UserCredStore but trying with wrong credentials or api_secret",
+                        api_key = %api_key,
+                        "The User with this api_key is found in UserCredStore but trying with wrong credentials or api_secret",
                     );
                     return Response::builder()
                         .status(StatusCode::UNAUTHORIZED)
