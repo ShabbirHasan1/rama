@@ -220,10 +220,12 @@ pub static CHALLENGES_CLOUDFLARE_COM: Domain = Domain::from_static("challenges.c
 pub static HCAPTCHA_COM: Domain = Domain::from_static("hcaptcha.com");
 pub static NEWASSETS_HCAPTCHA_COM: Domain = Domain::from_static("newassets.hcaptcha.com");
 
+pub static LSE_CO_IN: Domain = Domain::from_static("lse.co.in");
+
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 33] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 181] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 182] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -445,6 +447,7 @@ pub enum WhiteListedDomains {
     ChallengesCloudflareCom,
     HcaptchaCom,
     NewassetsHcaptchaCom,
+    LseCoIn,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -664,6 +667,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::ChallengesCloudflareCom => CHALLENGES_CLOUDFLARE_COM.as_ref(),
             Self::HcaptchaCom => HCAPTCHA_COM.as_ref(),
             Self::NewassetsHcaptchaCom => NEWASSETS_HCAPTCHA_COM.as_ref(),
+            Self::LseCoIn => LSE_CO_IN.as_ref(),
         }
     }
 }
@@ -887,6 +891,7 @@ impl WhiteListedDomains {
             Self::ChallengesCloudflareCom => &CHALLENGES_CLOUDFLARE_COM,
             Self::HcaptchaCom => &HCAPTCHA_COM,
             Self::NewassetsHcaptchaCom => &NEWASSETS_HCAPTCHA_COM,
+            Self::LseCoIn => &LSE_CO_IN,
         }
     }
 
@@ -932,7 +937,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 181] {
+    pub const fn allowed_broker_domains() -> [Self; 182] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -1115,6 +1120,7 @@ impl WhiteListedDomains {
             Self::OdinAwsApi,
             Self::AnsplSharesCom,
             Self::IstaaFinServCom,
+            Self::LseCoIn,
         ]
     }
 
