@@ -303,7 +303,7 @@ where
                     .await
                     .context("api_key record violation entry ban_info not found")?;
 
-                if ban_info.violation_count >= 5 {
+                if ban_info.violation_count >= 250 {
                     for _ in 0..ban_info.violation_count {
                         self.firewall_layer
                             .firewall
@@ -312,7 +312,7 @@ where
                             .context("ip address record violation entry ban_info not found")?;
                     }
                     let ban_time = ban_info.calculate_ttl();
-                    warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
+                    warn!(ip_addr = %ip_addr, ban_time = ?ban_time, "Multiple (250) Failed Attempts, Possible BruteForce Attack with Worng Credentials, Banned IP Address with Ban Info");
                 }
 
                 let ban_time = ban_info.calculate_ttl();
@@ -463,7 +463,7 @@ where
                             .context("ip address record violation entry ban_info not found")?;
                     }
 
-                    warn!(api_key = %api_key, c = %ip_addr, ip_wise_violation = %ip_wise_violation, ban_time = ?ip_wise_ban_time, "Multiple Failed Attempts, Possible BruteForce Attack with Worng Credentials From Same IP Address, Banned IP Address with Ban Info");
+                    warn!(api_key = %api_key, c = %ip_addr, ip_wise_violation = %ip_wise_violation, ban_time = ?ip_wise_ban_time, "Multiple (250) Failed Attempts From Same IP Address, Possible BruteForce Attack with Worng Credentials From Same IP Address, Banned IP Address with Ban Info");
                 }
 
                 let retry_after = format!("{:?}", ban_time.max(ip_wise_ban_time));
