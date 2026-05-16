@@ -219,6 +219,7 @@ pub static MAXCDN_BOOSTRAPSTAPLE_COM: Domain = Domain::from_static("maxcdn.boots
 pub static CHALLENGES_CLOUDFLARE_COM: Domain = Domain::from_static("challenges.cloudflare.com");
 pub static HCAPTCHA_COM: Domain = Domain::from_static("hcaptcha.com");
 pub static NEWASSETS_HCAPTCHA_COM: Domain = Domain::from_static("newassets.hcaptcha.com");
+pub static PLINDIA_COM: Domain = Domain::from_static("plindia.com");
 
 pub static LSE_CO_IN: Domain = Domain::from_static("lse.co.in");
 pub static TRUSTLINE_IN: Domain = Domain::from_static("trustline.in");
@@ -226,7 +227,7 @@ pub static TRUSTLINE_IN: Domain = Domain::from_static("trustline.in");
 pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 33] =
     WhiteListedDomains::allowed_general_domains();
 
-pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 183] =
+pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 184] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
@@ -450,6 +451,7 @@ pub enum WhiteListedDomains {
     NewassetsHcaptchaCom,
     LseCoIn,
     TrustlineIn,
+    PlindiaCom,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -671,6 +673,7 @@ impl AsRef<str> for WhiteListedDomains {
             Self::NewassetsHcaptchaCom => NEWASSETS_HCAPTCHA_COM.as_ref(),
             Self::LseCoIn => LSE_CO_IN.as_ref(),
             Self::TrustlineIn => TRUSTLINE_IN.as_ref(),
+            Self::PlindiaCom => PLINDIA_COM.as_ref(),
         }
     }
 }
@@ -896,6 +899,7 @@ impl WhiteListedDomains {
             Self::NewassetsHcaptchaCom => &NEWASSETS_HCAPTCHA_COM,
             Self::LseCoIn => &LSE_CO_IN,
             Self::TrustlineIn => &TRUSTLINE_IN,
+            Self::PlindiaCom => &PLINDIA_COM,
         }
     }
 
@@ -941,7 +945,7 @@ impl WhiteListedDomains {
         ]
     }
 
-    pub const fn allowed_broker_domains() -> [Self; 183] {
+    pub const fn allowed_broker_domains() -> [Self; 184] {
         [
             Self::AbsolutebrokingCom,
             Self::AcagarwalCom,
@@ -1126,6 +1130,7 @@ impl WhiteListedDomains {
             Self::IstaaFinServCom,
             Self::LseCoIn,
             Self::TrustlineIn,
+            Self::PlindiaCom,
         ]
     }
 
