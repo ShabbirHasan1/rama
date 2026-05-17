@@ -10,7 +10,7 @@ use super::Host;
 ///
 /// The validation of domains created by this type is very shallow.
 /// Proper validation is offloaded to other services such as DNS resolvers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bitcode::Encode, bitcode::Decode)]
 pub struct Domain(SmolStr);
 
 impl Domain {

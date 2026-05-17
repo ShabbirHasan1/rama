@@ -25,6 +25,7 @@ opentelemetry = ["rama-core/opentelemetry"]
 
 [dependencies]
 ahash = { workspace = true }
+bitcode = { workspace = true }
 const_format = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 hex = { workspace = true, optional = true }

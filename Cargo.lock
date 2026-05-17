@@ -356,19 +356,21 @@ checksum = "349f9b6a179ed607305526ca489b34ad0a41aed5f7980fa90eb03160b69598fb"
 [[package]]
 name = "bitcode"
 version = "0.6.9"
-source = "git+https://github.com/OpenLLT/bitcode.git?branch=develop#f97f00a6e001627fd2e24fc8ebf461062a791ca5"
+source = "git+https://github.com/OpenLLT/bitcode.git?branch=develop#73c11bd66bce7a30c714724584f8c680cb205310"
 dependencies = [
  "arrayvec",
  "bitcode_derive",
  "bytemuck",
  "glam",
  "serde",
+ "smol_str",
+ "time",
 ]
 
 [[package]]
 name = "bitcode_derive"
 version = "0.6.9"
-source = "git+https://github.com/OpenLLT/bitcode.git?branch=develop#f97f00a6e001627fd2e24fc8ebf461062a791ca5"
+source = "git+https://github.com/OpenLLT/bitcode.git?branch=develop#73c11bd66bce7a30c714724584f8c680cb205310"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3318,6 +3320,7 @@ name = "rama-net"
 version = "0.3.0-rc1"
 dependencies = [
  "ahash",
+ "bitcode",
  "const_format",
  "flume",
  "hex",
