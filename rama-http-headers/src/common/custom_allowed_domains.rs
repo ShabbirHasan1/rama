@@ -231,7 +231,18 @@ pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 184] =
     WhiteListedDomains::allowed_broker_domains();
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize_repr, Deserialize_repr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize_repr,
+    Deserialize_repr,
+    bitcode::Encode,
+    bitcode::Decode,
 )]
 #[repr(u16)]
 pub enum WhiteListedDomains {

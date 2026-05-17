@@ -8,7 +8,18 @@ pub static RIKHAVSECURITIES: IpAddr = IpAddr::V4(Ipv4Addr::new(182, 156, 6, 41))
 pub static ALLOWED_BROKER_IPS: [WhiteListedIps; 3] = WhiteListedIps::allowed_broker_ips();
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize_repr, Deserialize_repr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize_repr,
+    Deserialize_repr,
+    bitcode::Encode,
+    bitcode::Decode,
 )]
 #[repr(u16)]
 pub enum WhiteListedIps {

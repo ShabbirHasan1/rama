@@ -347,7 +347,20 @@ where
 
 // HashMap<i32, i32, RandomState>
 
-#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    bitcode::Encode,
+    bitcode::Decode,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum UserStatus {
     Active,
@@ -355,7 +368,20 @@ pub enum UserStatus {
     Inactive,
 }
 
-#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    bitcode::Encode,
+    bitcode::Decode,
+)]
 #[serde(rename_all = "lowercase")]
 pub struct UserValidity {
     pub start: u64,
