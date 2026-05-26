@@ -2,6 +2,9 @@ use rama_net::address::Domain;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 pub static STATICIPIN: Domain = Domain::from_static("staticip.in");
+pub static ALGOIPIN: Domain = Domain::from_static("algoip.in");
+pub static TRADEIPIN: Domain = Domain::from_static("tradeip.in");
+pub static XORBYTCOM: Domain = Domain::from_static("xorbyt.com");
 pub static IPIFYORG: Domain = Domain::from_static("ipify.org");
 pub static IFCONFIGCO: Domain = Domain::from_static("ifconfig.co");
 pub static IFCONFIGME: Domain = Domain::from_static("ifconfig.me");
@@ -224,7 +227,7 @@ pub static PLINDIA_COM: Domain = Domain::from_static("plindia.com");
 pub static LSE_CO_IN: Domain = Domain::from_static("lse.co.in");
 pub static TRUSTLINE_IN: Domain = Domain::from_static("trustline.in");
 
-pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 33] =
+pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 36] =
     WhiteListedDomains::allowed_general_domains();
 
 pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 184] =
@@ -463,6 +466,9 @@ pub enum WhiteListedDomains {
     LseCoIn,
     TrustlineIn,
     PlindiaCom,
+    AlgoipIn,
+    TradeipIn,
+    XorbytCom,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -685,6 +691,9 @@ impl AsRef<str> for WhiteListedDomains {
             Self::LseCoIn => LSE_CO_IN.as_ref(),
             Self::TrustlineIn => TRUSTLINE_IN.as_ref(),
             Self::PlindiaCom => PLINDIA_COM.as_ref(),
+            Self::AlgoipIn => ALGOIPIN.as_ref(),
+            Self::TradeipIn => TRADEIPIN.as_ref(),
+            Self::XorbytCom => XORBYTCOM.as_ref(),
         }
     }
 }
@@ -911,15 +920,24 @@ impl WhiteListedDomains {
             Self::LseCoIn => &LSE_CO_IN,
             Self::TrustlineIn => &TRUSTLINE_IN,
             Self::PlindiaCom => &PLINDIA_COM,
+            Self::AlgoipIn => &ALGOIPIN,
+            Self::TradeipIn => &TRADEIPIN,
+            Self::XorbytCom => &XORBYTCOM,
         }
     }
 
     pub fn is_wildcard_domain(&self) -> bool {
-        matches!(self, Self::StaticipIn)
+        matches!(
+            self,
+            Self::StaticipIn | Self::AlgoipIn | Self::TradeipIn | Self::XorbytCom
+        )
     }
 
-    pub const fn allowed_general_domains() -> [Self; 33] {
+    pub const fn allowed_general_domains() -> [Self; 36] {
         [
+            Self::AlgoipIn,
+            Self::TradeipIn,
+            Self::XorbytCom,
             Self::StaticipIn,
             Self::IpifyOrg,
             Self::IfconfigCo,
