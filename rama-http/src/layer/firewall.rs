@@ -646,7 +646,7 @@ thread_local! {
     static USER_AGENT_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(128));
 }
 
-static NO_USER_AGENT: &str = "StaticIpIn-FireWall-No-User-Agent-Found";
+static NO_USER_AGENT: &str = "AlgoIpIn-FireWall-No-User-Agent-Found";
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for FirewallService<S>
 where
@@ -658,6 +658,15 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let local_ip_addr = req
+            .extensions()
+            .get::<SocketInfo>()
+            .context("no socket info found")?
+            .local_addr()
+            .context("no local addr found")?
+            .ip_addr
+            .to_smolstr();
+
         let user_agent = match req.headers().get(USER_AGENT) {
             Some(ua) => ua.to_str().context("user_agent is not valid UTF-8")?,
             None => NO_USER_AGENT,
@@ -682,6 +691,19 @@ where
             }
         }
         .context("Firewall: failed to get host from request context")?;
+
+        if local_ip_addr == host.as_str() {
+            warn!(
+                local_addr = %local_ip_addr,
+                target_addr = %host,
+                "dropping connection for connection trying to connect to local target",
+            );
+            return Err(BoxError::from(
+                "dropping connection for connection trying to connect to local target",
+            )
+            .context_field("local_addr", local_ip_addr)
+            .context_field("target_addr", host));
+        }
 
         let is_in_allowed_list = match &self.allowed_list.backend {
             FirewallStoreBackend::RwLock(store) => {
