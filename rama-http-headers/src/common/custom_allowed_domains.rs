@@ -227,8 +227,10 @@ pub static PLINDIA_COM: Domain = Domain::from_static("plindia.com");
 pub static LSE_CO_IN: Domain = Domain::from_static("lse.co.in");
 pub static TRUSTLINE_IN: Domain = Domain::from_static("trustline.in");
 pub static ARROW_TRADE: Domain = Domain::from_static("arrow.trade");
+pub static TRADO_TRADE: Domain = Domain::from_static("trado.trade");
+pub static LMHFT_TRADE: Domain = Domain::from_static("lmhft.trade");
 
-pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 36] =
+pub static ALLOWED_GENERAL_DOMAINS: [WhiteListedDomains; 38] =
     WhiteListedDomains::allowed_general_domains();
 
 pub static ALLOWED_BROKER_DOMAINS: [WhiteListedDomains; 185] =
@@ -471,6 +473,8 @@ pub enum WhiteListedDomains {
     TradeipIn,
     XorbytCom,
     ArrowTrade,
+    TradoTrade,
+    LmhftTrade,
 }
 
 impl AsRef<str> for WhiteListedDomains {
@@ -697,6 +701,8 @@ impl AsRef<str> for WhiteListedDomains {
             Self::TradeipIn => TRADEIPIN.as_ref(),
             Self::XorbytCom => XORBYTCOM.as_ref(),
             Self::ArrowTrade => ARROW_TRADE.as_ref(),
+            Self::TradoTrade => TRADO_TRADE.as_ref(),
+            Self::LmhftTrade => LMHFT_TRADE.as_ref(),
         }
     }
 }
@@ -927,21 +933,28 @@ impl WhiteListedDomains {
             Self::TradeipIn => &TRADEIPIN,
             Self::XorbytCom => &XORBYTCOM,
             Self::ArrowTrade => &ARROW_TRADE,
+            Self::TradoTrade => &TRADO_TRADE,
+            Self::LmhftTrade => &LMHFT_TRADE,
         }
     }
 
     pub fn is_wildcard_domain(&self) -> bool {
         matches!(
             self,
-            Self::StaticipIn | Self::AlgoipIn | Self::TradeipIn | Self::XorbytCom
+            Self::StaticipIn
+                | Self::AlgoipIn
+                | Self::TradeipIn
+                | Self::XorbytCom
+                | Self::LmhftTrade
         )
     }
 
-    pub const fn allowed_general_domains() -> [Self; 36] {
+    pub const fn allowed_general_domains() -> [Self; 38] {
         [
             Self::AlgoipIn,
             Self::TradeipIn,
             Self::XorbytCom,
+            Self::LmhftTrade,
             Self::StaticipIn,
             Self::IpifyOrg,
             Self::IfconfigCo,
@@ -975,6 +988,7 @@ impl WhiteListedDomains {
             Self::ChallengesCloudflareCom,
             Self::HcaptchaCom,
             Self::NewassetsHcaptchaCom,
+            Self::TradoTrade,
         ]
     }
 
