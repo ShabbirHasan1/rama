@@ -56,11 +56,35 @@ impl BanInfo {
 
     #[inline]
     pub fn calculate_ttl(&self) -> Duration {
-        let exponent = self.violation_count.min(63);
-        match exponent {
-            0..3 => Duration::from_secs(5),
-            3 => Duration::from_secs(10),
-            _ => Duration::from_secs(1u64 << exponent),
+        // let exponent = self.violation_count.min(63);
+        let violation_count = self.violation_count.min(250) as u64;
+        match violation_count {
+            0..10 => Duration::from_secs(violation_count),
+            10..20 => Duration::from_secs(violation_count * 5),
+            20..30 => Duration::from_secs(violation_count * 15),
+            30..40 => Duration::from_secs(violation_count * 30),
+            40..50 => Duration::from_secs(violation_count * 60),
+            50..60 => Duration::from_secs(violation_count * 90),
+            60..70 => Duration::from_secs(violation_count * 120),
+            70..80 => Duration::from_secs(violation_count * 150),
+            80..90 => Duration::from_secs(violation_count * 180),
+            90..100 => Duration::from_secs(violation_count * 210),
+            100..110 => Duration::from_secs(violation_count * 240),
+            110..120 => Duration::from_secs(violation_count * 270),
+            120..130 => Duration::from_secs(violation_count * 300),
+            130..140 => Duration::from_secs(violation_count * 330),
+            140..150 => Duration::from_secs(violation_count * 360),
+            150..160 => Duration::from_secs(violation_count * 390),
+            160..170 => Duration::from_secs(violation_count * 420),
+            170..180 => Duration::from_secs(violation_count * 450),
+            180..190 => Duration::from_secs(violation_count * 480),
+            190..200 => Duration::from_secs(violation_count * 510),
+            200..210 => Duration::from_secs(violation_count * 540),
+            210..220 => Duration::from_secs(violation_count * 570),
+            220..230 => Duration::from_secs(violation_count * 600),
+            230..240 => Duration::from_secs(violation_count * 630),
+            240..250 => Duration::from_secs(violation_count * 660),
+            _ => Duration::from_secs(1u64 << 63),
         }
     }
 
@@ -658,14 +682,15 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let local_ip_addr = req
-            .extensions()
-            .get::<SocketInfo>()
-            .context("no socket info found")?
-            .local_addr()
-            .context("no local addr found")?
-            .ip_addr
-            .to_smolstr();
+        let (local_ip_addr, peer_ip_addr) = {
+            let socket_info = req
+                .extensions()
+                .get::<SocketInfo>()
+                .context("no socket info found")?;
+            let local_ip_addr = socket_info.local_addr().context("no local addr found")?;
+            let peer_ip_addr = socket_info.peer_addr().ip_addr.to_smolstr();
+            (local_ip_addr.ip_addr.to_smolstr(), peer_ip_addr)
+        };
 
         let user_agent = match req.headers().get(USER_AGENT) {
             Some(ua) => ua.to_str().context("user_agent is not valid UTF-8")?,
@@ -693,16 +718,22 @@ where
         .context("Firewall: failed to get host from request context")?;
 
         if local_ip_addr == host.as_str() {
-            warn!(
-                local_addr = %local_ip_addr,
-                target_addr = %host,
-                "dropping connection for connection trying to connect to local target",
-            );
+            let ban_info = self
+                .firewall
+                .record_violation(&peer_ip_addr)
+                .await
+                .context("peer ip address record violation entry ban_info not found")?;
+
+            let ban_time = ban_info.calculate_ttl();
+
+            warn!(local_addr = %local_ip_addr, peer_ip_addr = %peer_ip_addr, target_addr = %host, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Connection Trying To Connect To Local Target, ReBanned Peer IP Address With Updated Ban Info");
+
             return Err(BoxError::from(
                 "dropping connection for connection trying to connect to local target",
             )
             .context_field("local_addr", local_ip_addr)
-            .context_field("target_addr", host));
+            .context_field("target_addr", host)
+            .context_field("peer_ip_addr", peer_ip_addr));
         }
 
         let is_in_allowed_list = match &self.allowed_list.backend {
