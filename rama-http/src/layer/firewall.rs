@@ -32,7 +32,6 @@ static START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 // ==================== BanInfo ====================
 #[derive(Clone, Copy, Debug)]
-#[repr(align(64))]
 pub struct BanInfo {
     pub violation_count: u8,
     pub last_violation_nanos: u64,
