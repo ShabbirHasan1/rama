@@ -724,7 +724,6 @@ where
 
 thread_local! {
     static USER_AGENT_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(128));
-    static IP_WISE_VIOLATION_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(64));
 }
 
 static NO_USER_AGENT: &str = "AlgoIpIn-FireWall-No-User-Agent-Found";
@@ -775,38 +774,15 @@ where
         .context("Firewall: failed to get host from request context")?;
 
         if local_ip_addr == host.as_str() {
-            let ip_wise_violation = IP_WISE_VIOLATION_BUFFER.with(|buf| {
-                let mut buffer = buf.borrow_mut();
-                buffer.clear();
-                buffer.push_str("::");
-                buffer.push_str(peer_ip_addr.as_str());
-                buffer.push_str("::");
-                buffer.to_owned()
-            });
-
-            let ip_wise_ban_info = self
+            let ban_info = self
                 .firewall
-                .record_violation(&ip_wise_violation)
+                .record_violation(&peer_ip_addr)
                 .await
                 .context("peer ip address record violation entry ban_info not found")?;
 
-            let ip_wise_ban_time = ip_wise_ban_info.calculate_ttl();
+            let ban_time = ban_info.calculate_ttl();
 
-            warn!(local_addr = %local_ip_addr, peer_ip_addr = %peer_ip_addr, target_addr = %host, ip_wise_ban_info = ?ip_wise_ban_info, ip_wise_ban_time = ?ip_wise_ban_time, "Dropping Connection For Connection Trying To Connect To Local Target, ReBanned Peer IP Address With Updated IP Wise Ban Info");
-
-            if ip_wise_ban_info.violation_count > 5 {
-                let ban_info = self
-                    .firewall
-                    .record_violation_by(&peer_ip_addr, 5)
-                    .await
-                    .context("peer ip address record violation entry ban_info not found")?;
-
-                let ban_time = ban_info.calculate_ttl();
-
-                warn!(local_addr = %local_ip_addr, peer_ip_addr = %peer_ip_addr, target_addr = %host, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Connection Trying To Connect To Local Target, ReBanned Peer IP Address With Updated Ban Info");
-
-                self.firewall.unban(&ip_wise_violation).await;
-            }
+            warn!(local_addr = %local_ip_addr, peer_ip_addr = %peer_ip_addr, target_addr = %host, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Connection Trying To Connect To Local Target, ReBanned Peer IP Address With Updated Ban Info");
 
             return Err(BoxError::from(
                 "dropping connection for connection trying to connect to local target",
