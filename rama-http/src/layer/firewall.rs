@@ -16,6 +16,7 @@ use rama_core::telemetry::tracing::info;
 use rama_core::telemetry::tracing::{error, warn};
 use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
+use rama_net::stream::matcher::ip;
 use rama_tcp::TcpStream;
 use rama_utils::str::smol_str::ToSmolStr as _;
 use std::sync::Arc;
@@ -24,6 +25,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+
+/// Monotonic reference for coarse, lock-free elapsed-second timestamps,
+/// used only to gate bloom-filter refreshes. Initialized on first use.
+static START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 // ==================== BanInfo ====================
 #[derive(Clone, Copy, Debug)]
@@ -50,42 +55,43 @@ impl BanInfo {
 
     #[inline]
     pub fn increment(&mut self) {
-        self.violation_count = self.violation_count.saturating_add(1);
+        self.increment_by(1);
+    }
+
+    /// Add `n` violations at once, saturating at `u8::MAX`.
+    #[inline]
+    pub fn increment_by(&mut self, n: u8) {
+        self.violation_count = self.violation_count.saturating_add(n);
         self.last_violation_nanos = Self::now_nanos();
     }
 
     #[inline]
     pub fn calculate_ttl(&self) -> Duration {
-        // let exponent = self.violation_count.min(63);
-        let violation_count = self.violation_count.min(250) as u64;
-        match violation_count {
-            0..10 => Duration::from_secs(violation_count),
-            10..20 => Duration::from_secs(violation_count * 5),
-            20..30 => Duration::from_secs(violation_count * 15),
-            30..40 => Duration::from_secs(violation_count * 30),
-            40..50 => Duration::from_secs(violation_count * 60),
-            50..60 => Duration::from_secs(violation_count * 90),
-            60..70 => Duration::from_secs(violation_count * 120),
-            70..80 => Duration::from_secs(violation_count * 150),
-            80..90 => Duration::from_secs(violation_count * 180),
-            90..100 => Duration::from_secs(violation_count * 210),
-            100..110 => Duration::from_secs(violation_count * 240),
-            110..120 => Duration::from_secs(violation_count * 270),
-            120..130 => Duration::from_secs(violation_count * 300),
-            130..140 => Duration::from_secs(violation_count * 330),
-            140..150 => Duration::from_secs(violation_count * 360),
-            150..160 => Duration::from_secs(violation_count * 390),
-            160..170 => Duration::from_secs(violation_count * 420),
-            170..180 => Duration::from_secs(violation_count * 450),
-            180..190 => Duration::from_secs(violation_count * 480),
-            190..200 => Duration::from_secs(violation_count * 510),
-            200..210 => Duration::from_secs(violation_count * 540),
-            210..220 => Duration::from_secs(violation_count * 570),
-            220..230 => Duration::from_secs(violation_count * 600),
-            230..240 => Duration::from_secs(violation_count * 630),
-            240..250 => Duration::from_secs(violation_count * 660),
-            _ => Duration::from_secs(1u64 << 63),
-        }
+        /// Effectively permanent, but safely under Moka's ~1000-year expiry
+        /// ceiling — beyond that, per-entry expiration math overflows/panics.
+        const PERMANENT_BAN: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+
+        let n = self.violation_count.min(250) as u64;
+        // Per-violation seconds; TTL = n * rate. Rate escalates across tiers.
+        let rate = match n {
+            0..20 => 5,
+            20..30 => 15,
+            30..40 => 30,
+            40..50 => 60,
+            50..100 => 210,
+            100..150 => 390,
+            150..170 => 420,
+            170..180 => 450,
+            180..190 => 480,
+            190..200 => 510,
+            200..210 => 540,
+            210..220 => 570,
+            220..230 => 600,
+            230..240 => 630,
+            240..250 => 660,
+            _ => return PERMANENT_BAN,
+        };
+        Duration::from_secs(n.saturating_mul(rate))
     }
 
     #[inline]
@@ -329,34 +335,57 @@ impl Firewall {
     }
 
     pub async fn record_violation(&self, key: &str) -> Option<BanInfo> {
-        let ban_infos: Option<BanInfo>;
-        rama_core::telemetry::tracing::trace!(subject = %key, "Banning Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
-        if let Some(mut info) = self.bans.get(key).await {
-            info.increment();
-            self.bans.insert(Arc::from(key), info).await;
-            ban_infos = Some(info);
-            rama_core::telemetry::tracing::info!(subject = %key, ban_info = ?info, ban_time = ?info.calculate_ttl(), "Successfully Banned Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
-        } else {
-            let ban_info = BanInfo::new();
-            self.bans.insert(Arc::from(key), ban_info).await;
-            // self.bloom.get().insert(key);
+        self.record_violation_by(key, 1).await
+    }
 
-            // Pin the epoch to insert into the current bloom
+    /// Record `n` violations against `key` in a single atomic update, instead of
+    /// calling [`Self::record_violation`] in a loop. `n` is clamped to at least 1;
+    /// the count saturates at `u8::MAX`.
+    pub async fn record_violation_by(&self, key: &str, n: u8) -> Option<BanInfo> {
+        let n = n.max(1);
+        rama_core::telemetry::tracing::trace!(subject = %key, count = n, "Recording violation(s) for subject");
+
+        // Atomic read-modify-write under Moka's per-key lock — concurrent
+        // violations on the same key can't clobber each other.
+        let info = self
+            .bans
+            .entry(Arc::<str>::from(key))
+            .and_upsert_with(|maybe| {
+                let next = match maybe {
+                    Some(existing) => {
+                        let mut info = existing.into_value();
+                        info.increment_by(n);
+                        info
+                    }
+                    // Fresh entry: start straight at `n` (matches an n-iteration loop).
+                    None => BanInfo {
+                        violation_count: n,
+                        last_violation_nanos: BanInfo::now_nanos(),
+                    },
+                };
+                std::future::ready(next)
+            })
+            .await
+            .into_value();
+
+        // Idempotent; also self-heals after a concurrent bloom rebuild.
+        {
             let guard = epoch::pin();
             self.bloom.get(&guard).insert(key);
-            drop(guard);
-            ban_infos = Some(ban_info);
-            rama_core::telemetry::tracing::info!(subject = %key, ban_info = ?ban_info, ban_time = ?ban_info.calculate_ttl(), "Successfully Banned Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
         }
 
         self.maybe_refresh_bloom();
-        rama_core::telemetry::tracing::trace!(subject = %key, "Successfully Banned Subjected IPv4/IPv6 ADDRESS or API_KEY or USER_NAME or USER_AGENT");
-        ban_infos
+
+        rama_core::telemetry::tracing::info!(
+            subject = %key, ban_info = ?info, ban_time = ?info.calculate_ttl(),
+            "Subject banned"
+        );
+        Some(info)
     }
 
     pub fn maybe_refresh_bloom(&self) {
         rama_core::telemetry::tracing::trace!("Initiated Maybe Refreshing Bloom Filter");
-        let now_secs = Instant::now().elapsed().as_secs();
+        let now_secs = START.elapsed().as_secs();
         let last_refresh = self.last_bloom_refresh.load(Ordering::Relaxed);
 
         if now_secs.saturating_sub(last_refresh) > self.bloom_refresh_interval.as_secs() {
@@ -412,9 +441,26 @@ impl Firewall {
             new_bloom.insert(key.as_ref());
         }
         bloom.swap(new_bloom);
-        let now_secs = Instant::now().elapsed().as_secs();
+        let now_secs = START.elapsed().as_secs();
         self.last_bloom_refresh.store(now_secs, Ordering::Release);
         rama_core::telemetry::tracing::trace!("Finished Refreshing Bloom Filter");
+    }
+
+    /// Drop every ban and reset to a clean state, as if freshly constructed.
+    pub async fn clear_all_bans(&self) {
+        rama_core::telemetry::tracing::warn!("Clearing ALL firewall bans (reset to fresh state)");
+
+        self.bans.invalidate_all(); // mark every entry invalid
+        self.bans.run_pending_tasks().await; // force the purge now, not lazily
+
+        // Replace the stale bloom (full of cleared keys) with an empty one.
+        let fresh = ConcurrentBloomFilter::new(self.max_entries as usize, 0.01);
+        self.bloom.swap(fresh);
+
+        self.last_bloom_refresh
+            .store(START.elapsed().as_secs(), Ordering::Release);
+
+        rama_core::telemetry::tracing::info!("Firewall reset complete: no active bans");
     }
 
     pub async fn allow_all(&self) {
@@ -435,6 +481,17 @@ impl Firewall {
     pub async fn undeny_all(&self) {
         self.deny_all.store(false, Ordering::Relaxed);
         rama_core::telemetry::tracing::info!("Firewall Disabled Deny All");
+    }
+
+    /// Full factory reset: drops all bans AND clears the allow-all / deny-all
+    /// mode flags. Equivalent state to a freshly constructed firewall.
+    pub async fn reset(&self) {
+        self.clear_all_bans().await;
+        self.allow_all.store(false, Ordering::Relaxed);
+        self.deny_all.store(false, Ordering::Relaxed);
+        rama_core::telemetry::tracing::warn!(
+            "Firewall fully reset: bans cleared, modes restored to default"
+        );
     }
 }
 
@@ -668,6 +725,7 @@ where
 
 thread_local! {
     static USER_AGENT_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(128));
+    static IP_WISE_VIOLATION_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(64));
 }
 
 static NO_USER_AGENT: &str = "AlgoIpIn-FireWall-No-User-Agent-Found";
@@ -718,15 +776,38 @@ where
         .context("Firewall: failed to get host from request context")?;
 
         if local_ip_addr == host.as_str() {
-            let ban_info = self
+            let ip_wise_violation = IP_WISE_VIOLATION_BUFFER.with(|buf| {
+                let mut buffer = buf.borrow_mut();
+                buffer.clear();
+                buffer.push_str("::");
+                buffer.push_str(peer_ip_addr.as_str());
+                buffer.push_str("::");
+                buffer.to_owned()
+            });
+
+            let ip_wise_ban_info = self
                 .firewall
-                .record_violation(&peer_ip_addr)
+                .record_violation(&ip_wise_violation)
                 .await
                 .context("peer ip address record violation entry ban_info not found")?;
 
-            let ban_time = ban_info.calculate_ttl();
+            let ip_wise_ban_time = ip_wise_ban_info.calculate_ttl();
 
-            warn!(local_addr = %local_ip_addr, peer_ip_addr = %peer_ip_addr, target_addr = %host, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Connection Trying To Connect To Local Target, ReBanned Peer IP Address With Updated Ban Info");
+            warn!(local_addr = %local_ip_addr, peer_ip_addr = %peer_ip_addr, target_addr = %host, ip_wise_ban_info = ?ip_wise_ban_info, ip_wise_ban_time = ?ip_wise_ban_time, "Dropping Connection For Connection Trying To Connect To Local Target, ReBanned Peer IP Address With Updated IP Wise Ban Info");
+
+            if ip_wise_ban_info.violation_count > 5 {
+                let ban_info = self
+                    .firewall
+                    .record_violation_by(&peer_ip_addr, 5)
+                    .await
+                    .context("peer ip address record violation entry ban_info not found")?;
+
+                let ban_time = ban_info.calculate_ttl();
+
+                warn!(local_addr = %local_ip_addr, peer_ip_addr = %peer_ip_addr, target_addr = %host, ban_info = ?ban_info, ban_time = ?ban_time, "Dropping Connection For Connection Trying To Connect To Local Target, ReBanned Peer IP Address With Updated Ban Info");
+
+                self.firewall.unban(&ip_wise_violation).await;
+            }
 
             return Err(BoxError::from(
                 "dropping connection for connection trying to connect to local target",
