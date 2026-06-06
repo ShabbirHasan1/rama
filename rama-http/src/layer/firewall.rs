@@ -296,7 +296,7 @@ impl Firewall {
             .name("FireWall")
             .max_capacity(max_entries)
             .expire_after(BanExpiry)
-            .initial_capacity(max_entries as usize / 2)
+            .initial_capacity(max_entries as usize / 100)
             .build_with_hasher(RandomState::default());
 
         let bloom = ConcurrentBloomFilter::new(max_entries as usize, 0.01);
